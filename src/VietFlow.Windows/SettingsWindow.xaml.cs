@@ -4,6 +4,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
@@ -47,7 +48,9 @@ public partial class SettingsWindow : Window
         UpdateExcludedAppsCount();
 
         var version = typeof(SettingsWindow).Assembly.GetName().Version;
-        TxtAboutVersion.Text = $"Phiên bản {version?.ToString(3) ?? "1.0.4"}";
+        var informational = typeof(SettingsWindow).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        TxtAboutVersion.Text = $"Phiên bản {informational ?? version?.ToString(3) ?? "0.1.0"}";
         TxtAboutRuntime.Text = $".NET {Environment.Version} · WPF · Win32 low-level keyboard hook";
     }
 
@@ -172,6 +175,12 @@ public partial class SettingsWindow : Window
 
         SwEnableMacro.IsChecked = _config.EnableMacro;
         SwMacroWhenDisabled.IsChecked = _config.AllowMacroWhenDisabled;
+
+        var keywords = _config.EnglishKeywords.Count > 0 ? _config.EnglishKeywords : EnglishPhonetics.DefaultKeywords;
+        TxtEnglishKeywords.Text = string.Join(Environment.NewLine, keywords);
+        TxtForeignInitials.Text = string.IsNullOrWhiteSpace(_config.ForeignInitials) ? "fjwz" : _config.ForeignInitials;
+        TxtConfigPath.Text = VietFlowConfig.GetConfigFilePath();
+        UpdateKeywordsCount();
 
         _macroItems.Clear();
         foreach (var (k, v) in _config.Macros)
@@ -396,13 +405,14 @@ public partial class SettingsWindow : Window
 
     private void NavButton_Click(object sender, RoutedEventArgs e)
     {
-        if (ViewOverview == null || ViewTyping == null || ViewMacro == null || ViewGame == null || ViewAbout == null) return;
+        if (ViewOverview == null || ViewTyping == null || ViewMacro == null || ViewGame == null || ViewAbout == null || ViewAdvanced == null) return;
 
         ViewOverview.Visibility = NavOverview.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
         ViewTyping.Visibility = NavTyping.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
         ViewMacro.Visibility = NavMacro.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
         ViewGame.Visibility = NavGame.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
         ViewAbout.Visibility = NavAbout.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        ViewAdvanced.Visibility = NavAdvanced.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
     }
 
     /// <summary>
@@ -423,6 +433,9 @@ public partial class SettingsWindow : Window
                 break;
             case "about":
                 NavAbout.IsChecked = true;
+                break;
+            case "advanced":
+                NavAdvanced.IsChecked = true;
                 break;
             default:
                 NavOverview.IsChecked = true;
@@ -498,6 +511,9 @@ public partial class SettingsWindow : Window
         _config.EnableMacro = SwEnableMacro.IsChecked == true;
         _config.AllowMacroWhenDisabled = SwMacroWhenDisabled.IsChecked == true;
 
+        _config.EnglishKeywords = ParseKeywords(TxtEnglishKeywords.Text);
+        _config.ForeignInitials = string.IsNullOrWhiteSpace(TxtForeignInitials.Text) ? "fjwz" : TxtForeignInitials.Text.Trim();
+
         _config.Macros.Clear();
         foreach (var item in _macroItems)
         {
@@ -548,6 +564,8 @@ public partial class SettingsWindow : Window
         _config.TrayVnBottom = def.TrayVnBottom;
         _config.TrayEnTop = def.TrayEnTop;
         _config.TrayEnBottom = def.TrayEnBottom;
+        _config.EnglishKeywords.Clear();
+        _config.ForeignInitials = def.ForeignInitials;
         _config.ExcludedApps = def.ExcludedApps;
         _config.Macros = def.Macros;
 
@@ -804,6 +822,64 @@ public partial class SettingsWindow : Window
             // Ignore shell failures.
         }
         e.Handled = true;
+    }
+
+    private static List<string> ParseKeywords(string text)
+    {
+        return text
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private void UpdateKeywordsCount()
+    {
+        if (TxtKeywordsCount != null && TxtEnglishKeywords != null)
+        {
+            TxtKeywordsCount.Text = $"{ParseKeywords(TxtEnglishKeywords.Text).Count} từ";
+        }
+    }
+
+    private void TxtEnglishKeywords_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        UpdateKeywordsCount();
+    }
+
+    private void BtnSaveKeywords_Click(object sender, RoutedEventArgs e)
+    {
+        var words = ParseKeywords(TxtEnglishKeywords.Text);
+        _config.EnglishKeywords = words;
+        EnglishPhonetics.SetKeywords(words.Count > 0 ? words : EnglishPhonetics.DefaultKeywords);
+        _config.Save();
+        UpdateKeywordsCount();
+    }
+
+    private void BtnResetKeywords_Click(object sender, RoutedEventArgs e)
+    {
+        _config.EnglishKeywords.Clear();
+        TxtEnglishKeywords.Text = string.Join(Environment.NewLine, EnglishPhonetics.DefaultKeywords);
+        EnglishPhonetics.SetKeywords(EnglishPhonetics.DefaultKeywords);
+        _config.Save();
+        UpdateKeywordsCount();
+    }
+
+    private void BtnOpenConfigFolder_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{VietFlowConfig.GetConfigDirectory()}\"",
+                UseShellExecute = true
+            });
+        }
+        catch
+        {
+            // Ignore shell failures.
+        }
     }
 
     protected override void OnClosing(CancelEventArgs e)

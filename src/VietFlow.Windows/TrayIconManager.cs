@@ -22,8 +22,11 @@ internal sealed class TrayIconManager : IDisposable
     private readonly Action _onToggleLanguage;
     private readonly Action<InputMethod> _onSelectMethod;
     private readonly Action<CharsetId> _onSelectCharset;
-    private readonly Action _onOpenSettings;
+    private readonly Action<string?> _onOpenSettingsTab;
     private readonly Action _onQuickConvert;
+    private readonly Action _onOpenConverter;
+    private readonly Action _onRestart;
+    private readonly Action _onRestartAdmin;
     private readonly Action _onExit;
 
     private Icon? _currentIcon;
@@ -31,31 +34,38 @@ internal sealed class TrayIconManager : IDisposable
     private ToolStripMenuItem? _toggleItem;
     private readonly Dictionary<InputMethod, ToolStripMenuItem> _methodItems = new();
     private readonly Dictionary<CharsetId, ToolStripMenuItem> _charsetItems = new();
+    private readonly Dictionary<string, ToolStripMenuItem> _themeItems = new();
 
     public TrayIconManager(
         VietFlowConfig config,
         Action onToggleLanguage,
         Action<InputMethod> onSelectMethod,
         Action<CharsetId> onSelectCharset,
-        Action onOpenSettings,
+        Action<string?> onOpenSettingsTab,
         Action onQuickConvert,
+        Action onOpenConverter,
+        Action onRestart,
+        Action onRestartAdmin,
         Action onExit)
     {
         _config = config;
         _onToggleLanguage = onToggleLanguage;
         _onSelectMethod = onSelectMethod;
         _onSelectCharset = onSelectCharset;
-        _onOpenSettings = onOpenSettings;
+        _onOpenSettingsTab = onOpenSettingsTab;
         _onQuickConvert = onQuickConvert;
+        _onOpenConverter = onOpenConverter;
+        _onRestart = onRestart;
+        _onRestartAdmin = onRestartAdmin;
         _onExit = onExit;
 
         _notifyIcon = new NotifyIcon
         {
             Visible = true,
-            Text = "VietFlow - Bộ gõ tiếng Việt hiệu năng cao"
+            Text = "VietFlow 0.1 alpha"
         };
 
-        _notifyIcon.MouseClick += (s, e) =>
+        _notifyIcon.MouseClick += (_, e) =>
         {
             if (e.Button == MouseButtons.Left)
             {
@@ -63,13 +73,10 @@ internal sealed class TrayIconManager : IDisposable
             }
         };
 
-        _notifyIcon.DoubleClick += (s, e) =>
-        {
-            _onOpenSettings();
-        };
+        _notifyIcon.DoubleClick += (_, _) => _onOpenSettingsTab(null);
 
         BuildContextMenu();
-        UpdateIcon(_config.IsEnabled);
+        UpdateState(_config.IsEnabled, _config.Method, _config.Charset);
     }
 
     public static string GetHotkeyDisplay(string hotkey, string lang = "vi")
@@ -91,66 +98,107 @@ internal sealed class TrayIconManager : IDisposable
 
     private void BuildContextMenu()
     {
-        var menu = new ContextMenuStrip();
         bool en = _config.UiLanguage == "en";
+        var menu = new ContextMenuStrip
+        {
+            ShowImageMargin = false
+        };
 
-        string hotkeyDesc = GetHotkeyDisplay(_config.ToggleHotkey, _config.UiLanguage);
-        string toggleText = en ? $"Vietnamese Mode ({hotkeyDesc})" : $"Bật tiếng Việt ({hotkeyDesc})";
-        _toggleItem = new ToolStripMenuItem(toggleText, null, (s, e) => _onToggleLanguage());
-        menu.Items.Add(_toggleItem);
+        menu.Items.Add(Item(en ? "Convert..." : "Chuyển mã...", _onOpenConverter));
+        menu.Items.Add(Item(en ? "Convert Clipboard" : "Chuyển mã Clipboard", _onQuickConvert));
+        menu.Items.Add(Item(en ? "Macros..." : "Bảng gõ tắt...", () => _onOpenSettingsTab("macro")));
 
+        var other = new ToolStripMenuItem(en ? "Other options" : "Lựa chọn khác");
+        _toggleItem = new ToolStripMenuItem(en ? "Vietnamese mode" : "Bật tiếng Việt");
+        _toggleItem.Click += (_, _) => _onToggleLanguage();
+        other.DropDownItems.Add(_toggleItem);
+
+        var startup = new ToolStripMenuItem(en ? "Start with Windows" : "Khởi động cùng Windows")
+        {
+            Checked = TaskSchedulerHelper.IsScheduledToRunAtLogon()
+        };
+        startup.Click += (_, _) =>
+        {
+            bool enabled = !startup.Checked;
+            TaskSchedulerHelper.SetRunAtLogon(enabled);
+            startup.Checked = enabled;
+            _config.StartWithWindows = enabled;
+            _config.Save();
+        };
+        other.DropDownItems.Add(startup);
+
+        var themeMenu = new ToolStripMenuItem(en ? "Theme" : "Chế độ màu");
+        AddThemeItem(themeMenu.DropDownItems, ThemeManager.SystemMode, en ? "System" : "Theo hệ thống");
+        AddThemeItem(themeMenu.DropDownItems, ThemeManager.LightMode, en ? "Light" : "Sáng");
+        AddThemeItem(themeMenu.DropDownItems, ThemeManager.DarkMode, en ? "Dark" : "Tối");
+        other.DropDownItems.Add(themeMenu);
+
+        menu.Items.Add(other);
         menu.Items.Add(new ToolStripSeparator());
 
-        // Bảng mã Submenu
-        var charsetMenu = new ToolStripMenuItem(en ? "Character Set" : "Bảng mã");
-        AddCharsetItem(charsetMenu, CharsetId.Unicode, en ? "1. Unicode Precomposed (NFC)" : "1. Unicode dựng sẵn (NFC)");
-        AddCharsetItem(charsetMenu, CharsetId.UnicodeComposite, en ? "2. Unicode Composite (NFD)" : "2. Unicode tổ hợp (NFD)");
-        AddCharsetItem(charsetMenu, CharsetId.Tcvn3, "3. TCVN3 (ABC)");
-        AddCharsetItem(charsetMenu, CharsetId.VniWindows, "4. VNI Windows");
-        menu.Items.Add(charsetMenu);
-
-        // Kiểu gõ Submenu
-        var methodMenu = new ToolStripMenuItem(en ? "Input Method" : "Kiểu gõ");
-        AddMethodItem(methodMenu, InputMethod.Telex, "Telex");
-        AddMethodItem(methodMenu, InputMethod.SimpleTelex, "Simple Telex");
-        AddMethodItem(methodMenu, InputMethod.Vni, "VNI");
-        AddMethodItem(methodMenu, InputMethod.MicrosoftVi, "Microsoft Vietnamese");
-        AddMethodItem(methodMenu, InputMethod.Viqr, "VIQR");
-        menu.Items.Add(methodMenu);
-
+        AddMethodItem(menu.Items, InputMethod.Telex, "Telex");
+        AddMethodItem(menu.Items, InputMethod.Vni, "VNI");
+        var moreMethods = new ToolStripMenuItem(en ? "More input methods" : "Kiểu gõ khác");
+        AddMethodItem(moreMethods.DropDownItems, InputMethod.SimpleTelex, "Simple Telex");
+        AddMethodItem(moreMethods.DropDownItems, InputMethod.MicrosoftVi, "Microsoft Vietnamese");
+        AddMethodItem(moreMethods.DropDownItems, InputMethod.Viqr, "VIQR");
+        menu.Items.Add(moreMethods);
         menu.Items.Add(new ToolStripSeparator());
 
-        string clipText = en ? "Clipboard Toolkit (Ctrl+Shift+F9)" : "Chuyển mã Clipboard (Ctrl+Shift+F9)";
-        string settingsText = en ? "Settings... (Ctrl+Shift+F5)" : "Bảng điều khiển... (Ctrl+Shift+F5)";
-        string exitText = en ? "Exit" : "Thoát";
-
-        menu.Items.Add(new ToolStripMenuItem(clipText, null, (s, e) => _onQuickConvert()));
-        menu.Items.Add(new ToolStripMenuItem(settingsText, null, (s, e) => _onOpenSettings()));
-
+        AddCharsetItem(menu.Items, CharsetId.Unicode, "Unicode");
+        AddCharsetItem(menu.Items, CharsetId.VniWindows, "VNI Windows");
+        AddCharsetItem(menu.Items, CharsetId.Tcvn3, "TCVN3 (ABC)");
+        var moreCharsets = new ToolStripMenuItem(en ? "More charsets" : "Bảng mã khác");
+        AddCharsetItem(moreCharsets.DropDownItems, CharsetId.UnicodeComposite, "Unicode Composite (NFD)");
+        AddCharsetItem(moreCharsets.DropDownItems, CharsetId.Viqr, "VIQR");
+        menu.Items.Add(moreCharsets);
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(new ToolStripMenuItem(exitText, null, (s, e) => _onExit()));
+
+        menu.Items.Add(Item(en ? "Restart VietFlow" : "Khởi động lại VietFlow", _onRestart));
+        menu.Items.Add(Item(en ? "Restart as Administrator" : "Khởi động lại quyền Admin", _onRestartAdmin));
+        menu.Items.Add(Item(en ? "Settings..." : "Cài đặt...", () => _onOpenSettingsTab(null)));
+        menu.Items.Add(Item(en ? "About VietFlow..." : "About VietFlow...", () => _onOpenSettingsTab("about")));
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(Item(en ? "Exit" : "Thoát", _onExit));
 
         _notifyIcon.ContextMenuStrip = menu;
     }
 
-    private void AddCharsetItem(ToolStripMenuItem parent, CharsetId id, string text)
+    private static ToolStripMenuItem Item(string text, Action action)
     {
-        var item = new ToolStripMenuItem(text, null, (s, e) => _onSelectCharset(id))
-        {
-            Checked = _config.Charset == id
-        };
-        _charsetItems[id] = item;
-        parent.DropDownItems.Add(item);
+        var item = new ToolStripMenuItem(text);
+        item.Click += (_, _) => action();
+        return item;
     }
 
-    private void AddMethodItem(ToolStripMenuItem parent, InputMethod method, string text)
+    private void AddMethodItem(ToolStripItemCollection items, InputMethod method, string text)
     {
-        var item = new ToolStripMenuItem(text, null, (s, e) => _onSelectMethod(method))
-        {
-            Checked = _config.Method == method
-        };
+        var item = new ToolStripMenuItem(text);
+        item.Click += (_, _) => _onSelectMethod(method);
         _methodItems[method] = item;
-        parent.DropDownItems.Add(item);
+        items.Add(item);
+    }
+
+    private void AddCharsetItem(ToolStripItemCollection items, CharsetId id, string text)
+    {
+        var item = new ToolStripMenuItem(text);
+        item.Click += (_, _) => _onSelectCharset(id);
+        _charsetItems[id] = item;
+        items.Add(item);
+    }
+
+    private void AddThemeItem(ToolStripItemCollection items, string mode, string text)
+    {
+        var item = new ToolStripMenuItem(text);
+        item.Click += (_, _) =>
+        {
+            _config.ThemeMode = mode;
+            _config.Save();
+            ThemeManager.Apply(mode);
+            UpdateState(_config.IsEnabled, _config.Method, _config.Charset);
+        };
+        _themeItems[mode] = item;
+        items.Add(item);
     }
 
     public void UpdateState(bool isEnabled, InputMethod method, CharsetId charset)
@@ -159,19 +207,27 @@ internal sealed class TrayIconManager : IDisposable
 
         if (_toggleItem != null)
         {
-            string hotkeyDesc = _config.ToggleHotkey == "AltZ" ? "Alt+Z" : "Ctrl+Shift";
-            _toggleItem.Text = isEnabled ? $"Đang bật tiếng Việt ({hotkeyDesc})" : $"Đang tắt tiếng Việt ({hotkeyDesc})";
+            string hotkey = GetHotkeyDisplay(_config.ToggleHotkey, _config.UiLanguage);
+            _toggleItem.Text = isEnabled
+                ? (_config.UiLanguage == "en" ? $"Vietnamese mode [V] ({hotkey})" : $"Đang bật tiếng Việt [V] ({hotkey})")
+                : (_config.UiLanguage == "en" ? $"English mode [E] ({hotkey})" : $"Đang tắt tiếng Việt [E] ({hotkey})");
             _toggleItem.Checked = isEnabled;
         }
 
         foreach (var (m, item) in _methodItems)
         {
-            item.Checked = (m == method);
+            item.Checked = m == method;
         }
 
         foreach (var (c, item) in _charsetItems)
         {
-            item.Checked = (c == charset);
+            item.Checked = c == charset;
+        }
+
+        string currentTheme = ThemeManager.Normalize(_config.ThemeMode);
+        foreach (var (mode, item) in _themeItems)
+        {
+            item.Checked = string.Equals(mode, currentTheme, StringComparison.OrdinalIgnoreCase);
         }
 
         string methodStr = method switch
@@ -185,16 +241,14 @@ internal sealed class TrayIconManager : IDisposable
         };
 
         bool en = _config.UiLanguage == "en";
-        string mode = isEnabled
+        string modeText = isEnabled
             ? (en ? "Vietnamese [V]" : "Tiếng Việt [V]")
             : "English [E]";
-        _notifyIcon.Text = $"VietFlow · {mode} · {methodStr}";
+        _notifyIcon.Text = $"VietFlow 0.1 alpha · {modeText} · {methodStr}";
     }
 
     public void UpdateIcon(bool isVietnamese)
     {
-        // Draw at the exact size the shell uses (16x16 at 100%, 20/24 at higher DPI).
-        // Rendering at 32x32 and letting Windows downscale was the cause of the blurry icon.
         int size = Math.Max(16, SystemInformation.SmallIconSize.Width);
         if (size > 64)
         {
@@ -217,14 +271,12 @@ internal sealed class TrayIconManager : IDisposable
                 ? ParseColor(_config.TrayVnBottom, "#B91C1C")
                 : ParseColor(_config.TrayEnBottom, "#1D4ED8");
 
-            // Fill the whole 16px cell; the shell renders it at the exact small-icon size.
             var rect = new RectangleF(0.5f, 0.5f, size - 1f, size - 1f);
             int radius = Math.Max(3, size / 5);
             using var path = CreateRoundedRectanglePath(rect, radius);
             using var brush = new LinearGradientBrush(new Rectangle(0, 0, size, size), topColor, bottomColor, 90f);
             g.FillPath(brush, path);
 
-            // Subtle dark edge keeps the badge separated from light taskbars without eating the glyph.
             using var pen = new Pen(Color.FromArgb(60, 0, 0, 0), 1f);
             g.DrawPath(pen, path);
 
@@ -248,15 +300,11 @@ internal sealed class TrayIconManager : IDisposable
         }
     }
 
-    /// <summary>
-    /// Draws the state letter as a filled vector outline so it stays sharp at 16px.
-    /// </summary>
     private static void DrawBadgeLetter(Graphics g, string letter, int size)
     {
         using var family = new FontFamily("Segoe UI");
         using var path = new GraphicsPath();
 
-        // Build the glyph large, then scale it down: this keeps the outline smooth.
         path.AddString(letter, family, (int)FontStyle.Bold, size * 2.2f, PointF.Empty, StringFormat.GenericTypographic);
 
         RectangleF bounds = path.GetBounds();
@@ -323,4 +371,3 @@ internal sealed class TrayIconManager : IDisposable
         }
     }
 }
-

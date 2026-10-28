@@ -159,6 +159,11 @@ public sealed class EngineOptions
     public bool AutoCapitalize { get; set; } = false;
 
     /// <summary>
+    /// Initial letters treated as non-Vietnamese (tones/marks are suppressed). Default "fjwz".
+    /// </summary>
+    public string ForeignInitials { get; set; } = "fjwz";
+
+    /// <summary>
     /// Enable consonant shorthand for the initial consonant: f -> ph, j -> gi, w -> qu.
     /// </summary>
     public bool ConsonantShortcuts { get; set; } = false;
@@ -173,6 +178,7 @@ public sealed class EngineOptions
         AutoNonVnRestore = AutoNonVnRestore,
         FixShiftLag = FixShiftLag,
         AutoCapitalize = AutoCapitalize,
+        ForeignInitials = ForeignInitials,
         ConsonantShortcuts = ConsonantShortcuts
     };
 }

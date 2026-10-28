@@ -153,6 +153,23 @@ public class UnikeyParityTests
         Assert.Equal("\nHen gap lai.", session.ProcessString("\nhen gap lai."));
     }
 
+    [Fact]
+    public void CustomEnglishKeywordListIsUsed()
+    {
+        try
+        {
+            EnglishPhonetics.SetKeywords(new[] { "vietflow", "OpenCode" });
+
+            Assert.True(EnglishPhonetics.IsEnglishKeyword("VIETFLOW"));
+            Assert.True(EnglishPhonetics.IsEnglishKeyword("opencode"));
+            Assert.False(EnglishPhonetics.IsEnglishKeyword("custom"));
+        }
+        finally
+        {
+            EnglishPhonetics.SetKeywords(EnglishPhonetics.DefaultKeywords);
+        }
+    }
+
     [Theory]
     [InlineData("d9uong72 ", "đường ")]
     [InlineData("gio1 ", "gió ")]

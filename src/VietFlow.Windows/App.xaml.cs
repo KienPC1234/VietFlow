@@ -33,9 +33,21 @@ public partial class App : System.Windows.Application
         _mutex = new Mutex(true, MutexName, out _isOwned);
         if (!_isOwned)
         {
-            // Another instance of VietFlow is already active
-            Shutdown();
-            return;
+            // A restarted instance waits briefly for the previous process to release the mutex.
+            if (e.Args.Contains("--restart", StringComparer.OrdinalIgnoreCase))
+            {
+                for (int i = 0; i < 50 && !_isOwned; i++)
+                {
+                    Thread.Sleep(100);
+                    _isOwned = _mutex.WaitOne(0);
+                }
+            }
+
+            if (!_isOwned)
+            {
+                Shutdown();
+                return;
+            }
         }
 
         _config = VietFlowConfig.Load();
@@ -83,8 +95,11 @@ public partial class App : System.Windows.Application
             onToggleLanguage: ToggleLanguage,
             onSelectMethod: SelectMethod,
             onSelectCharset: SelectCharset,
-            onOpenSettings: OpenSettings,
+            onOpenSettingsTab: OpenSettings,
             onQuickConvert: QuickClipboardConvert,
+            onOpenConverter: OpenConverter,
+            onRestart: RestartApplication,
+            onRestartAdmin: RestartAsAdmin,
             onExit: ExitApplication);
 
         _hook = new KeyboardHook(
@@ -92,7 +107,7 @@ public partial class App : System.Windows.Application
             _config,
             _tracker,
             onToggleLanguage: ToggleLanguage,
-            onOpenSettings: OpenSettings,
+            onOpenSettings: () => OpenSettings(null),
             onQuickConvert: QuickClipboardConvert);
 
         _trayManager.UpdateState(_config.IsEnabled, _config.Method, _config.Charset);
@@ -115,7 +130,7 @@ public partial class App : System.Windows.Application
 
         if (e.Args.Contains("--settings", StringComparer.OrdinalIgnoreCase) || _pendingTab != null)
         {
-            Dispatcher.BeginInvoke(new Action(OpenSettings));
+            Dispatcher.BeginInvoke(new Action(() => OpenSettings(null)));
         }
     }
 
@@ -160,7 +175,7 @@ public partial class App : System.Windows.Application
         _trayManager.UpdateState(_config.IsEnabled, _config.Method, _config.Charset);
     }
 
-    private void OpenSettings()
+    private void OpenSettings(string? tab = null)
     {
         Dispatcher.Invoke(() =>
         {
@@ -181,9 +196,10 @@ public partial class App : System.Windows.Application
             _settingsWindow.WindowState = WindowState.Normal;
             _settingsWindow.Activate();
 
-            if (!string.IsNullOrEmpty(_pendingTab))
+            string? target = tab ?? _pendingTab;
+            if (!string.IsNullOrEmpty(target))
             {
-                _settingsWindow.ShowTab(_pendingTab);
+                _settingsWindow.ShowTab(target);
                 _pendingTab = null;
             }
 
@@ -247,6 +263,58 @@ public partial class App : System.Windows.Application
                 _trayManager.ShowBalloon("VietFlow Lỗi", $"Không thể chuyển mã clipboard: {ex.Message}", System.Windows.Forms.ToolTipIcon.Warning);
             }
         });
+    }
+
+    private void OpenConverter()
+    {
+        Dispatcher.Invoke(() =>
+        {
+            var window = new ConvertWindow
+            {
+                Owner = _settingsWindow
+            };
+            window.ShowDialog();
+        });
+    }
+
+    private void RestartApplication()
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = Environment.ProcessPath!,
+                Arguments = "--restart",
+                UseShellExecute = true
+            });
+        }
+        catch
+        {
+            // Ignore restart failures.
+        }
+
+        ExitApplication();
+    }
+
+    private void RestartAsAdmin()
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = Environment.ProcessPath!,
+                Arguments = "--restart",
+                UseShellExecute = true,
+                Verb = "runas"
+            });
+        }
+        catch
+        {
+            _trayManager.ShowBalloon("VietFlow", "Không thể khởi động lại với quyền Admin (UAC bị huỷ).", System.Windows.Forms.ToolTipIcon.Warning);
+            return;
+        }
+
+        ExitApplication();
     }
 
     private void ExitApplication()

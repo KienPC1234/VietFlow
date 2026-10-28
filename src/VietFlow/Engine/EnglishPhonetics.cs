@@ -3,26 +3,109 @@
 
 using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
-using VietFlow.Tables;
 
 namespace VietFlow.Engine;
 
 /// <summary>
-/// High-performance English keyword dictionary and phonetic analysis to prevent
-/// English / programming words from getting accidental Vietnamese diacritics.
+/// English/foreign keyword dictionary used to avoid accidental Vietnamese marks
+/// on English or programming words. The word list can be replaced at runtime
+/// (Advanced settings) without restarting the engine.
 /// </summary>
 public static class EnglishPhonetics
 {
-    private static readonly FrozenSet<string> Keywords;
-    private static FrozenSet<string>.AlternateLookup<ReadOnlySpan<char>> KeywordLookup;
-    private static readonly int MaxKeywordLength;
+    private sealed class KeywordSet
+    {
+        public required FrozenSet<string> Set { get; init; }
+        public required FrozenSet<string>.AlternateLookup<ReadOnlySpan<char>> Lookup { get; init; }
+        public required int MaxLength { get; init; }
+        public required string[] Words { get; init; }
+    }
+
+    private static readonly string[] DefaultWords;
+    private static volatile KeywordSet _current;
 
     static EnglishPhonetics()
     {
-        var words = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        DefaultWords = CreateDefaultWords();
+        _current = Build(DefaultWords);
+    }
+
+    /// <summary>
+    /// Built-in word list (lowercase, distinct).
+    /// </summary>
+    public static IReadOnlyList<string> DefaultKeywords => DefaultWords;
+
+    /// <summary>
+    /// Replaces the active keyword list. An empty/null list falls back to the built-in defaults.
+    /// </summary>
+    public static void SetKeywords(IEnumerable<string>? words)
+    {
+        var normalized = words?
+            .Select(w => w.Trim().ToLowerInvariant())
+            .Where(w => w.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        _current = normalized is { Length: > 0 } ? Build(normalized) : Build(DefaultWords);
+    }
+
+    /// <summary>
+    /// Allocation-free keyword lookup (ordinal hash after ASCII lowercasing).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool IsEnglishKeyword(ReadOnlySpan<char> word)
+    {
+        var current = _current;
+        if (word.IsEmpty || word.Length > current.MaxLength)
         {
-            // Programming & Polysyllabic English keywords with internal 's' (conflicts with Telex 's' acute tone)
-            // NOTE: Never include words that are valid Vietnamese syllables (e.g. bus->bú, must->mút, rust->rút, bust->bút, trust->trút, gust->gút, sum->sum)
+            return false;
+        }
+
+        Span<char> lower = stackalloc char[current.MaxLength];
+        for (int i = 0; i < word.Length; i++)
+        {
+            lower[i] = InputProcessor.ToLowerAscii(word[i]);
+        }
+
+        return current.Lookup.Contains(lower[..word.Length]);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool IsForeignInitial(char rawChar, VnLexiName lexi, ReadOnlySpan<char> foreignInitials)
+    {
+        if (lexi is VnLexiName.uh or VnLexiName.Uh)
+        {
+            return false;
+        }
+
+        char lower = InputProcessor.ToLowerAscii(rawChar);
+        return foreignInitials.Contains(lower);
+    }
+
+    private static KeywordSet Build(string[] words)
+    {
+        int maxLength = 0;
+        foreach (var word in words)
+        {
+            if (word.Length > maxLength) maxLength = word.Length;
+        }
+
+        var set = words.ToFrozenSet(StringComparer.Ordinal);
+        return new KeywordSet
+        {
+            Set = set,
+            Lookup = set.GetAlternateLookup<ReadOnlySpan<char>>(),
+            MaxLength = maxLength,
+            Words = words
+        };
+    }
+
+    private static string[] CreateDefaultWords()
+    {
+        var words = new HashSet<string>(StringComparer.Ordinal)
+        {
+            // Programming & polysyllabic English keywords with internal 's' (Telex acute conflict)
+            // Never include valid Vietnamese syllables: bus->bú, must->mút, rust->rút, bust->bút, sum->sum
             "custom", "customer", "customize", "customs",
             "music", "musician", "museum",
             "status", "focus", "virus", "bonus", "minus", "campus", "circus",
@@ -32,27 +115,25 @@ public static class EnglishPhonetics
             "issue", "issues", "result", "results", "resume", "resource", "resources",
             "response", "responses", "request", "requests", "require", "requires",
 
-            // English words ending in x or containing x
-            // NOTE: Never include mix->mĩ, box->bõ, six->sĩ, max->mã, tax->tã
+            // Words containing x (never mix->mĩ, box->bõ, six->sĩ, max->mã, tax->tã)
             "alex", "linux", "index", "context", "matrix", "complex", "syntax", "prefix",
             "suffix", "vertex", "pixel", "relax", "remix", "apex", "latex", "unix", "posix",
 
-            // Words with foreign consonant endings / English programming keywords
-            // NOTE: Never include test->tét, best->bét, rest->rét, host->hót, cost->cót, last->lát, cast->cát, list->lít, most->mót, boost->bốt
+            // Foreign consonant endings / programming keywords
+            // Never test->tét, best->bét, rest->rét, host->hót, cost->cót, last->lát, cast->cát
             "text", "next", "exist", "select", "project", "object", "export",
             "import", "string", "spring", "struct", "strict", "direct",
             "effect", "correct", "product", "protect", "detect", "connect", "collect",
             "inspect", "inject", "reject", "reflect", "twist", "first",
             "worst", "east", "almost",
 
-            // English words with double letters or non-VN codas
-            // NOTE: Never include seen->sên, moon->môn, noon->nôn, soon->sôn, room->rôm, vans->ván, lens->lén
+            // Double letters / non-VN codas
             "class", "press", "process", "access", "address", "express",
             "impress", "stress", "cross", "guess",
             "business", "fitness", "witness", "canvas", "atlas", "radius", "versus", "alias",
             "basis", "crisis", "thesis", "axis", "paris",
 
-            // Programming & technical keywords (with zero Vietnamese homophones)
+            // Programming & technical keywords
             "code", "true", "false",
             "null", "type", "void", "char", "bool", "byte",
             "float", "double", "public", "private", "protected", "static", "sealed", "readonly", "override",
@@ -63,56 +144,17 @@ public static class EnglishPhonetics
             "docker", "github", "reddit", "python", "react", "rust", "golang", "swift", "kotlin",
             "commit", "checkout", "branch", "merge", "fetch", "pull", "style", "script",
 
-            // Double vowel words ending in non-VN consonants (l, d, k)
-            // NOTE: Never include car->cả, bar->bả, sir->sỉ, nor->nỏ
+            // Double vowel words ending in non-VN consonants
             "cool", "root", "boot", "tool", "pool", "book", "look", "good", "food",
             "feed", "feel", "feet", "free", "zoom", "week", "wood", "wool",
             "loop", "floor", "cook", "hook", "deep", "keep",
             "meet", "need", "seed", "weed", "green", "screen", "sweet", "speed", "steel",
 
-            // Words ending in non-VN codas (polysyllabic r, l, etc.)
+            // Non-VN codas (r, l, ...)
             "server", "driver", "water", "filter", "center", "enter",
             "letter", "master", "system", "item", "problem", "config", "debug"
         };
 
-        int maxLength = 0;
-        foreach (var word in words)
-        {
-            if (word.Length > maxLength) maxLength = word.Length;
-        }
-
-        MaxKeywordLength = maxLength;
-        // Stored lowercase; lookups lowercase the span (ASCII) and use an Ordinal hash,
-        // which is much faster than case-insensitive span hashing.
-        Keywords = words.ToFrozenSet(StringComparer.Ordinal);
-        KeywordLookup = Keywords.GetAlternateLookup<ReadOnlySpan<char>>();
-    }
-
-    /// <summary>
-    /// Allocation-free, ordinal (fast) keyword lookup.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsEnglishKeyword(ReadOnlySpan<char> word)
-    {
-        if (word.IsEmpty || word.Length > MaxKeywordLength)
-        {
-            return false;
-        }
-
-        Span<char> lower = stackalloc char[MaxKeywordLength];
-        for (int i = 0; i < word.Length; i++)
-        {
-            lower[i] = InputProcessor.ToLowerAscii(word[i]);
-        }
-
-        return KeywordLookup.Contains(lower[..word.Length]);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsForeignInitial(char rawChar, VnLexiName lexi)
-    {
-        if (lexi is VnLexiName.uh or VnLexiName.Uh) return false;
-        char lower = InputProcessor.ToLowerAscii(rawChar);
-        return lower is 'f' or 'j' or 'w' or 'z';
+        return words.OrderBy(w => w, StringComparer.Ordinal).ToArray();
     }
 }

@@ -12,7 +12,8 @@
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
     <AssemblyName>VietFlow</AssemblyName>
-    <Version>1.0.4</Version>
+    <Version>0.1.0</Version>
+    <InformationalVersion>0.1.0-alpha</InformationalVersion>
     <ApplicationIcon>Assets\VietFlow.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>

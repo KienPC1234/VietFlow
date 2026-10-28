@@ -211,6 +211,8 @@
                                          Tag="{StaticResource GeoGame}" Click="NavButton_Click"/>
                             <RadioButton x:Name="NavAbout" Style="{StaticResource NavButtonStyle}" Content="Giới thiệu"
                                          Tag="{StaticResource GeoInfo}" Click="NavButton_Click"/>
+                            <RadioButton x:Name="NavAdvanced" Style="{StaticResource NavButtonStyle}" Content="Nâng cao"
+                                         Tag="{StaticResource GeoSparkles}" Click="NavButton_Click"/>
                         </StackPanel>
                     </Grid>
                 </Border>
@@ -724,6 +726,67 @@
                                                        FontSize="12" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"/>
                                         </Border>
                                     </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- VIEW 6: NÂNG CAO -->
+                            <StackPanel x:Name="ViewAdvanced" Visibility="Collapsed">
+                                <TextBlock x:Name="LblAdvancedTitle" Text="Cấu hình nâng cao" FontSize="18" FontWeight="Bold" Foreground="{DynamicResource BrushTextPrimary}"/>
+                                <TextBlock x:Name="LblAdvancedDesc" Text="Tùy chỉnh các danh sách từ và tham số ít dùng của engine." FontSize="12" Foreground="{DynamicResource BrushTextSecondary}" Margin="0,2,0,16"/>
+
+                                <TextBlock Text="DANH SÁCH TỪ" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource BrushTextMuted}" Margin="0,0,0,8"/>
+
+                                <Border Background="{DynamicResource BrushSurface}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="10" Padding="16" Margin="0,0,0,10">
+                                    <StackPanel>
+                                        <TextBlock x:Name="LblKeywordsTitle" Text="Từ tiếng Anh / từ ngoại lai" FontWeight="SemiBold" FontSize="13" Foreground="{DynamicResource BrushTextPrimary}"/>
+                                        <TextBlock x:Name="LblKeywordsDesc" Text="Mỗi dòng một từ. Các từ này sẽ không bị bỏ dấu tiếng Việt (dùng cho lập trình / tiếng Anh)."
+                                                   FontSize="11" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                                        <TextBox x:Name="TxtEnglishKeywords" Height="230" AcceptsReturn="True" TextChanged="TxtEnglishKeywords_TextChanged" TextWrapping="NoWrap"
+                                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                                                 VerticalContentAlignment="Top" FontFamily="Consolas" FontSize="12" Padding="8"
+                                                 Background="{DynamicResource BrushInput}" Foreground="{DynamicResource BrushTextPrimary}"
+                                                 BorderBrush="{DynamicResource BrushBorderStrong}"/>
+                                        <Grid Margin="0,8,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock x:Name="TxtKeywordsCount" Text="0 từ" FontSize="11" Foreground="{DynamicResource BrushTextMuted}" VerticalAlignment="Center"/>
+                                            <Button x:Name="BtnResetKeywords" Grid.Column="1" Content="Khôi phục mặc định" Style="{StaticResource BtnGhost}" Padding="12,6" Margin="0,0,8,0" Click="BtnResetKeywords_Click"/>
+                                            <Button x:Name="BtnSaveKeywords" Grid.Column="2" Content="Lưu danh sách" Style="{StaticResource BtnPrimary}" Padding="14,6" Click="BtnSaveKeywords_Click"/>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Background="{DynamicResource BrushSurface}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="10" Padding="16" Margin="0,0,0,10">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="160"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+                                            <TextBlock x:Name="LblForeignTitle" Text="Phụ âm đầu nước ngoài" FontWeight="SemiBold" FontSize="13" Foreground="{DynamicResource BrushTextPrimary}"/>
+                                            <TextBlock x:Name="LblForeignDesc" Text="Các chữ cái đầu này sẽ không nhận dấu tiếng Việt (mặc định: fjwz)." FontSize="11" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                        <TextBox x:Name="TxtForeignInitials" Grid.Column="1" Style="{StaticResource ModernTextBox}" MaxLength="26" FontFamily="Consolas"/>
+                                    </Grid>
+                                </Border>
+
+                                <TextBlock Text="HỆ THỐNG" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource BrushTextMuted}" Margin="0,10,0,8"/>
+
+                                <Border Background="{DynamicResource BrushSurface}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="10" Padding="16">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel VerticalAlignment="Center" Margin="0,0,12,0">
+                                            <TextBlock Text="Tệp cấu hình" FontWeight="SemiBold" FontSize="13" Foreground="{DynamicResource BrushTextPrimary}"/>
+                                            <TextBlock x:Name="TxtConfigPath" Text="%APPDATA%\VietFlow\vietflow_config.json" FontSize="11" Foreground="{DynamicResource BrushTextSecondary}" TextTrimming="CharacterEllipsis"/>
+                                        </StackPanel>
+                                        <Button x:Name="BtnOpenConfigFolder" Grid.Column="1" Content="Mở thư mục" Style="{StaticResource BtnGhost}" Padding="12,6" Click="BtnOpenConfigFolder_Click"/>
+                                    </Grid>
                                 </Border>
                             </StackPanel>
                         </Grid>

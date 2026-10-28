@@ -1,0 +1,49 @@
+<Window x:Class="VietFlow.Windows.ConvertWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Chuyển mã"
+        Width="660" Height="520"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Background="{DynamicResource BrushSurface}"
+        FontFamily="Segoe UI" FontSize="13">
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="Từ:" VerticalAlignment="Center" Foreground="{DynamicResource BrushTextSecondary}" Margin="0,0,8,0"/>
+            <ComboBox x:Name="CboFrom" Grid.Column="1" Style="{StaticResource ModernComboBox}" Margin="0,0,16,0"/>
+            <TextBlock Grid.Column="2" Text="Sang:" VerticalAlignment="Center" Foreground="{DynamicResource BrushTextSecondary}" Margin="0,0,8,0"/>
+            <ComboBox x:Name="CboTo" Grid.Column="3" Style="{StaticResource ModernComboBox}"/>
+        </Grid>
+
+        <TextBox x:Name="TxtContent" Grid.Row="1" AcceptsReturn="True" TextWrapping="Wrap"
+                 VerticalScrollBarVisibility="Auto" FontFamily="Consolas" FontSize="13"
+                 Padding="10" Background="{DynamicResource BrushInput}" Foreground="{DynamicResource BrushTextPrimary}"
+                 BorderBrush="{DynamicResource BrushBorderStrong}" BorderThickness="1"/>
+
+        <Grid Grid.Row="2" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Button x:Name="BtnPaste" Content="Dán Clipboard" Style="{StaticResource BtnGhost}" Click="BtnPaste_Click"/>
+            <Button x:Name="BtnConvert" Grid.Column="1" Content="Chuyển mã" Style="{StaticResource BtnPrimary}" Margin="8,0,0,0" Click="BtnConvert_Click"/>
+            <Button x:Name="BtnCopy" Grid.Column="2" Content="Copy" Style="{StaticResource BtnGhost}" Margin="8,0,0,0" Click="BtnCopy_Click"/>
+            <Button x:Name="BtnClose" Grid.Column="3" Content="Đóng" Style="{StaticResource BtnGhost}" Margin="8,0,0,0" Click="BtnClose_Click"/>
+        </Grid>
+    </Grid>
+</Window>

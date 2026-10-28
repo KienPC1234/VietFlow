@@ -590,7 +590,7 @@ public sealed class VietFlowEngine
         }
 
         if (_options.SpellCheck && !_options.ConsonantShortcuts &&
-            EnglishPhonetics.IsForeignInitial(_buffer[0].RawChar, _buffer[0].Lexi))
+            EnglishPhonetics.IsForeignInitial(_buffer[0].RawChar, _buffer[0].Lexi, _options.ForeignInitials))
         {
             return false;
         }
@@ -695,7 +695,7 @@ public sealed class VietFlowEngine
         char lower = InputProcessor.ToLowerAscii(rawKey);
 
         if (_options.SpellCheck && !_options.ConsonantShortcuts &&
-            EnglishPhonetics.IsForeignInitial(_buffer[0].RawChar, _buffer[0].Lexi))
+            EnglishPhonetics.IsForeignInitial(_buffer[0].RawChar, _buffer[0].Lexi, _options.ForeignInitials))
         {
             return false;
         }
@@ -1766,7 +1766,7 @@ public sealed class VietFlowEngine
         if (_bufferLength == 0) return true;
         if (_wordForm == WordForm.NonVn) return false;
 
-        if (!_options.ConsonantShortcuts && EnglishPhonetics.IsForeignInitial(_buffer[0].RawChar, _buffer[0].Lexi))
+        if (!_options.ConsonantShortcuts && EnglishPhonetics.IsForeignInitial(_buffer[0].RawChar, _buffer[0].Lexi, _options.ForeignInitials))
         {
             return false;
         }

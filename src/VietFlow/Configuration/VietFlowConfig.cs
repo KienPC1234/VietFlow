@@ -39,6 +39,16 @@ public sealed class VietFlowConfig
     public string TrayVnBottom { get; set; } = "#B91C1C";
     public string TrayEnTop { get; set; } = "#2563EB";
     public string TrayEnBottom { get; set; } = "#1D4ED8";
+
+    /// <summary>
+    /// User-editable English/foreign keyword list (one per line). Empty = built-in defaults.
+    /// </summary>
+    public List<string> EnglishKeywords { get; set; } = new();
+
+    /// <summary>
+    /// Initial letters treated as non-Vietnamese; tones/marks are suppressed for these words.
+    /// </summary>
+    public string ForeignInitials { get; set; } = "fjwz";
     public string ToggleHotkey { get; set; } = "CtrlShift"; // "CtrlShift", "AltZ", "CtrlSpace", "ShiftSpace", "AltShift", "WinSpace", "CapsLock", "RightCtrl", "Custom"
     public string UiLanguage { get; set; } = "vi"; // "vi" or "en"
     public int CustomToggleVk { get; set; } = 0;
@@ -125,8 +135,11 @@ public sealed class VietFlowConfig
         session.Options.AutoNonVnRestore = AutoNonVnRestore;
         session.Options.FixShiftLag = FixShiftLag;
         session.Options.AutoCapitalize = AutoCapitalize;
+        session.Options.ForeignInitials = string.IsNullOrWhiteSpace(ForeignInitials) ? "fjwz" : ForeignInitials;
         session.Options.ConsonantShortcuts = ConsonantShortcuts;
         session.Charset = Charsets.CharsetFactory.GetCharset(Charset);
+
+        EnglishPhonetics.SetKeywords(EnglishKeywords.Count > 0 ? EnglishKeywords : EnglishPhonetics.DefaultKeywords);
 
         session.Macros.Clear();
         foreach (var (k, v) in Macros)
