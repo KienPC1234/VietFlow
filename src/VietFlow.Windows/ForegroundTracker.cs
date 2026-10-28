@@ -1,6 +1,7 @@
 // VietFlow - Ultra-High Performance Vietnamese Input Engine for .NET 10
 // Licensed under the GNU General Public License v3.0 (GPLv3)
 
+using System.Threading;
 using VietFlow.Configuration;
 
 namespace VietFlow.Windows;
@@ -70,5 +71,18 @@ internal sealed class ForegroundTracker
     }
 
     public string CurrentProcessName => _lastProcessName;
+
+    /// <summary>
+    /// Rebuilds the exclusion cache after the user edits the app list. Without
+    /// this, adding/removing an entry with the same list count could be ignored.
+    /// </summary>
+    public void RefreshExcludedApps()
+    {
+        // Called from the UI thread; the hook thread rebuilds the HashSet on its
+        // next query. Never mutate the set here (it is read on the hook thread).
+        Volatile.Write(ref _lastExcludedCount, -1);
+        Interlocked.Exchange(ref _lastHwnd, IntPtr.Zero);
+        _lastIsExcluded = false;
+    }
 }
 

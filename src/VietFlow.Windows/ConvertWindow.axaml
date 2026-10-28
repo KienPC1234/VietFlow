@@ -1,0 +1,33 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="VietFlow.Windows.ConvertWindow"
+        Title="Chuyển mã"
+        Width="660" Height="520"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Background="{DynamicResource AppBg}"
+        FontFamily="Segoe UI"
+        FontSize="13">
+
+  <Grid Margin="20" RowDefinitions="Auto,*,Auto">
+    <Grid Margin="0,0,0,12" ColumnDefinitions="Auto,*,Auto,*">
+      <TextBlock Text="Từ:" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}" Margin="0,0,8,0"/>
+      <ComboBox x:Name="CboFrom" Grid.Column="1" Margin="0,0,16,0"/>
+      <TextBlock Grid.Column="2" Text="Sang:" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}" Margin="0,0,8,0"/>
+      <ComboBox x:Name="CboTo" Grid.Column="3"/>
+    </Grid>
+
+    <TextBox x:Name="TxtContent" Grid.Row="1"
+             AcceptsReturn="True" TextWrapping="Wrap" VerticalContentAlignment="Top"
+             ScrollViewer.VerticalScrollBarVisibility="Auto"
+             FontFamily="Consolas" FontSize="13"
+             Padding="10"/>
+
+    <Grid Grid.Row="2" Margin="0,12,0,0" ColumnDefinitions="*,Auto,Auto,Auto">
+      <Button x:Name="BtnPaste" Content="Dán Clipboard" Classes="ghost" Click="BtnPaste_Click"/>
+      <Button x:Name="BtnConvert" Grid.Column="1" Content="Chuyển mã" Classes="primary" Margin="8,0,0,0" Click="BtnConvert_Click"/>
+      <Button x:Name="BtnCopy" Grid.Column="2" Content="Copy" Classes="ghost" Margin="8,0,0,0" Click="BtnCopy_Click"/>
+      <Button x:Name="BtnClose" Grid.Column="3" Content="Đóng" Classes="ghost" Margin="8,0,0,0" Click="BtnClose_Click"/>
+    </Grid>
+  </Grid>
+</Window>

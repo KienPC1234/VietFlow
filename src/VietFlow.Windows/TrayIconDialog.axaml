@@ -1,0 +1,48 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:cp="using:Avalonia.Controls"
+        x:Class="VietFlow.Windows.TrayIconDialog"
+        Title="Tùy chỉnh Tray icon"
+        Width="520" Height="470"
+        CanResize="False"
+        ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource AppBg}"
+        FontFamily="Segoe UI"
+        FontSize="13">
+
+  <Grid Margin="20" RowDefinitions="Auto,Auto,*,Auto">
+    <TextBlock Text="Màu badge và màu chữ V / E trên khay hệ thống"
+               Classes="desc" Margin="0,0,0,14"/>
+
+    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,18">
+      <Border x:Name="BadgeV" Width="72" Height="72" CornerRadius="16" Margin="0,0,18,0">
+        <TextBlock x:Name="TxtBadgeV" Text="V" FontSize="38" FontWeight="Bold" Foreground="White"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+      </Border>
+      <Border x:Name="BadgeE" Width="72" Height="72" CornerRadius="16">
+        <TextBlock x:Name="TxtBadgeE" Text="E" FontSize="38" FontWeight="Bold" Foreground="White"
+                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+      </Border>
+    </StackPanel>
+
+    <Grid Grid.Row="2" VerticalAlignment="Top" RowDefinitions="Auto,Auto,Auto,Auto" ColumnDefinitions="*,180">
+      <TextBlock Grid.Row="0" Text="Tiếng Việt — màu trên" VerticalAlignment="Center" Foreground="{DynamicResource TextPrimary}"/>
+      <cp:ColorPicker x:Name="CpVnTop" Grid.Row="0" Grid.Column="1" Margin="0,3"/>
+
+      <TextBlock Grid.Row="1" Text="Tiếng Việt — màu dưới" VerticalAlignment="Center" Foreground="{DynamicResource TextPrimary}"/>
+      <cp:ColorPicker x:Name="CpVnBottom" Grid.Row="1" Grid.Column="1" Margin="0,3"/>
+
+      <TextBlock Grid.Row="2" Text="English — màu trên" VerticalAlignment="Center" Foreground="{DynamicResource TextPrimary}"/>
+      <cp:ColorPicker x:Name="CpEnTop" Grid.Row="2" Grid.Column="1" Margin="0,3"/>
+
+      <TextBlock Grid.Row="3" Text="English — màu dưới" VerticalAlignment="Center" Foreground="{DynamicResource TextPrimary}"/>
+      <cp:ColorPicker x:Name="CpEnBottom" Grid.Row="3" Grid.Column="1" Margin="0,3"/>
+    </Grid>
+
+    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0" Spacing="8">
+      <Button Content="Hủy" Classes="ghost" Padding="18,8" Click="BtnCancel_Click"/>
+      <Button Content="Lưu" Classes="primary" Padding="18,8" Click="BtnSave_Click"/>
+    </StackPanel>
+  </Grid>
+</Window>

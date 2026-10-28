@@ -12,8 +12,7 @@ public enum InputMethod : byte
     SimpleTelex = 1,
     Vni = 2,
     Viqr = 3,
-    MicrosoftVi = 4,
-    UserCustom = 5
+    UserCustom = 4
 }
 
 /// <summary>

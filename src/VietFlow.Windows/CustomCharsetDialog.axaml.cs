@@ -1,18 +1,40 @@
-// VietFlow - Ultra-High Performance Vietnamese Input Engine for .NET 10
+// VietFlow - Vietnamese Input Engine
 // Licensed under the GNU General Public License v3.0 (GPLv3)
 
 using System.Collections.ObjectModel;
-using System.Windows;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
+using Avalonia.Controls;
+using Avalonia.Interactivity;
+using Avalonia.Markup.Xaml;
 using VietFlow.Tables;
 
 namespace VietFlow.Windows;
 
 public partial class CustomCharsetDialog : Window
 {
-    public sealed class CharMapRow
+    public sealed class CharMapRow : INotifyPropertyChanged
     {
+        private string _code = string.Empty;
+
         public required string Glyph { get; init; }
-        public string Code { get; set; } = string.Empty;
+
+        public string Code
+        {
+            get => _code;
+            set
+            {
+                if (_code == value)
+                {
+                    return;
+                }
+
+                _code = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Code)));
+            }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
     }
 
     private readonly ObservableCollection<CharMapRow> _rows = new();
@@ -36,30 +58,24 @@ public partial class CustomCharsetDialog : Window
 
     public Dictionary<string, string> Mappings { get; private set; } = new();
 
-    private void BtnFillUnicode_Click(object sender, RoutedEventArgs e)
+    private void BtnFillUnicode_Click(object? sender, RoutedEventArgs e)
     {
         foreach (var row in _rows)
         {
             row.Code = row.Glyph;
         }
-        DgMap.Items.Refresh();
     }
 
-    private void BtnClear_Click(object sender, RoutedEventArgs e)
+    private void BtnClear_Click(object? sender, RoutedEventArgs e)
     {
         foreach (var row in _rows)
         {
             row.Code = string.Empty;
         }
-        DgMap.Items.Refresh();
     }
 
-    private void BtnSave_Click(object sender, RoutedEventArgs e)
+    private void BtnSave_Click(object? sender, RoutedEventArgs e)
     {
-        // Commit the cell being edited before reading the rows.
-        DgMap.CommitEdit(System.Windows.Controls.DataGridEditingUnit.Cell, true);
-        DgMap.CommitEdit(System.Windows.Controls.DataGridEditingUnit.Row, true);
-
         var map = new Dictionary<string, string>();
         foreach (var row in _rows)
         {
@@ -71,13 +87,8 @@ public partial class CustomCharsetDialog : Window
         }
 
         Mappings = map;
-        DialogResult = true;
-        Close();
+        Close(true);
     }
 
-    private void BtnCancel_Click(object sender, RoutedEventArgs e)
-    {
-        DialogResult = false;
-        Close();
-    }
+    private void BtnCancel_Click(object? sender, RoutedEventArgs e) => Close(false);
 }

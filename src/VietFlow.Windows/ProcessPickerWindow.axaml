@@ -1,0 +1,51 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="VietFlow.Windows.ProcessPickerWindow"
+        Title="Chọn tiến trình đang chạy"
+        Width="520" Height="560"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Background="{DynamicResource AppBg}"
+        FontFamily="Segoe UI"
+        FontSize="13">
+
+  <Grid Margin="20" RowDefinitions="Auto,*,Auto">
+    <StackPanel Margin="0,0,0,12">
+      <TextBlock x:Name="LblPickerTitle" Text="Chọn ứng dụng hoặc game đang chạy" Classes="h1"/>
+      <TextBlock x:Name="LblPickerDesc" Text="Ứng dụng được chọn sẽ được thêm vào danh sách loại trừ."
+                 Classes="desc" Margin="0,4,0,0"/>
+    </StackPanel>
+
+    <Grid Grid.Row="1" RowDefinitions="Auto,*">
+      <TextBox x:Name="TxtSearch" PlaceholderText="Tìm theo tên ứng dụng hoặc file .exe" Margin="0,0,0,8"
+               TextChanged="TxtSearch_TextChanged"/>
+      <ListBox x:Name="LstProcesses" Grid.Row="1">
+        <ListBox.ItemTemplate>
+          <DataTemplate>
+            <Grid ColumnDefinitions="Auto,*" Margin="2,3">
+              <Grid Width="28" Height="28" Margin="0,0,10,0" VerticalAlignment="Center">
+                <Image Source="{Binding Icon}" IsVisible="{Binding HasIcon}" Stretch="Uniform"/>
+                <Border Background="{DynamicResource PrimarySoft}" CornerRadius="6"
+                        IsVisible="{Binding ShowPlaceholder}">
+                  <TextBlock Text="{Binding Initial}" FontWeight="Bold" FontSize="13"
+                             Foreground="{DynamicResource PrimaryBrush}"
+                             HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+              </Grid>
+              <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"
+                           Foreground="{DynamicResource TextPrimary}" TextTrimming="CharacterEllipsis"/>
+                <TextBlock Text="{Binding Exe}" Classes="muted" TextTrimming="CharacterEllipsis"/>
+              </StackPanel>
+            </Grid>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </Grid>
+
+    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0" Spacing="8">
+      <Button x:Name="BtnCancel" Content="Hủy" Classes="ghost" Click="BtnCancel_Click"/>
+      <Button x:Name="BtnOk" Content="Thêm" Classes="primary" Click="BtnOk_Click"/>
+    </StackPanel>
+  </Grid>
+</Window>

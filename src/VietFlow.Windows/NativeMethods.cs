@@ -95,6 +95,9 @@ internal static partial class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     public static extern uint SendInput(uint nInputs, [In] INPUT[] pInputs, int cbSize);
 
+    [DllImport("user32.dll", EntryPoint = "SendInput", SetLastError = true)]
+    private static extern unsafe uint SendInputPtr(uint nInputs, INPUT* pInputs, int cbSize);
+
     [DllImport("user32.dll")]
     public static extern short GetAsyncKeyState(int vKey);
 
@@ -148,6 +151,15 @@ internal static partial class NativeMethods
     [DllImport("user32.dll")]
     public static extern uint MapVirtualKeyW(uint uCode, uint uMapType);
 
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool MessageBeep(uint uType);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetDoubleClickTime();
+
+    public const uint MB_ICONASTERISK = 0x00000040;
+
     public static INPUT CreateVkInput(ushort vk, bool keyUp)
     {
         return new INPUT
@@ -181,64 +193,87 @@ internal static partial class NativeMethods
     }
 
     /// <summary>
-    /// Sends backspaces and replacement Unicode characters reliably to the active window.
-    /// For multi-character restorations (e.g. English auto-restore or macro expansions),
-    /// backspaces are sent first with pacing to prevent the target application from dropping deletions.
-    /// For single-character replacements, an atomic array is dispatched to prevent browser address-bar autocomplete duplication.
+    /// Sends backspaces and replacement Unicode characters to the active window.
+    /// Small normal edits are one atomic SendInput batch so the caret does not
+    /// visibly jump left and right. Long restores/macros use paced deletion first
+    /// so legacy applications do not drop backspaces.
     /// </summary>
     public static void SendAtomicBatch(int backspaces, string text)
     {
-        if (backspaces <= 0 && string.IsNullOrEmpty(text))
+        SendAtomicBatch(backspaces, text.AsSpan());
+    }
+
+    public static unsafe void SendAtomicBatch(int backspaces, ReadOnlySpan<char> text)
+    {
+        if (backspaces <= 0 && text.IsEmpty)
         {
             return;
         }
 
-        if (backspaces > 1)
+        // Normal Vietnamese edits are small (usually 1-3 backspaces). Send them
+        // in ONE SendInput call so the caret never visibly jumps left, waits,
+        // then jumps right. Only long restores/macros use the paced fallback.
+        const int atomicBackspaceLimit = 8;
+        const int atomicCharLimit = 32;
+
+        if (backspaces <= atomicBackspaceLimit && text.Length <= atomicCharLimit)
         {
-            var backInputs = new INPUT[backspaces * 2];
-            int bIdx = 0;
+            int totalInputs = (backspaces * 2) + (text.Length * 2);
+
+            // Zero allocation on the normal typing path. The largest normal
+            // batch is ~80 INPUT structs (a few KB), safe for the hook stack.
+            Span<INPUT> inputs = totalInputs <= 128
+                ? stackalloc INPUT[totalInputs]
+                : new INPUT[totalInputs];
+
+            int index = 0;
             for (int i = 0; i < backspaces; i++)
             {
-                backInputs[bIdx++] = CreateVkInput(VK_BACK, false);
-                backInputs[bIdx++] = CreateVkInput(VK_BACK, true);
+                inputs[index++] = CreateVkInput(VK_BACK, false);
+                inputs[index++] = CreateVkInput(VK_BACK, true);
             }
+
+            for (int i = 0; i < text.Length; i++)
+            {
+                inputs[index++] = CreateUnicodeInput(text[i], false);
+                inputs[index++] = CreateUnicodeInput(text[i], true);
+            }
+
+            fixed (INPUT* pointer = &inputs[0])
+            {
+                SendInputPtr((uint)inputs.Length, pointer, sizeof(INPUT));
+            }
+
+            return;
+        }
+
+        // Large restores (English word recovery / macro expansion): pace the
+        // deletion separately so legacy apps do not drop the backspaces.
+        var backInputs = new INPUT[backspaces * 2];
+        int backIndex = 0;
+        for (int i = 0; i < backspaces; i++)
+        {
+            backInputs[backIndex++] = CreateVkInput(VK_BACK, false);
+            backInputs[backIndex++] = CreateVkInput(VK_BACK, true);
+        }
+
+        if (backInputs.Length > 0)
+        {
             SendInput((uint)backInputs.Length, backInputs, Marshal.SizeOf<INPUT>());
             Thread.Sleep(3);
-
-            if (!string.IsNullOrEmpty(text))
-            {
-                var charInputs = new INPUT[text.Length * 2];
-                int cIdx = 0;
-                for (int i = 0; i < text.Length; i++)
-                {
-                    charInputs[cIdx++] = CreateUnicodeInput(text[i], false);
-                    charInputs[cIdx++] = CreateUnicodeInput(text[i], true);
-                }
-                SendInput((uint)charInputs.Length, charInputs, Marshal.SizeOf<INPUT>());
-            }
         }
-        else
+
+        if (!text.IsEmpty)
         {
-            int totalInputs = (backspaces * 2) + ((text?.Length ?? 0) * 2);
-            var inputs = new INPUT[totalInputs];
-            int idx = 0;
-
-            if (backspaces == 1)
+            var charInputs = new INPUT[text.Length * 2];
+            int charIndex = 0;
+            for (int i = 0; i < text.Length; i++)
             {
-                inputs[idx++] = CreateVkInput(VK_BACK, false);
-                inputs[idx++] = CreateVkInput(VK_BACK, true);
+                charInputs[charIndex++] = CreateUnicodeInput(text[i], false);
+                charInputs[charIndex++] = CreateUnicodeInput(text[i], true);
             }
 
-            if (!string.IsNullOrEmpty(text))
-            {
-                for (int i = 0; i < text.Length; i++)
-                {
-                    inputs[idx++] = CreateUnicodeInput(text[i], false);
-                    inputs[idx++] = CreateUnicodeInput(text[i], true);
-                }
-            }
-
-            SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+            SendInput((uint)charInputs.Length, charInputs, Marshal.SizeOf<INPUT>());
         }
     }
 

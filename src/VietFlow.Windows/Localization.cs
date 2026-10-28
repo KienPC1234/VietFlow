@@ -18,6 +18,9 @@ public static class Localization
             "NavTyping" => en ? "Typing & Spelling" : "Bộ gõ & Chính tả",
             "NavMacro" => en ? "Macros & Snippets" : "Gõ tắt & Biến động",
             "NavGame" => en ? "Game & Apps" : "Game & Ứng dụng",
+            "NavAbout" => en ? "About" : "Giới thiệu",
+            "NavAdvanced" => en ? "Advanced" : "Nâng cao",
+            "BtnEditCharset" => en ? "Edit charset..." : "Sửa bảng mã...",
 
             // Status Card
             "StatusVn" => en ? "VIETNAMESE MODE" : "Đang gõ TIẾNG VIỆT",
@@ -32,7 +35,7 @@ public static class Localization
             "Charset" => en ? "Character Set" : "Bảng mã ký tự",
             "CharsetDesc" => en ? "Standard Unicode NFC precomposed default" : "Mặc định Unicode NFC chuẩn quốc tế",
             "Method" => en ? "Input Method" : "Kiểu gõ",
-            "MethodDesc" => en ? "Supports Telex, Simple Telex, and VNI" : "Hỗ trợ Telex, Simple Telex, và VNI",
+            "MethodDesc" => en ? "Supports Telex, Simple Telex, VNI and VIQR" : "Hỗ trợ Telex, Simple Telex, VNI và VIQR",
             "SwitchKey" => en ? "Switch Language Key" : "Phím chuyển đổi",
             "SwitchKeyDesc" => en ? "Hotkey to toggle between Vietnamese and English" : "Phím tắt chuyển đổi giữa tiếng Việt và tiếng Anh",
             "UiLanguage" => en ? "Interface Language" : "Ngôn ngữ giao diện",
@@ -41,11 +44,13 @@ public static class Localization
             // System integration
             "SectionSystem" => en ? "SYSTEM INTEGRATION" : "TÍCH HỢP HỆ THỐNG",
             "StartWithWin" => en ? "Start with Windows" : "Khởi động cùng Windows",
-            "StartWithWinDesc" => en ? "Automatically launch at Windows logon with silent privileges" : "Tự động khởi động khi bật máy với quyền tối ưu",
+            "StartWithWinDesc" => en ? "Launch automatically when you sign in to Windows" : "Tự động khởi động khi đăng nhập Windows",
 
             // Typing Tab
             "TypingTitle" => en ? "Typing Rules & Orthography" : "Quy tắc gõ & Chính tả",
             "TypingDesc" => en ? "Tone placement conventions, spell check, and shorthand expansions." : "Tùy biến thuật toán ghép chữ, quy tắc bỏ dấu và gõ tắt.",
+            "KillerFeatures" => en ? "KILLER FEATURES" : "TÍNH NĂNG ĐẶC BIỆT",
+            "SectionSpelling" => en ? "SPELLING & TONE RULES" : "QUY TẮC CHÍNH TẢ & BỎ DẤU",
             "FreeMarking" => en ? "Free Tone Placement" : "Cho phép gõ tự do",
             "FreeMarkingDesc" => en ? "Place tone marks anywhere in the word" : "Bỏ dấu ở bất kỳ vị trí nào trong từ mà không cần gõ ngay sau nguyên âm",
             "SpellCheck" => en ? "Vietnamese Spell Check" : "Bật kiểm tra chính tả tiếng Việt",
@@ -68,6 +73,15 @@ public static class Localization
             "EnableMacroDesc" => en ? "Expands abbreviations upon pressing Space or punctuation" : "Tự động bung từ thay thế khi nhấn phím Cách (Space) hoặc dấu câu",
             "MacroWhenDisabled" => en ? "Allow Macros in English Mode [E]" : "Cho phép gõ tắt cả khi đang tắt tiếng Việt [E]",
             "MacroWhenDisabledDesc" => en ? "Expands macros even when the tray icon is 'E'" : "Vẫn mở rộng các từ viết tắt ngay cả khi biểu tượng khay đang là chữ E",
+            "MacroList" => en ? "MACRO LIST" : "DANH SÁCH TỪ GÕ TẮT",
+            "MacroInfoTitle" => en ? "Dynamic variables in replacements:" : "Biến động thông minh trong cụm từ thay thế:",
+            "MacroInfoBody" => en
+                ? "@date @time @datetime · @day @month @year @weekday · @timestamp @random @uuid · @user @computer · @clipboard @newline @tab · @name (custom)"
+                : "@date @time @datetime · @day @month @year @weekday · @timestamp @random @uuid · @user @computer · @clipboard @newline @tab · @tên (biến tùy chỉnh)",
+            "MacroSearchHint" => en ? "Search macros..." : "Tìm từ gõ tắt...",
+            "MacroSearchTip" => en ? "Search by abbreviation or replacement" : "Tìm theo từ viết tắt hoặc cụm thay thế",
+            "MacroKeyLabel" => en ? "Abbreviation" : "Từ viết tắt",
+            "MacroValueLabel" => en ? "Replacement" : "Cụm thay thế",
             "BtnAddSample" => en ? "Add Samples" : "Thêm mẫu",
             "BtnImport" => en ? "Import .txt" : "Nhập .txt",
             "BtnExport" => en ? "Export .txt" : "Xuất .txt",

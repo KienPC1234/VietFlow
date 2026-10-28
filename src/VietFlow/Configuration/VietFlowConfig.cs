@@ -24,7 +24,7 @@ public sealed class VietFlowConfig
     public CharsetId Charset { get; set; } = CharsetId.Unicode;
     public bool ModernStyle { get; set; } = false;
     public bool FreeMarking { get; set; } = true;
-    public bool EnableMacro { get; set; } = true;
+    public bool EnableMacro { get; set; } = false;
     public bool AllowMacroWhenDisabled { get; set; } = false;
     public bool SpellCheck { get; set; } = true;
     public bool AutoNonVnRestore { get; set; } = true;
@@ -35,6 +35,7 @@ public sealed class VietFlowConfig
     public string ThemeMode { get; set; } = "System"; // "System", "Light", "Dark"
     public bool NotificationSound { get; set; } = true;
     public bool AutoCapitalize { get; set; } = false;
+    public int TypingTimeoutMs { get; set; } = 3000;
     public string TrayVnTop { get; set; } = "#EF4444";
     public string TrayVnBottom { get; set; } = "#B91C1C";
     public string TrayEnTop { get; set; } = "#2563EB";
@@ -56,6 +57,7 @@ public sealed class VietFlowConfig
     public Dictionary<string, string> CustomCharsetMap { get; set; } = new();
     public string ToggleHotkey { get; set; } = "CtrlShift"; // "CtrlShift", "AltZ", "CtrlSpace", "ShiftSpace", "AltShift", "WinSpace", "CapsLock", "RightCtrl", "Custom"
     public string UiLanguage { get; set; } = "vi"; // "vi" or "en"
+    public bool AutoCheckUpdates { get; set; } = true;
     public int CustomToggleVk { get; set; } = 0;
     public int CustomToggleModifiers { get; set; } = 0;
 
@@ -67,6 +69,11 @@ public sealed class VietFlowConfig
         "Overwatch.exe",
         "dota2.exe"
     };
+
+    public string MacroDateFormat { get; set; } = "dd/MM/yyyy";
+    public string MacroTimeFormat { get; set; } = "HH:mm";
+    public string MacroDateTimeFormat { get; set; } = "dd/MM/yyyy HH:mm";
+    public Dictionary<string, string> MacroVariables { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     public Dictionary<string, string> Macros { get; set; } = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -98,6 +105,12 @@ public sealed class VietFlowConfig
             if (File.Exists(path))
             {
                 string json = File.ReadAllText(path);
+                // Legacy configs may still contain the removed Microsoft Vietnamese method.
+                if (json.Contains("\"MicrosoftVi\"", StringComparison.Ordinal))
+                {
+                    json = json.Replace("\"MicrosoftVi\"", "\"Telex\"", StringComparison.Ordinal);
+                }
+
                 var config = JsonSerializer.Deserialize(json, VietFlowJsonContext.Default.VietFlowConfig);
                 if (config != null)
                 {
@@ -146,6 +159,11 @@ public sealed class VietFlowConfig
         session.Charset = Charsets.CharsetFactory.GetCharset(Charset);
 
         EnglishPhonetics.SetKeywords(EnglishKeywords.Count > 0 ? EnglishKeywords : EnglishPhonetics.DefaultKeywords);
+
+        session.Macros.DateFormat = string.IsNullOrWhiteSpace(MacroDateFormat) ? "dd/MM/yyyy" : MacroDateFormat;
+        session.Macros.TimeFormat = string.IsNullOrWhiteSpace(MacroTimeFormat) ? "HH:mm" : MacroTimeFormat;
+        session.Macros.DateTimeFormat = string.IsNullOrWhiteSpace(MacroDateTimeFormat) ? "dd/MM/yyyy HH:mm" : MacroDateTimeFormat;
+        session.Macros.CustomVariables = MacroVariables;
 
         session.Macros.Clear();
         foreach (var (k, v) in Macros)

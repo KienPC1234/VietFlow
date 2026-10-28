@@ -125,6 +125,21 @@ public sealed class VietFlowSession
     }
 
     /// <summary>
+    /// Allocation-free key processing for the Windows hook.
+    /// Returns the number of chars written; 0 with backspaces=0 means "pass through".
+    /// </summary>
+    public int ProcessKey(char c, Span<char> output, out int backspaces)
+    {
+        if (!_isEnabled)
+        {
+            backspaces = 0;
+            return 0;
+        }
+
+        return _engine.ProcessKey(c, output, out backspaces);
+    }
+
+    /// <summary>
     /// Processes low-level virtual key codes from WPF KeyDown, WM_KEYDOWN, or low-level keyboard hook.
     /// </summary>
     public KeyProcessResult ProcessVirtualKey(

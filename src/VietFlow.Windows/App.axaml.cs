@@ -1,21 +1,29 @@
-// VietFlow - Ultra-High Performance Vietnamese Input Engine for .NET 10
+// VietFlow - Vietnamese Input Engine
 // Licensed under the GNU General Public License v3.0 (GPLv3)
 
+using System;
 using System.IO;
+using System.Linq;
 using System.Threading;
-using System.Windows;
+using System.Threading.Tasks;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Markup.Xaml;
+using Avalonia.Threading;
 using VietFlow.Configuration;
 using VietFlow.Engine;
 using VietFlow.Tools;
-using WpfClipboard = System.Windows.Clipboard;
 
 namespace VietFlow.Windows;
 
-public partial class App : System.Windows.Application
+public partial class App : Application
 {
     private const string MutexName = "Global\\VietFlow_SingleInstance_Mutex";
+
     private Mutex? _mutex;
     private bool _isOwned;
+    private IClassicDesktopStyleApplicationLifetime _desktop = null!;
 
     private VietFlowConfig _config = null!;
     private VietFlowSession _session = null!;
@@ -25,16 +33,31 @@ public partial class App : System.Windows.Application
     private SettingsWindow? _settingsWindow;
     private string? _pendingTab;
     private string? _shotPath;
+    private readonly UpdateService _updateService = new();
 
-    protected override void OnStartup(StartupEventArgs e)
+    public override void Initialize()
     {
-        base.OnStartup(e);
+        AvaloniaXamlLoader.Load(this);
+    }
+
+    public override void OnFrameworkInitializationCompleted()
+    {
+        if (ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop)
+        {
+            base.OnFrameworkInitializationCompleted();
+            return;
+        }
+
+        _desktop = desktop;
+        desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        desktop.Exit += (_, _) => Cleanup();
+
+        string[] args = desktop.Args ?? Array.Empty<string>();
 
         _mutex = new Mutex(true, MutexName, out _isOwned);
         if (!_isOwned)
         {
-            // A restarted instance waits briefly for the previous process to release the mutex.
-            if (e.Args.Contains("--restart", StringComparer.OrdinalIgnoreCase))
+            if (args.Contains("--restart", StringComparer.OrdinalIgnoreCase))
             {
                 for (int i = 0; i < 50 && !_isOwned; i++)
                 {
@@ -45,7 +68,13 @@ public partial class App : System.Windows.Application
 
             if (!_isOwned)
             {
-                Shutdown();
+                base.OnFrameworkInitializationCompleted();
+                var message = new MessageWindow(
+                    "VietFlow",
+                    "VietFlow đang chạy.\nVietFlow is already running.",
+                    showCancel: false);
+                message.Closed += (_, _) => desktop.Shutdown();
+                message.Show();
                 return;
             }
         }
@@ -53,7 +82,8 @@ public partial class App : System.Windows.Application
         _config = VietFlowConfig.Load();
         ThemeManager.Apply(_config.ThemeMode);
 
-        foreach (var arg in e.Args)
+
+        foreach (string arg in args)
         {
             if (arg.StartsWith("--tab=", StringComparison.OrdinalIgnoreCase))
             {
@@ -63,30 +93,16 @@ public partial class App : System.Windows.Application
             {
                 _shotPath = arg[7..];
             }
+
+
+
         }
+
         _session = new VietFlowSession(_config.Method, _config.Charset, _config.ModernStyle);
         _config.ApplyToSession(_session);
 
-        // Dynamic variable @clipboard provider for macros
-        _session.Macros.ClipboardProvider = () =>
-        {
-            string text = string.Empty;
-            Dispatcher.Invoke(() =>
-            {
-                try
-                {
-                    if (WpfClipboard.ContainsText())
-                    {
-                        text = WpfClipboard.GetText();
-                    }
-                }
-                catch
-                {
-                    // Ignore clipboard lock errors
-                }
-            });
-            return text;
-        };
+        // Dynamic variable @clipboard provider for macros.
+        _session.Macros.ClipboardProvider = ClipboardHelper.GetText;
 
         _tracker = new ForegroundTracker(_config);
 
@@ -98,6 +114,7 @@ public partial class App : System.Windows.Application
             onOpenSettingsTab: OpenSettings,
             onQuickConvert: QuickClipboardConvert,
             onOpenConverter: OpenConverter,
+            onCustomizeTray: CustomizeTrayIcon,
             onRestart: RestartApplication,
             onRestartAdmin: RestartAsAdmin,
             onExit: ExitApplication);
@@ -112,11 +129,7 @@ public partial class App : System.Windows.Application
 
         _trayManager.UpdateState(_config.IsEnabled, _config.Method, _config.Charset);
 
-        // Periodic background memory trimmer (every 5 minutes)
-        var memTimer = new System.Windows.Threading.DispatcherTimer
-        {
-            Interval = TimeSpan.FromMinutes(5)
-        };
+        var memTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(5) };
         memTimer.Tick += (_, _) =>
         {
             if (_settingsWindow == null)
@@ -126,12 +139,14 @@ public partial class App : System.Windows.Application
         };
         memTimer.Start();
 
-        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(NativeMethods.TrimProcessMemory));
+        Dispatcher.UIThread.Post(NativeMethods.TrimProcessMemory, DispatcherPriority.ApplicationIdle);
 
-        if (e.Args.Contains("--settings", StringComparer.OrdinalIgnoreCase) || _pendingTab != null)
+        if (args.Contains("--settings", StringComparer.OrdinalIgnoreCase) || _pendingTab != null)
         {
-            Dispatcher.BeginInvoke(new Action(() => OpenSettings(null)));
+            OpenSettings(null);
         }
+
+        base.OnFrameworkInitializationCompleted();
     }
 
     private void ToggleLanguage()
@@ -139,23 +154,23 @@ public partial class App : System.Windows.Application
         _config.IsEnabled = !_config.IsEnabled;
         _config.Save();
         _session.IsEnabled = _config.IsEnabled;
-        _trayManager.UpdateState(_config.IsEnabled, _config.Method, _config.Charset);
 
-        if (_config.NotificationSound)
+        Dispatcher.UIThread.Post(() =>
         {
-            try
-            {
-                System.Media.SystemSounds.Asterisk.Play();
-            }
-            catch
-            {
-                // Sound is best-effort.
-            }
-        }
-
-        Dispatcher.Invoke(() =>
-        {
+            _trayManager.UpdateState(_config.IsEnabled, _config.Method, _config.Charset);
             _settingsWindow?.RefreshLiveState();
+
+            if (_config.NotificationSound)
+            {
+                try
+                {
+                    NativeMethods.MessageBeep(NativeMethods.MB_ICONASTERISK);
+                }
+                catch
+                {
+                    // Sound is best-effort.
+                }
+            }
         });
     }
 
@@ -177,14 +192,16 @@ public partial class App : System.Windows.Application
 
     private void OpenSettings(string? tab = null)
     {
-        Dispatcher.Invoke(() =>
+        Dispatcher.UIThread.Post(() =>
         {
             if (_settingsWindow == null)
             {
                 _settingsWindow = new SettingsWindow(_config, _session, () =>
                 {
                     _trayManager.UpdateState(_config.IsEnabled, _config.Method, _config.Charset);
-                });
+                    _trayManager.RefreshStartupState();
+                    _tracker.RefreshExcludedApps();
+                }, _updateService);
                 _settingsWindow.Closed += (_, _) =>
                 {
                     _settingsWindow = null;
@@ -192,7 +209,11 @@ public partial class App : System.Windows.Application
                 };
             }
 
-            _settingsWindow.Show();
+            if (!_settingsWindow.IsVisible)
+            {
+                _settingsWindow.Show();
+            }
+
             _settingsWindow.WindowState = WindowState.Normal;
             _settingsWindow.Activate();
 
@@ -207,73 +228,89 @@ public partial class App : System.Windows.Application
             {
                 string path = _shotPath;
                 _shotPath = null;
-                Dispatcher.BeginInvoke(new Action(() => CaptureWindow(path)), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                Dispatcher.UIThread.Post(() =>
+                {
+                    _settingsWindow?.CaptureTo(path);
+                    _desktop.Shutdown();
+                }, DispatcherPriority.Loaded);
             }
         });
     }
 
-    private void CaptureWindow(string path)
-    {
-        if (_settingsWindow == null)
-        {
-            return;
-        }
-
-        try
-        {
-            _settingsWindow.UpdateLayout();
-            int width = (int)Math.Ceiling(_settingsWindow.ActualWidth);
-            int height = (int)Math.Ceiling(_settingsWindow.ActualHeight);
-            var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(width, height, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
-            bitmap.Render(_settingsWindow);
-
-            var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
-            encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
-            using var stream = File.Create(path);
-            encoder.Save(stream);
-        }
-        catch
-        {
-            // Screenshot mode is best-effort.
-        }
-
-        Shutdown();
-    }
-
     private void QuickClipboardConvert()
     {
-        Dispatcher.Invoke(() =>
+        Dispatcher.UIThread.Post(() =>
         {
             try
             {
-                if (WpfClipboard.ContainsText())
+                string text = ClipboardHelper.GetText();
+                if (!string.IsNullOrEmpty(text))
                 {
-                    string text = WpfClipboard.GetText();
-                    if (!string.IsNullOrEmpty(text))
-                    {
-                        // Convert clipboard content (Unicode <-> TCVN3 / VNI-Windows or strip accents)
-                        string converted = ClipboardConverter.StripAccents(text);
-                        WpfClipboard.SetText(converted);
-                        _trayManager.ShowBalloon("VietFlow Clipboard Toolkit", "Đã loại bỏ dấu tiếng Việt trong bộ nhớ tạm thành công!");
-                    }
+                    string converted = ClipboardConverter.StripAccents(text);
+                    ClipboardHelper.SetText(converted);
+                    _trayManager.ShowBalloon(
+                        "VietFlow Clipboard Toolkit",
+                        "Đã loại bỏ dấu tiếng Việt trong bộ nhớ tạm thành công!");
                 }
             }
             catch (Exception ex)
             {
-                _trayManager.ShowBalloon("VietFlow Lỗi", $"Không thể chuyển mã clipboard: {ex.Message}", System.Windows.Forms.ToolTipIcon.Warning);
+                _trayManager.ShowBalloon("VietFlow lỗi", $"Không thể chuyển mã clipboard: {ex.Message}");
             }
         });
     }
 
     private void OpenConverter()
     {
-        Dispatcher.Invoke(() =>
+        Dispatcher.UIThread.Post(() =>
         {
-            var window = new ConvertWindow
+            var window = new ConvertWindow();
+            if (_settingsWindow != null)
             {
-                Owner = _settingsWindow
-            };
-            window.ShowDialog();
+                window.ShowDialog(_settingsWindow);
+            }
+            else
+            {
+                window.Show();
+            }
+        });
+    }
+
+    private async void CustomizeTrayIcon()
+    {
+        await Dispatcher.UIThread.InvokeAsync(async () =>
+        {
+            if (_settingsWindow == null)
+            {
+                OpenSettings(null);
+                await Task.Delay(200);
+            }
+
+            if (_settingsWindow == null)
+            {
+                return;
+            }
+
+            var dialog = new TrayIconDialog(
+                _config.TrayVnTop,
+                _config.TrayVnBottom,
+                _config.TrayEnTop,
+                _config.TrayEnBottom);
+
+            bool? result = await dialog.ShowDialog<bool?>(_settingsWindow);
+            if (result != true)
+            {
+                return;
+            }
+
+            _config.TrayVnTop = dialog.VnTop;
+            _config.TrayVnBottom = dialog.VnBottom;
+            _config.TrayEnTop = dialog.EnTop;
+            _config.TrayEnBottom = dialog.EnBottom;
+            _config.Save();
+
+            _trayManager.UpdateState(_config.IsEnabled, _config.Method, _config.Charset);
+            _settingsWindow.RefreshTrayPreview();
         });
     }
 
@@ -310,7 +347,7 @@ public partial class App : System.Windows.Application
         }
         catch
         {
-            _trayManager.ShowBalloon("VietFlow", "Không thể khởi động lại với quyền Admin (UAC bị huỷ).", System.Windows.Forms.ToolTipIcon.Warning);
+            _trayManager.ShowBalloon("VietFlow", "Không thể khởi động lại với quyền Admin (UAC bị huỷ).");
             return;
         }
 
@@ -318,20 +355,6 @@ public partial class App : System.Windows.Application
     }
 
     private void ExitApplication()
-    {
-        _hook.Dispose();
-        _trayManager.Dispose();
-
-        if (_isOwned && _mutex != null)
-        {
-            _mutex.ReleaseMutex();
-            _mutex.Dispose();
-        }
-
-        Shutdown();
-    }
-
-    protected override void OnExit(ExitEventArgs e)
     {
         _hook?.Dispose();
         _trayManager?.Dispose();
@@ -344,11 +367,24 @@ public partial class App : System.Windows.Application
             }
             catch
             {
-                // Ignore if already released
+                // Ignore mutex release failures.
             }
             _mutex.Dispose();
         }
 
-        base.OnExit(e);
+        _desktop.Shutdown();
+    }
+
+    private void Cleanup()
+    {
+        try
+        {
+            _hook?.Dispose();
+            _trayManager?.Dispose();
+        }
+        catch
+        {
+            // Ignore shutdown failures.
+        }
     }
 }

@@ -1,31 +1,35 @@
-# VietFlow `0.1.0-alpha`
+# VietFlow
 
-Vietnamese input engine + Windows tray app, written in pure C# (.NET 10).
+High-performance Vietnamese input engine for Windows, written in C# on .NET 10.
+Source: [https://github.com/KienPC1234/VietFlow](https://github.com/KienPC1234/VietFlow)
 
-## Build
+## Build & test
 
 ```bash
 dotnet build src/VietFlow.Windows/VietFlow.Windows.csproj -c Release
 dotnet test tests/VietFlow.Tests/VietFlow.Tests.csproj
 ```
 
-Output: `src/VietFlow.Windows/bin/Release/net10.0-windows/VietFlow.exe`
+## Publish
 
-## Layout
+Publish a single-file, trimmed, self-contained Windows build (about 23 MB), then package it with Velopack:
 
-- `src/VietFlow` — cross-platform engine (`net10.0`, no Windows APIs).
-- `src/VietFlow.Windows` — WPF shell, Win32 keyboard hook, tray menu.
-  Uses `WH_KEYBOARD_LL` + `SendInput`; deliberately **no TSF/IME**.
-- `tests/VietFlow.Tests` — UniKey parity and regression tests.
+```bash
+dotnet publish src/VietFlow.Windows/VietFlow.Windows.csproj -c Release -r win-x64 \
+  --self-contained -p:PublishSingleFile=true -o dist/publish
 
-## Porting
+vpk pack -u VietFlow -v 0.1.0 -p dist/publish -e VietFlow.exe -r win-x64 --msi \
+  --packTitle "VietFlow" --packAuthors "KienPC1234" \
+  --icon src/VietFlow.Windows/Assets/VietFlow.ico -o dist/releases
+```
 
-Only the input/output adapters need replacing:
+## Project layout
 
-- Engine entry points: `VietFlowEngine.ProcessKey(char, Span<char>, out int)` and `ProcessUtf8`.
-- Data tables: `Tables/CharsetTables*`, `Engine/ToneRules`.
-- `VietFlow.Core` contains no P/Invoke, registry access or `System.Drawing`.
+* `src/VietFlow` — cross-platform core engine (`net10.0`, no Win32 dependency).
+* `src/VietFlow.Windows` — Avalonia UI, `WH_KEYBOARD_LL` hook, tray integration.
+* `tests/VietFlow.Tests` — engine and UniKey parity tests.
 
 ## License
 
-GPLv3. Based on UniKey by Pham Kim Long.
+GNU General Public License v3.0 (GPLv3).
+Core algorithms derived from UniKey by Phạm Kim Long.

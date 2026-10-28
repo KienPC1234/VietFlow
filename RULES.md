@@ -5,7 +5,7 @@ Short, enforceable rules for VietFlow. Keep the engine fast, portable and boring
 ## Architecture
 
 - `src/VietFlow` (`VietFlow.Core`) is **platform-neutral**: no P/Invoke, registry, `System.Drawing`, `System.Windows` or Win32 types.
-- Platform code lives in `src/VietFlow.Windows` (WPF shell, `WH_KEYBOARD_LL` hook, `SendInput`, tray).
+- Platform code lives in `src/VietFlow.Windows` (Avalonia shell, `WH_KEYBOARD_LL` hook, `SendInput`, tray).
 - **Do not add TSF / IME / TIP components.** VietFlow deliberately uses a low-level keyboard hook + `SendInput`; TSF adds complexity and breaks in games/legacy apps.
 
 ## Commits

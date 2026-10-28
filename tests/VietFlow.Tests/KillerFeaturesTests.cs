@@ -65,6 +65,33 @@ public class KillerFeaturesTests
     }
 
     [Fact]
+    public void TestExtendedMacroVariables()
+    {
+        var session = new VietFlowSession(InputMethod.Telex);
+        session.Macros.DateFormat = "yyyy-MM-dd";
+        session.Macros.TimeFormat = "HH_mm";
+        session.Macros.CustomVariables = new Dictionary<string, string>
+        {
+            ["name"] = "Kien"
+        };
+
+        session.Macros.AddOrUpdate("qqq", "@date|@time|@name|@year");
+        string result = session.ProcessString("qqq ");
+
+        string expectedDate = DateTime.Now.ToString("yyyy-MM-dd");
+        string expectedTime = DateTime.Now.ToString("HH_mm");
+        Assert.Equal($"{expectedDate}|{expectedTime}|Kien|{DateTime.Now:yyyy} ", result);
+
+        session.Macros.AddOrUpdate("qnl", "A @newline B");
+        Assert.Equal("A \n B ", session.ProcessString("qnl "));
+
+        session.Macros.AddOrUpdate("qqr", "@random");
+        string random = session.ProcessString("qqr ").Trim();
+        Assert.Equal(6, random.Length);
+        Assert.All(random, c => Assert.True(char.IsDigit(c)));
+    }
+
+    [Fact]
     public void TestClipboardConverter()
     {
         string original = "Cộng hòa Xã hội Chủ nghĩa Việt Nam";

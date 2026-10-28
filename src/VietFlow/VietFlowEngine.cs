@@ -141,13 +141,6 @@ public sealed class VietFlowEngine
             return ProcessBackspace(output, out backspaces);
         }
 
-        // Microsoft Vietnamese layout maps 1/2/3/4/0 (and Shift variants) to ă/â/ê/ô/đ.
-        if (_options.Method == InputMethod.MicrosoftVi &&
-            InputProcessor.TryGetMsViMappedChar(c, out VnLexiName mapped, out bool mappedUpper))
-        {
-            return AppendMappedLetter(c, mapped, mappedUpper, output, out backspaces);
-        }
-
         // Telex bracket shortcuts: [ = ơ, ] = ư, { = Ơ, } = Ư
         if ((_options.Method is InputMethod.Telex or InputMethod.SimpleTelex) &&
             TryBracketShortcut(c, output, out backspaces, out int bracketWritten))
@@ -474,7 +467,7 @@ public sealed class VietFlowEngine
     }
 
     /// <summary>
-    /// Appends a directly mapped Vietnamese character (Microsoft Vietnamese layout or Telex brackets).
+    /// Appends a directly mapped Vietnamese character (Telex bracket shortcuts).
     /// </summary>
     private int AppendMappedLetter(char rawKey, VnLexiName lexi, bool isUpper, Span<char> output, out int backspaces)
     {
@@ -788,7 +781,7 @@ public sealed class VietFlowEngine
         }
 
         // VNI & VIQR number/symbol modifications
-        if (_options.Method is InputMethod.Vni or InputMethod.MicrosoftVi or InputMethod.Viqr)
+        if (_options.Method is InputMethod.Vni or InputMethod.Viqr)
         {
             if (modifyKey == ModifyKeyType.Horn)
             {

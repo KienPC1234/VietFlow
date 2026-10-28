@@ -69,24 +69,6 @@ public class UnikeyParityTests
     }
 
     [Theory]
-    // Microsoft Vietnamese keyboard layout (MsViMethodMapping)
-    [InlineData("Vi3t9", "Việt")]
-    [InlineData("1n", "ăn")]
-    [InlineData("2n", "ân")]
-    [InlineData("3m", "êm")]
-    [InlineData("4ng", "ông")]
-    [InlineData("hoa8", "hóa")]
-    [InlineData("hoa5", "hòa")]
-    [InlineData("hoa6", "hỏa")]
-    [InlineData("hoa7", "hõa")]
-    [InlineData("hoa9", "họa")]
-    public void MicrosoftVietnameseLayout(string input, string expected)
-    {
-        var session = new VietFlowSession(InputMethod.MicrosoftVi);
-        Assert.Equal(expected, session.ProcessString(input));
-    }
-
-    [Theory]
     // Telex bracket shortcuts: [ = ơ, ] = ư, { = Ơ, } = Ư
     [InlineData("[", "ơ")]
     [InlineData("]", "ư")]

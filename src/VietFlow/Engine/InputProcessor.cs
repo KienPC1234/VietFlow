@@ -86,7 +86,7 @@ public static class InputProcessor
         if (c < 256)
         {
             CharType baseType = BaseCharTypeMap[c];
-            if (method is InputMethod.Vni or InputMethod.MicrosoftVi)
+            if (method is InputMethod.Vni)
             {
                 if (c is >= '0' and <= '9')
                 {
@@ -148,7 +148,7 @@ public static class InputProcessor
     public static ToneKeyType GetToneKey(char c, InputMethod method)
     {
         uint m = (uint)(int)method;
-        return c <= 255 && m < 6 ? (ToneKeyType)ToneKeyTable[m][c] : ToneKeyType.None;
+        return c <= 255 && m < (uint)ToneKeyTable.Length ? (ToneKeyType)ToneKeyTable[m][c] : ToneKeyType.None;
     }
 
     private static ToneKeyType GetToneKeyCore(char c, InputMethod method)
@@ -181,19 +181,6 @@ public static class InputProcessor
                     _ => ToneKeyType.None
                 };
 
-            // Microsoft Vietnamese keyboard layout (UniKey's MsViMethodMapping):
-            // 5 = huyền, 6 = hỏi, 7 = ngã, 8 = sắc, 9 = nặng (and their shifted variants).
-            case InputMethod.MicrosoftVi:
-                return c switch
-                {
-                    '5' or '%' => ToneKeyType.Grave,
-                    '6' or '^' => ToneKeyType.Hook,
-                    '7' or '&' => ToneKeyType.Tilde,
-                    '8' or '*' => ToneKeyType.Acute,
-                    '9' or '(' => ToneKeyType.Dot,
-                    _ => ToneKeyType.None
-                };
-
             case InputMethod.Viqr:
                 return c switch
                 {
@@ -215,7 +202,7 @@ public static class InputProcessor
     public static ModifyKeyType GetModifyKey(char c, InputMethod method)
     {
         uint m = (uint)(int)method;
-        return c <= 255 && m < 6 ? (ModifyKeyType)ModifyKeyTable[m][c] : ModifyKeyType.None;
+        return c <= 255 && m < (uint)ModifyKeyTable.Length ? (ModifyKeyType)ModifyKeyTable[m][c] : ModifyKeyType.None;
     }
 
     private static ModifyKeyType GetModifyKeyCore(char c, InputMethod method)
@@ -240,11 +227,6 @@ public static class InputProcessor
                     '9' => ModifyKeyType.DMark,
                     _ => ModifyKeyType.None
                 };
-
-            // Microsoft Vietnamese keyboard layout types ă/â/ê/ô/đ directly (map chars),
-            // so there are no "modify previous letter" keys.
-            case InputMethod.MicrosoftVi:
-                return ModifyKeyType.None;
 
             case InputMethod.Viqr:
                 return c switch
@@ -273,29 +255,6 @@ public static class InputProcessor
             ToneKeyType.Remove => VnLexiTone.None,
             _ => VnLexiTone.None
         };
-    }
-
-    /// <summary>
-    /// Character keys of the Microsoft Vietnamese keyboard layout:
-    /// 1 = ă, 2 = â, 3 = ê, 4 = ô, 0 = đ (Shift gives the uppercase form).
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool TryGetMsViMappedChar(char c, out VnLexiName lexi, out bool isUpper)
-    {
-        switch (c)
-        {
-            case '1': lexi = VnLexiName.ah; isUpper = false; return true;
-            case '!': lexi = VnLexiName.Ah; isUpper = true; return true;
-            case '2': lexi = VnLexiName.ar; isUpper = false; return true;
-            case '@': lexi = VnLexiName.Ar; isUpper = true; return true;
-            case '3': lexi = VnLexiName.er; isUpper = false; return true;
-            case '#': lexi = VnLexiName.Er; isUpper = true; return true;
-            case '4': lexi = VnLexiName.or; isUpper = false; return true;
-            case '$': lexi = VnLexiName.Or; isUpper = true; return true;
-            case '0': lexi = VnLexiName.dd; isUpper = false; return true;
-            case ')': lexi = VnLexiName.DD; isUpper = true; return true;
-            default: lexi = VnLexiName.NonVnChar; isUpper = false; return false;
-        }
     }
 }
 

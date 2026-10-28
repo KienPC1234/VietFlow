@@ -18,10 +18,15 @@ internal sealed class KeyboardHook : IDisposable
 
     private IntPtr _hookId = IntPtr.Zero;
     private readonly NativeMethods.LowLevelKeyboardProc _hookProc;
+    private readonly char[] _outputBuffer = new char[512];
+    private readonly char[] _displayShadow = new char[512];
+    private int _displayShadowLength;
 
     private bool _ctrlPressed;
     private bool _shiftPressed;
     private bool _altPressed;
+    private IntPtr _lastForegroundWindow = IntPtr.Zero;
+    private long _lastTextKeyTick;
 
     public KeyboardHook(
         VietFlowSession session,
@@ -60,6 +65,17 @@ internal sealed class KeyboardHook : IDisposable
             if ((kbd.flags & NativeMethods.LLKHF_INJECTED) != 0)
             {
                 return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
+            }
+
+            // A new foreground window means a new word; do not carry the previous
+            // app's buffer or display shadow into it.
+            IntPtr foreground = NativeMethods.GetForegroundWindow();
+            if (foreground != _lastForegroundWindow)
+            {
+                _lastForegroundWindow = foreground;
+                _lastTextKeyTick = 0;
+                _session.Engine.Reset();
+                ResetDisplayShadow();
             }
 
             int msg = wParam.ToInt32();
@@ -176,6 +192,9 @@ internal sealed class KeyboardHook : IDisposable
 
                 if (isToggle)
                 {
+                    _lastTextKeyTick = 0;
+                    _session.Engine.Reset();
+                    ResetDisplayShadow();
                     _onToggleLanguage();
                     if (suppressKey)
                     {
@@ -188,18 +207,25 @@ internal sealed class KeyboardHook : IDisposable
             // Navigation and mouse interaction resets the word buffer
             if (isKeyDown && (vk is NativeMethods.VK_ESCAPE or NativeMethods.VK_RETURN or NativeMethods.VK_TAB or NativeMethods.VK_BACK or 0x25 or 0x26 or 0x27 or 0x28))
             {
+                _lastTextKeyTick = 0;
                 if (vk == NativeMethods.VK_BACK)
                 {
-                    var res = _session.ProcessKey('\b');
-                    if (res.ShouldSuppressOriginalKey)
+                    if (_session.IsEnabled)
                     {
-                        NativeMethods.SendAtomicBatch(res.Backspaces, res.Output);
-                        return (IntPtr)1;
+                        int written = _session.ProcessKey('\b', _outputBuffer, out int backspaces);
+                        if (backspaces > 0 || written > 0)
+                        {
+                            SendEngineOutput(backspaces, _outputBuffer.AsSpan(0, written));
+                            return (IntPtr)1;
+                        }
+
+                        RemoveLastDisplayChar();
                     }
                 }
                 else
                 {
                     _session.Engine.Reset();
+                    ResetDisplayShadow();
                 }
                 return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
             }
@@ -207,12 +233,16 @@ internal sealed class KeyboardHook : IDisposable
             // Game Mode / Excluded Applications check: bypass hook for excluded apps
             if (_tracker.IsForegroundAppExcluded())
             {
+                _lastTextKeyTick = 0;
+                ResetDisplayShadow();
                 return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
             }
 
             // If Vietnamese engine is turned off, check if macros are allowed when disabled
             if (!_config.IsEnabled && !_config.AllowMacroWhenDisabled)
             {
+                _lastTextKeyTick = 0;
+                ResetDisplayShadow();
                 return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
             }
 
@@ -223,33 +253,159 @@ internal sealed class KeyboardHook : IDisposable
                 if (_ctrlPressed || _altPressed || (NativeMethods.GetAsyncKeyState(0x5B) & 0x8000) != 0 || (NativeMethods.GetAsyncKeyState(0x5C) & 0x8000) != 0)
                 {
                     _session.Engine.Reset();
+                    ResetDisplayShadow();
                     return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
                 }
 
                 char inputChar = VkToChar(vk, _shiftPressed);
-                if (inputChar != '\0')
+                if (inputChar != '\0' && _session.IsEnabled)
                 {
-                    var result = _session.ProcessKey(inputChar);
-                    if (result.ShouldSuppressOriginalKey)
+                    long now = Environment.TickCount64;
+                    int timeout = Math.Clamp(_config.TypingTimeoutMs, 300, 10000);
+                    if (_lastTextKeyTick != 0 && now - _lastTextKeyTick > timeout)
                     {
-                        // Only suppress and SendInput if backspaces > 0 or character was transformed.
-                        // For pure unmodified keystrokes, allow native OS message dispatch to pass through directly.
-                        // This prevents duplicate character race conditions (e.g. "c" duplicating to "cc").
-                        if (result.Backspaces > 0 || result.Output.Length != 1 || result.Output[0] != inputChar)
-                        {
-                            NativeMethods.SendAtomicBatch(result.Backspaces, result.Output);
-                            return (IntPtr)1;
-                        }
-                        else
-                        {
-                            return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
-                        }
+                        _session.Engine.Reset();
+                        ResetDisplayShadow();
                     }
+                    _lastTextKeyTick = now;
+
+                    int written = _session.ProcessKey(inputChar, _outputBuffer, out int backspaces);
+
+                    if (backspaces > 0 || written != 1 || _outputBuffer[0] != inputChar)
+                    {
+                        SendEngineOutput(backspaces, _outputBuffer.AsSpan(0, written));
+                        return (IntPtr)1;
+                    }
+
+                    TrackDisplayChar(inputChar);
+                    return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
                 }
             }
         }
 
         return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
+    }
+
+    /// <summary>
+    /// The engine often rebuilds a short suffix (for example "vie" -> "viê")
+    /// and reports several backspaces. Diffing against what is actually on
+    /// screen avoids deleting/typing the unchanged prefix, which is what makes
+    /// the caret visibly jump.
+    /// </summary>
+    private void SendEngineOutput(int backspaces, ReadOnlySpan<char> text)
+    {
+        if (backspaces < 0)
+        {
+            backspaces = 0;
+        }
+
+        if (backspaces == 0 && text.IsEmpty)
+        {
+            return;
+        }
+
+        bool canDiff = backspaces > 0 &&
+                       backspaces <= _displayShadowLength &&
+                       _displayShadowLength <= 128 &&
+                       text.Length <= 256 &&
+                       !ContainsBreak(text);
+
+        if (!canDiff)
+        {
+            NativeMethods.SendAtomicBatch(backspaces, text);
+            UpdateShadowFallback(backspaces, text);
+            return;
+        }
+
+        int prefixLength = _displayShadowLength - backspaces;
+        int newLength = prefixLength + text.Length;
+        Span<char> next = stackalloc char[newLength];
+        _displayShadow.AsSpan(0, prefixLength).CopyTo(next);
+        text.CopyTo(next[prefixLength..]);
+
+        int common = 0;
+        while (common < _displayShadowLength &&
+               common < newLength &&
+               _displayShadow[common] == next[common])
+        {
+            common++;
+        }
+
+        NativeMethods.SendAtomicBatch(_displayShadowLength - common, next[common..]);
+
+        next.CopyTo(_displayShadow);
+        _displayShadowLength = newLength;
+    }
+
+    private void UpdateShadowFallback(int backspaces, ReadOnlySpan<char> text)
+    {
+        if (ContainsBreak(text))
+        {
+            ResetDisplayShadow();
+            return;
+        }
+
+        if (backspaces > _displayShadowLength)
+        {
+            ResetDisplayShadow();
+        }
+        else
+        {
+            _displayShadowLength -= backspaces;
+        }
+
+        if (_displayShadowLength + text.Length > _displayShadow.Length)
+        {
+            ResetDisplayShadow();
+            return;
+        }
+
+        text.CopyTo(_displayShadow.AsSpan(_displayShadowLength));
+        _displayShadowLength += text.Length;
+    }
+
+    private void TrackDisplayChar(char c)
+    {
+        if (!char.IsLetter(c))
+        {
+            ResetDisplayShadow();
+            return;
+        }
+
+        if (_displayShadowLength < _displayShadow.Length)
+        {
+            _displayShadow[_displayShadowLength++] = c;
+        }
+        else
+        {
+            ResetDisplayShadow();
+        }
+    }
+
+    private void RemoveLastDisplayChar()
+    {
+        if (_displayShadowLength > 0)
+        {
+            _displayShadowLength--;
+        }
+    }
+
+    private void ResetDisplayShadow()
+    {
+        _displayShadowLength = 0;
+    }
+
+    private static bool ContainsBreak(ReadOnlySpan<char> text)
+    {
+        foreach (char c in text)
+        {
+            if (char.IsWhiteSpace(c) || char.IsPunctuation(c) || char.IsSymbol(c) || char.IsDigit(c))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static char VkToChar(ushort vk, bool shift)
