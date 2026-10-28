@@ -244,7 +244,10 @@
                                             <TextBlock x:Name="LblCharsetTitle" Text="Bảng mã ký tự" FontWeight="SemiBold" FontSize="13" Foreground="{DynamicResource BrushTextPrimary}"/>
                                             <TextBlock x:Name="LblCharsetDesc" Text="Mặc định Unicode NFC chuẩn quốc tế" FontSize="11" Foreground="{DynamicResource BrushTextSecondary}"/>
                                         </StackPanel>
-                                        <ComboBox x:Name="CboCharset" Grid.Column="2" Style="{StaticResource ModernComboBox}"/>
+                                        <StackPanel Grid.Column="2">
+                                            <ComboBox x:Name="CboCharset" Style="{StaticResource ModernComboBox}" SelectionChanged="CboCharset_SelectionChanged"/>
+                                            <Button x:Name="BtnEditCharset" Content="Sửa bảng mã..." Style="{StaticResource BtnGhost}" Padding="8,5" Margin="0,6,0,0" Click="BtnEditCharset_Click"/>
+                                        </StackPanel>
                                     </Grid>
                                 </Border>
 

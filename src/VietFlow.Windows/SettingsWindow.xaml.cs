@@ -61,7 +61,8 @@ public partial class SettingsWindow : Window
             new { Id = CharsetId.Unicode, Name = "1. Unicode dựng sẵn (NFC)" },
             new { Id = CharsetId.UnicodeComposite, Name = "2. Unicode tổ hợp (NFD)" },
             new { Id = CharsetId.Tcvn3, Name = "3. TCVN3 (ABC)" },
-            new { Id = CharsetId.VniWindows, Name = "4. VNI Windows" }
+            new { Id = CharsetId.VniWindows, Name = "4. VNI Windows" },
+            new { Id = CharsetId.Custom, Name = "5. Tùy chỉnh (Custom)" }
         };
         CboCharset.DisplayMemberPath = "Name";
         CboCharset.SelectedValuePath = "Id";
@@ -202,6 +203,33 @@ public partial class SettingsWindow : Window
     private void CboToggleHotkey_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         UpdateCustomHotkeyUi();
+    }
+
+    private void CboCharset_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (BtnEditCharset != null)
+        {
+            BtnEditCharset.IsEnabled = CboCharset.SelectedValue is CharsetId.Custom;
+        }
+    }
+
+    private void BtnEditCharset_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new CustomCharsetDialog(_config.CustomCharsetMap)
+        {
+            Owner = this
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        _config.CustomCharsetMap = dialog.Mappings;
+        _config.Charset = CharsetId.Custom;
+        Charsets.CustomCharset.Instance.SetMappings(_config.CustomCharsetMap);
+        CboCharset.SelectedValue = CharsetId.Custom;
+        _session.Charset = Charsets.CharsetFactory.GetCharset(CharsetId.Custom);
     }
 
     private void UpdateCustomHotkeyUi()
@@ -566,6 +594,7 @@ public partial class SettingsWindow : Window
         _config.TrayEnBottom = def.TrayEnBottom;
         _config.EnglishKeywords.Clear();
         _config.ForeignInitials = def.ForeignInitials;
+        _config.CustomCharsetMap = def.CustomCharsetMap;
         _config.ExcludedApps = def.ExcludedApps;
         _config.Macros = def.Macros;
 

@@ -26,7 +26,8 @@ public enum CharsetId : byte
     Tcvn3 = 2,                 // TCVN3 (ABC)
     VniWindows = 3,            // VNI Windows
     VniWin = 3,                // Alias for VNI Windows
-    Viqr = 4                   // VIQR pure ASCII
+    Viqr = 4,                  // VIQR pure ASCII
+    Custom = 5                 // User-defined charset (advanced editor)
 }
 
 /// <summary>

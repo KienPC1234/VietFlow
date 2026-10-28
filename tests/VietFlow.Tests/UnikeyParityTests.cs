@@ -170,6 +170,27 @@ public class UnikeyParityTests
         }
     }
 
+    [Fact]
+    public void CustomCharsetMapsVietnameseCharacters()
+    {
+        CustomCharset.Instance.SetMappings(new Dictionary<string, string>
+        {
+            ["đ"] = "d",
+            ["ư"] = "u",
+            ["ơ"] = "o"
+        });
+
+        try
+        {
+            var session = new VietFlowSession(InputMethod.Telex, CharsetId.Custom);
+            Assert.Equal("duong", session.ProcessString("dduowng"));
+        }
+        finally
+        {
+            CustomCharset.Instance.SetMappings(null);
+        }
+    }
+
     [Theory]
     [InlineData("d9uong72 ", "đường ")]
     [InlineData("gio1 ", "gió ")]

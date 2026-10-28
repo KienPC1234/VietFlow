@@ -15,6 +15,7 @@ Output: `src/VietFlow.Windows/bin/Release/net10.0-windows/VietFlow.exe`
 
 - `src/VietFlow` — cross-platform engine (`net10.0`, no Windows APIs).
 - `src/VietFlow.Windows` — WPF shell, Win32 keyboard hook, tray menu.
+  Uses `WH_KEYBOARD_LL` + `SendInput`; deliberately **no TSF/IME**.
 - `tests/VietFlow.Tests` — UniKey parity and regression tests.
 
 ## Porting

@@ -254,6 +254,7 @@ public static class CharsetFactory
         CharsetId.Tcvn3 => Tcvn3Charset.Instance,
         CharsetId.VniWindows => VniWindowsCharset.Instance,
         CharsetId.Viqr => ViqrCharset.Instance,
+        CharsetId.Custom => CustomCharset.Instance,
         _ => UnicodeNfcCharset.Instance
     };
 }

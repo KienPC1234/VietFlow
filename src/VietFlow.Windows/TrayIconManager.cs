@@ -35,6 +35,7 @@ internal sealed class TrayIconManager : IDisposable
     private readonly Dictionary<InputMethod, ToolStripMenuItem> _methodItems = new();
     private readonly Dictionary<CharsetId, ToolStripMenuItem> _charsetItems = new();
     private readonly Dictionary<string, ToolStripMenuItem> _themeItems = new();
+    private string _menuLanguage = string.Empty;
 
     public TrayIconManager(
         VietFlowConfig config,
@@ -98,6 +99,7 @@ internal sealed class TrayIconManager : IDisposable
 
     private void BuildContextMenu()
     {
+        _menuLanguage = _config.UiLanguage;
         bool en = _config.UiLanguage == "en";
         var menu = new ContextMenuStrip
         {
@@ -151,6 +153,7 @@ internal sealed class TrayIconManager : IDisposable
         var moreCharsets = new ToolStripMenuItem(en ? "More charsets" : "Bảng mã khác");
         AddCharsetItem(moreCharsets.DropDownItems, CharsetId.UnicodeComposite, "Unicode Composite (NFD)");
         AddCharsetItem(moreCharsets.DropDownItems, CharsetId.Viqr, "VIQR");
+        AddCharsetItem(moreCharsets.DropDownItems, CharsetId.Custom, en ? "Custom (Advanced)" : "Tùy chỉnh (Nâng cao)");
         menu.Items.Add(moreCharsets);
         menu.Items.Add(new ToolStripSeparator());
 
@@ -203,6 +206,11 @@ internal sealed class TrayIconManager : IDisposable
 
     public void UpdateState(bool isEnabled, InputMethod method, CharsetId charset)
     {
+        if (!string.Equals(_menuLanguage, _config.UiLanguage, StringComparison.Ordinal))
+        {
+            BuildContextMenu();
+        }
+
         UpdateIcon(isEnabled);
 
         if (_toggleItem != null)

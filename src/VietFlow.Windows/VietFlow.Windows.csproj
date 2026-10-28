@@ -9,13 +9,33 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <ServerGarbageCollection>false</ServerGarbageCollection>
-    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
     <AssemblyName>VietFlow</AssemblyName>
     <Version>0.1.0</Version>
     <InformationalVersion>0.1.0-alpha</InformationalVersion>
     <ApplicationIcon>Assets\VietFlow.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!-- Target Architecture -->
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
+
+    <!-- Garbage Collection & Runtime Tuning (Desktop Workstation GC) -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+
+    <!-- Single File Packaging -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+
+    <!-- ReadyToRun (R2R) Pre-compilation with Composite mode -->
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <PublishReadyToRunComposite>true</PublishReadyToRunComposite>
+
+    <!-- Safe Partial Trimming & Suppress SDK checks for Desktop UI -->
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
+    <_SuppressWinFormsTrimError>true</_SuppressWinFormsTrimError>
+    <_SuppressWpfTrimError>true</_SuppressWpfTrimError>
   </PropertyGroup>
 
   <ItemGroup>

@@ -49,6 +49,11 @@ public sealed class VietFlowConfig
     /// Initial letters treated as non-Vietnamese; tones/marks are suppressed for these words.
     /// </summary>
     public string ForeignInitials { get; set; } = "fjwz";
+
+    /// <summary>
+    /// Custom charset map: Unicode glyph -> replacement string. Empty values fall back to Unicode.
+    /// </summary>
+    public Dictionary<string, string> CustomCharsetMap { get; set; } = new();
     public string ToggleHotkey { get; set; } = "CtrlShift"; // "CtrlShift", "AltZ", "CtrlSpace", "ShiftSpace", "AltShift", "WinSpace", "CapsLock", "RightCtrl", "Custom"
     public string UiLanguage { get; set; } = "vi"; // "vi" or "en"
     public int CustomToggleVk { get; set; } = 0;
@@ -137,6 +142,7 @@ public sealed class VietFlowConfig
         session.Options.AutoCapitalize = AutoCapitalize;
         session.Options.ForeignInitials = string.IsNullOrWhiteSpace(ForeignInitials) ? "fjwz" : ForeignInitials;
         session.Options.ConsonantShortcuts = ConsonantShortcuts;
+        Charsets.CustomCharset.Instance.SetMappings(CustomCharsetMap);
         session.Charset = Charsets.CharsetFactory.GetCharset(Charset);
 
         EnglishPhonetics.SetKeywords(EnglishKeywords.Count > 0 ? EnglishKeywords : EnglishPhonetics.DefaultKeywords);
