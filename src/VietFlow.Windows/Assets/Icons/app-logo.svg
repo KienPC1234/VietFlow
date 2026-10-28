@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3B82F6" />
+      <stop offset="100%" stop-color="#1D4ED8" />
+    </linearGradient>
+    <linearGradient id="vGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#E0E7FF" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0F172A" flood-opacity="0.25" />
+    </filter>
+  </defs>
+  <!-- Rounded Squircle Badge -->
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#bgGrad)" filter="url(#shadow)" />
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="none" stroke="#FFFFFF" stroke-opacity="0.2" stroke-width="2" />
+  <!-- Dynamic Aerodynamic V-Shape -->
+  <path d="M28 34 L64 102 L100 34 H82 L64 74 L46 34 Z" fill="url(#vGrad)" />
+  <!-- Diacritic Speed Accent representing Vietnamese flow -->
+  <path d="M48 24 L64 16 L80 24 L74 27 L64 21 L54 27 Z" fill="#93C5FD" />
+</svg>

@@ -1,0 +1,11 @@
+[Bb]in/
+[Oo]bj/
+.vs/
+.idea/
+*.user
+*.suo
+*.log
+TestResults/
+artifacts/
+node_modules/
+vietflow_config.json
