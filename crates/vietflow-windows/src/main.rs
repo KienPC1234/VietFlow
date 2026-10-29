@@ -18,7 +18,7 @@ use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HANDLE,
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetMessageW, PostMessageW,
     PostQuitMessage, RegisterClassW, TranslateMessage, MSG, WNDCLASSW, WM_COMMAND, WM_DESTROY,
-    WM_LBUTTONUP, WM_RBUTTONUP,
+    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP,
 };
 
 use crate::config::AppConfig;
@@ -132,7 +132,10 @@ unsafe extern "system" fn wnd_proc(
     match msg {
         WM_TRAYICON => {
             let event = l_param as u32;
-            if event == WM_LBUTTONUP {
+            if event == WM_LBUTTONDBLCLK {
+                toggle_mode(hwnd);
+                spawn_gui(false);
+            } else if event == WM_LBUTTONUP {
                 toggle_mode(hwnd);
             } else if event == WM_RBUTTONUP {
                 if let Ok(lock) = STATE.lock() {

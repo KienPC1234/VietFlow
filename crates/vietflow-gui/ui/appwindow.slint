@@ -10,22 +10,26 @@ component NavTab inherits Rectangle {
     in property <bool> active: false;
     callback clicked();
 
-    height: 36px;
+    height: 40px;
     border-radius: 6px;
-    background: root.active ? #2563eb : (touch.has-hover ? #1e293b : transparent);
+    border-width: 1px;
+    border-color: root.active ? #3b82f6 : #334155;
+    background: root.active ? #2563eb : (touch.has-hover ? #334155 : #1e293b);
 
     touch := TouchArea {
         clicked => { root.clicked(); }
         mouse-cursor: pointer;
     }
 
-    Text {
-        text: root.text;
-        font-size: 13px;
-        font-weight: root.active ? 700 : 500;
-        color: root.active ? #ffffff : (touch.has-hover ? #f8fafc : #94a3b8);
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+    HorizontalLayout {
+        alignment: center;
+        Text {
+            text: root.text;
+            font-size: 13px;
+            font-weight: root.active ? 700 : 600;
+            color: root.active ? #ffffff : (touch.has-hover ? #ffffff : #cbd5e1);
+            vertical-alignment: center;
+        }
     }
 }
 
@@ -37,11 +41,11 @@ component SettingCard inherits Rectangle {
     border-radius: 8px;
     border-width: 1px;
     border-color: #334155;
-    min-height: 58px;
+    min-height: 60px;
 
     HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
+        padding-left: 18px;
+        padding-right: 18px;
         padding-top: 10px;
         padding-bottom: 10px;
         spacing: 16px;
@@ -54,35 +58,96 @@ component SettingCard inherits Rectangle {
             Text {
                 text: root.title;
                 font-size: 13px;
-                font-weight: 600;
-                color: #f8fafc;
+                font-weight: 700;
+                color: #ffffff;
             }
             Text {
                 text: root.description;
                 font-size: 11px;
-                color: #94a3b8;
+                color: #cbd5e1;
                 wrap: word-wrap;
             }
         }
 
-        @children
+        HorizontalLayout {
+            alignment: center;
+            @children
+        }
     }
 }
 
 component SectionTitle inherits Text {
     font-size: 11px;
-    font-weight: 700;
+    font-weight: 800;
     color: #38bdf8;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.8px;
+}
+
+component PrimaryBtn inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+
+    height: 36px;
+    border-radius: 6px;
+    background: touch.pressed ? #1d4ed8 : (touch.has-hover ? #3b82f6 : #2563eb);
+    border-width: 1px;
+    border-color: #60a5fa;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+        mouse-cursor: pointer;
+    }
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        alignment: center;
+        Text {
+            text: root.text;
+            font-size: 13px;
+            font-weight: 700;
+            color: #ffffff;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component SecondaryBtn inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+
+    height: 36px;
+    border-radius: 6px;
+    background: touch.pressed ? #0f172a : (touch.has-hover ? #334155 : #1e293b);
+    border-width: 1px;
+    border-color: #475569;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+        mouse-cursor: pointer;
+    }
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        alignment: center;
+        Text {
+            text: root.text;
+            font-size: 13px;
+            font-weight: 600;
+            color: touch.has-hover ? #ffffff : #e2e8f0;
+            vertical-alignment: center;
+        }
+    }
 }
 
 export component AppWindow inherits Window {
     title: "VietFlow - Bảng điều khiển bộ gõ tiếng Việt";
     icon: @image-url("../assets/app-logo.png");
-    preferred-width: 820px;
+    preferred-width: 840px;
     preferred-height: 680px;
-    min-width: 740px;
-    min-height: 560px;
+    min-width: 760px;
+    min-height: 580px;
     background: #0f172a;
     default-font-family: "Segoe UI, sans-serif";
 
@@ -90,6 +155,7 @@ export component AppWindow inherits Window {
     callback save_config();
     callback reset_defaults();
     callback toggle_mode();
+    callback close_window();
     callback add_macro(string, string);
     callback delete_macro(int);
     callback add_excluded_app(string);
@@ -97,7 +163,7 @@ export component AppWindow inherits Window {
     callback convert_text(string, int, int) -> string;
     callback convert_clipboard(int, int);
 
-    // Active Tab (0: Overview, 1: Typing, 2: Macro, 3: Game, 4: Converter/About)
+    // Active Tab (0: Overview, 1: Typing, 2: Macro, 3: Game, 4: Converter, 5: About)
     in-out property <int> active_tab: 0;
 
     // Reactive Properties
@@ -139,15 +205,15 @@ export component AppWindow inherits Window {
 
         // TOP HEADER BAR
         Rectangle {
-            height: 68px;
+            height: 72px;
             background: #1e293b;
             border-radius: 10px;
             border-width: 1px;
             border-color: #334155;
 
             HorizontalLayout {
-                padding-left: 18px;
-                padding-right: 18px;
+                padding-left: 20px;
+                padding-right: 20px;
                 alignment: space-between;
 
                 // Logo, Name & Subtitle
@@ -156,8 +222,8 @@ export component AppWindow inherits Window {
                     alignment: center;
                     Image {
                         source: @image-url("../assets/app-logo.png");
-                        width: 42px;
-                        height: 42px;
+                        width: 44px;
+                        height: 44px;
                         vertical-alignment: center;
                     }
                     VerticalLayout {
@@ -165,14 +231,14 @@ export component AppWindow inherits Window {
                         spacing: 2px;
                         Text {
                             text: "VietFlow";
-                            font-size: 18px;
-                            font-weight: 700;
-                            color: #f8fafc;
+                            font-size: 20px;
+                            font-weight: 800;
+                            color: #ffffff;
                         }
                         Text {
-                            text: "Bộ gõ tiếng Việt thế hệ mới (Rust Native · Tối ưu hiệu năng)";
+                            text: "Bộ gõ tiếng Việt thế hệ mới (100% Rust Native · Tối ưu hiệu năng)";
                             font-size: 11px;
-                            color: #94a3b8;
+                            color: #cbd5e1;
                         }
                     }
                 }
@@ -183,7 +249,7 @@ export component AppWindow inherits Window {
                     border-radius: 8px;
                     border-width: 1px;
                     border-color: #334155;
-                    height: 48px;
+                    height: 52px;
 
                     HorizontalLayout {
                         padding-left: 14px;
@@ -192,13 +258,13 @@ export component AppWindow inherits Window {
                         alignment: center;
 
                         Rectangle {
-                            width: 32px;
-                            height: 32px;
-                            border-radius: 16px;
+                            width: 34px;
+                            height: 34px;
+                            border-radius: 17px;
                             background: root.is_enabled ? #dc2626 : #2563eb;
                             Text {
                                 text: root.is_enabled ? "V" : "E";
-                                font-size: 15px;
+                                font-size: 16px;
                                 font-weight: 800;
                                 color: #ffffff;
                                 x: (parent.width - self.width) / 2;
@@ -213,7 +279,7 @@ export component AppWindow inherits Window {
                                 text: root.is_enabled ? "Tiếng Việt" : "English";
                                 font-size: 12px;
                                 font-weight: 700;
-                                color: #f8fafc;
+                                color: #ffffff;
                             }
                             Text {
                                 text: root.is_enabled ? "Đang bật (Sẵn sàng)" : "Tạm dừng gõ dấu";
@@ -231,9 +297,9 @@ export component AppWindow inherits Window {
             }
         }
 
-        // MODERN NAVIGATION BAR
+        // MODERN BALANCED NAVIGATION BAR
         Rectangle {
-            height: 44px;
+            height: 48px;
             background: #111827;
             border-radius: 8px;
             border-width: 1px;
@@ -241,32 +307,43 @@ export component AppWindow inherits Window {
 
             HorizontalLayout {
                 padding: 4px;
-                spacing: 4px;
+                spacing: 6px;
 
                 NavTab {
                     text: "Tổng quan";
                     active: root.active_tab == 0;
+                    horizontal-stretch: 1;
                     clicked => { root.active_tab = 0; }
                 }
                 NavTab {
                     text: "Bộ gõ & Chính tả";
                     active: root.active_tab == 1;
+                    horizontal-stretch: 1;
                     clicked => { root.active_tab = 1; }
                 }
                 NavTab {
                     text: "Bảng gõ tắt";
                     active: root.active_tab == 2;
+                    horizontal-stretch: 1;
                     clicked => { root.active_tab = 2; }
                 }
                 NavTab {
-                    text: "Game & Loại trừ";
+                    text: "Game Mode";
                     active: root.active_tab == 3;
+                    horizontal-stretch: 1;
                     clicked => { root.active_tab = 3; }
                 }
                 NavTab {
-                    text: "Chuyển mã & Giới thiệu";
+                    text: "Chuyển mã & Tiện ích";
                     active: root.active_tab == 4;
+                    horizontal-stretch: 1;
                     clicked => { root.active_tab = 4; }
+                }
+                NavTab {
+                    text: "Giới thiệu";
+                    active: root.active_tab == 5;
+                    horizontal-stretch: 1;
+                    clicked => { root.active_tab = 5; }
                 }
             }
         }
@@ -291,7 +368,7 @@ export component AppWindow inherits Window {
                         title: "Kiểu gõ tiếng Việt";
                         description: "Hỗ trợ Telex, Simple Telex (không bỏ dấu w), VNI và VIQR";
                         ComboBox {
-                            width: 220px;
+                            width: 240px;
                             model: ["Telex", "Simple Telex", "VNI", "VIQR"];
                             current-index <=> root.method_index;
                         }
@@ -301,7 +378,7 @@ export component AppWindow inherits Window {
                         title: "Bảng mã ký tự";
                         description: "Unicode dựng sẵn (NFC chuẩn), Tổ hợp, TCVN3 (ABC), VNI Windows";
                         ComboBox {
-                            width: 220px;
+                            width: 240px;
                             model: ["Unicode dựng sẵn (NFC)", "Unicode tổ hợp", "TCVN3 (ABC)", "VNI Windows"];
                             current-index <=> root.charset_index;
                         }
@@ -311,7 +388,7 @@ export component AppWindow inherits Window {
                         title: "Phím chuyển đổi (V / E)";
                         description: "Tổ hợp phím nóng chuyển nhanh giữa chế độ Tiếng Việt và English";
                         ComboBox {
-                            width: 220px;
+                            width: 240px;
                             model: ["Ctrl + Shift", "Alt + Z", "Ctrl + Space", "Alt + Shift"];
                             current-index <=> root.hotkey_index;
                         }
@@ -329,7 +406,7 @@ export component AppWindow inherits Window {
 
                     SettingCard {
                         title: "Âm thanh thông báo (Beep)";
-                        description: "Phát âm thanh nhẹ của Windows khi chuyển đổi trạng thái V / E bằng phím tắt";
+                        description: "Phát âm thanh nhẹ của hệ thống khi chuyển đổi trạng thái V / E bằng phím tắt";
                         Switch {
                             checked <=> root.notification_sound;
                         }
@@ -428,14 +505,14 @@ export component AppWindow inherits Window {
                         Text {
                             text: "💡 Biến động hỗ trợ:";
                             font-size: 11px;
-                            font-weight: 700;
+                            font-weight: 800;
                             color: #38bdf8;
                             vertical-alignment: center;
                         }
                         Text {
                             text: "@date (ngày) · @time (giờ) · @datetime · @clipboard (dán) · @tab · @newline";
                             font-size: 11px;
-                            color: #e2e8f0;
+                            color: #ffffff;
                             vertical-alignment: center;
                         }
                     }
@@ -477,7 +554,7 @@ export component AppWindow inherits Window {
                                         Text {
                                             text: "→ " + entry.value;
                                             font-size: 12px;
-                                            color: #f8fafc;
+                                            color: #ffffff;
                                             vertical-alignment: center;
                                             horizontal-stretch: 1;
                                         }
@@ -499,8 +576,8 @@ export component AppWindow inherits Window {
                         placeholder-text: "Cụm từ thay thế (vd: Việt Nam hoặc @date)";
                         horizontal-stretch: 1;
                     }
-                    Button {
-                        text: "Thêm / Cập nhật";
+                    PrimaryBtn {
+                        text: "Thêm / Sửa";
                         clicked => {
                             if (macro_key_input.text != "" && macro_val_input.text != "") {
                                 root.add_macro(macro_key_input.text, macro_val_input.text);
@@ -509,8 +586,8 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    Button {
-                        text: "Xóa mục đã chọn";
+                    SecondaryBtn {
+                        text: "Xóa mục chọn";
                         clicked => {
                             if (root.selected_macro_index >= 0) {
                                 root.delete_macro(root.selected_macro_index);
@@ -520,7 +597,7 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // ==================== TAB 3: GAME & LOẠI TRỪ ====================
+            // ==================== TAB 3: GAME MODE ====================
             if root.active_tab == 3: VerticalLayout {
                 padding: 16px;
                 spacing: 12px;
@@ -528,7 +605,7 @@ export component AppWindow inherits Window {
                 Text {
                     text: "Chế độ Game Mode: VietFlow sẽ tự động chuyển sang English [E] khi các ứng dụng / game dưới đây hoạt động:";
                     font-size: 12px;
-                    color: #94a3b8;
+                    color: #cbd5e1;
                 }
 
                 Rectangle {
@@ -559,7 +636,7 @@ export component AppWindow inherits Window {
                                             text: "🎮  " + app;
                                             font-size: 13px;
                                             font-weight: 600;
-                                            color: #f8fafc;
+                                            color: #ffffff;
                                             vertical-alignment: center;
                                         }
                                     }
@@ -575,8 +652,8 @@ export component AppWindow inherits Window {
                         placeholder-text: "Nhập tên tiến trình thực thi (ví dụ: cs2.exe hoặc valorant.exe)";
                         horizontal-stretch: 1;
                     }
-                    Button {
-                        text: "Thêm tiến trình";
+                    PrimaryBtn {
+                        text: "Thêm ứng dụng";
                         clicked => {
                             if (app_input.text != "") {
                                 root.add_excluded_app(app_input.text);
@@ -584,7 +661,7 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    Button {
+                    SecondaryBtn {
                         text: "Xóa mục chọn";
                         clicked => {
                             if (root.selected_app_index >= 0) {
@@ -595,13 +672,13 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // ==================== TAB 4: CHUYỂN MÃ & GIỚI THIỆU ====================
+            // ==================== TAB 4: CHUYỂN MÃ & TIỆN ÍCH ====================
             if root.active_tab == 4: ScrollView {
                 VerticalLayout {
                     padding: 16px;
                     spacing: 14px;
 
-                    SectionTitle { text: "CÔNG CỤ CHUYỂN MÃ VĂN BẢN & CLIPBOARD"; }
+                    SectionTitle { text: "CHUYỂN MÃ NHANH CLIPBOARD"; }
 
                     Rectangle {
                         background: #1e293b;
@@ -610,55 +687,41 @@ export component AppWindow inherits Window {
                         border-color: #334155;
 
                         VerticalLayout {
-                            padding: 14px;
+                            padding: 16px;
                             spacing: 12px;
 
+                            Text {
+                                text: "Tự động đọc nội dung văn bản từ bộ nhớ tạm (Clipboard), chuyển đổi sang bảng mã mới và ghi ngược lại vào Clipboard.";
+                                font-size: 12px;
+                                color: #cbd5e1;
+                            }
+
                             HorizontalLayout {
-                                spacing: 12px;
-                                Text { text: "Mã nguồn:"; vertical-alignment: center; font-size: 12px; color: #94a3b8; }
+                                spacing: 14px;
+                                alignment: start;
+                                Text { text: "Mã nguồn:"; vertical-alignment: center; font-size: 13px; color: #ffffff; font-weight: 600; }
                                 ComboBox {
-                                    width: 180px;
+                                    width: 190px;
                                     model: ["Unicode", "Unicode tổ hợp", "TCVN3 (ABC)", "VNI Windows"];
                                     current-index <=> root.conv_source_charset;
                                 }
-                                Text { text: "Mã đích:"; vertical-alignment: center; font-size: 12px; color: #94a3b8; }
+                                Text { text: "➔ Mã đích:"; vertical-alignment: center; font-size: 13px; color: #38bdf8; font-weight: 700; }
                                 ComboBox {
-                                    width: 180px;
+                                    width: 190px;
                                     model: ["Unicode", "Unicode tổ hợp", "TCVN3 (ABC)", "VNI Windows"];
                                     current-index <=> root.conv_target_charset;
                                 }
-                                Button {
+                                PrimaryBtn {
                                     text: "Chuyển mã Clipboard";
                                     clicked => {
                                         root.convert_clipboard(root.conv_source_charset, root.conv_target_charset);
                                     }
                                 }
                             }
-
-                            conv_input := TextEdit {
-                                height: 80px;
-                                text: "Nhập nội dung cần chuyển mã trực tiếp vào đây...";
-                            }
-
-                            HorizontalLayout {
-                                spacing: 10px;
-                                Button {
-                                    text: "Chuyển mã hộp văn bản";
-                                    clicked => {
-                                        conv_input.text = root.convert_text(conv_input.text, root.conv_source_charset, root.conv_target_charset);
-                                    }
-                                }
-                                Text {
-                                    text: root.conv_status;
-                                    font-size: 12px;
-                                    color: #4ade80;
-                                    vertical-alignment: center;
-                                }
-                            }
                         }
                     }
 
-                    SectionTitle { text: "THÔNG TIN ỨNG DỤNG"; }
+                    SectionTitle { text: "CHUYỂN MÃ TRỰC TIẾP HỘP VĂN BẢN"; }
 
                     Rectangle {
                         background: #1e293b;
@@ -667,37 +730,117 @@ export component AppWindow inherits Window {
                         border-color: #334155;
 
                         VerticalLayout {
-                            padding: 18px;
+                            padding: 16px;
                             spacing: 12px;
 
+                            conv_input := TextEdit {
+                                height: 100px;
+                                text: "Nhập nội dung cần chuyển mã trực tiếp vào đây...";
+                            }
+
                             HorizontalLayout {
-                                spacing: 18px;
+                                spacing: 14px;
+                                alignment: space-between;
+
+                                PrimaryBtn {
+                                    text: "Thực hiện chuyển đổi văn bản";
+                                    clicked => {
+                                        conv_input.text = root.convert_text(conv_input.text, root.conv_source_charset, root.conv_target_charset);
+                                    }
+                                }
+
+                                Text {
+                                    text: root.conv_status;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    color: #4ade80;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ==================== TAB 5: GIỚI THIỆU ====================
+            if root.active_tab == 5: ScrollView {
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 16px;
+
+                    Rectangle {
+                        background: #1e293b;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: #334155;
+
+                        VerticalLayout {
+                            padding: 24px;
+                            spacing: 16px;
+
+                            HorizontalLayout {
+                                spacing: 20px;
                                 alignment: start;
                                 Image {
                                     source: @image-url("../assets/app-logo.png");
-                                    width: 56px;
-                                    height: 56px;
+                                    width: 64px;
+                                    height: 64px;
                                     vertical-alignment: center;
                                 }
                                 VerticalLayout {
                                     alignment: center;
-                                    spacing: 3px;
+                                    spacing: 4px;
                                     Text {
-                                        text: "VietFlow - Phiên bản 1.0.4";
-                                        font-size: 18px;
-                                        font-weight: 700;
-                                        color: #f8fafc;
+                                        text: "VietFlow";
+                                        font-size: 24px;
+                                        font-weight: 800;
+                                        color: #ffffff;
                                     }
                                     Text {
-                                        text: "Kiến trúc 100% Rust Native · Tích hợp sẵn bộ điều khiển Slint GUI";
-                                        font-size: 12px;
+                                        text: "Phiên bản 1.0.4 - Native Rust Edition";
+                                        font-size: 13px;
+                                        font-weight: 700;
                                         color: #38bdf8;
                                     }
                                     Text {
-                                        text: "Giấy phép: GNU General Public License v3.0 (GPLv3) · Kế thừa từ nền tảng UniKey";
-                                        font-size: 11px;
-                                        color: #94a3b8;
+                                        text: "Bộ gõ tiếng Việt thế hệ mới với hiệu năng tối đa và độ trễ cực thấp";
+                                        font-size: 12px;
+                                        color: #cbd5e1;
                                     }
+                                }
+                            }
+
+                            Rectangle {
+                                height: 1px;
+                                background: #334155;
+                            }
+
+                            VerticalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "• Kiến trúc: 100% Rust Core (chia sẻ chung giữa Windows và Linux Fcitx5).";
+                                    font-size: 12px;
+                                    color: #e2e8f0;
+                                }
+                                Text {
+                                    text: "• Windows Native Host: Win32 Low-Level Hook, SendInput nguyên tử, Display Shadow Diffing.";
+                                    font-size: 12px;
+                                    color: #e2e8f0;
+                                }
+                                Text {
+                                    text: "• Giao diện Slint Declarative GUI thuần Rust, không phụ thuộc C++ hay Qt runtime.";
+                                    font-size: 12px;
+                                    color: #e2e8f0;
+                                }
+                                Text {
+                                    text: "• Đóng gói: 1 file thực thi duy nhất (Single Binary VietFlow.exe).";
+                                    font-size: 12px;
+                                    color: #e2e8f0;
+                                }
+                                Text {
+                                    text: "• Bản quyền & Kế thừa: Giấy phép GNU GPL v3.0 · Dựa trên nền tảng của tác giả Phạm Kim Long.";
+                                    font-size: 12px;
+                                    color: #94a3b8;
                                 }
                             }
                         }
@@ -708,18 +851,18 @@ export component AppWindow inherits Window {
 
         // BOTTOM ACTION BAR
         Rectangle {
-            height: 54px;
+            height: 56px;
             background: #1e293b;
             border-radius: 10px;
             border-width: 1px;
             border-color: #334155;
 
             HorizontalLayout {
-                padding-left: 18px;
-                padding-right: 18px;
+                padding-left: 20px;
+                padding-right: 20px;
                 alignment: space-between;
 
-                Button {
+                SecondaryBtn {
                     text: "Khôi phục mặc định";
                     clicked => {
                         root.reset_defaults();
@@ -727,8 +870,16 @@ export component AppWindow inherits Window {
                 }
 
                 HorizontalLayout {
-                    spacing: 10px;
-                    Button {
+                    spacing: 12px;
+
+                    SecondaryBtn {
+                        text: "Đóng";
+                        clicked => {
+                            root.close_window();
+                        }
+                    }
+
+                    PrimaryBtn {
                         text: "Lưu cấu hình";
                         clicked => {
                             root.save_config();

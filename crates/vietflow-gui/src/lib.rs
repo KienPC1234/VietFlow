@@ -206,6 +206,14 @@ pub fn run_gui(convert_mode: bool) -> Result<(), slint::PlatformError> {
 
     sync_to_ui(&window, &config_state.borrow());
 
+    // Close window callback
+    let w_weak = window.as_weak();
+    window.on_close_window(move || {
+        if let Some(w) = w_weak.upgrade() {
+            let _ = w.hide();
+        }
+    });
+
     // Save config callback
     let w_weak = window.as_weak();
     let cfg_clone = config_state.clone();
