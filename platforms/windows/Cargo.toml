@@ -1,6 +1,6 @@
 [package]
 name = "vietflow-windows"
-version = "1.0.4"
+version = "0.1.0"
 edition = "2021"
 authors = ["VietFlow Team"]
 description = "Native Windows keyboard hook daemon, tray host and unified executable for VietFlow"
@@ -11,10 +11,11 @@ name = "VietFlow"
 path = "src/main.rs"
 
 [dependencies]
-vietflow-core = { path = "../vietflow-core" }
-vietflow-gui = { path = "../vietflow-gui" }
+vietflow-core = { path = "../../core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+velopack = "1.2.161"
 
 [target.'cfg(windows)'.dependencies.windows-sys]
 version = "0.61.2"

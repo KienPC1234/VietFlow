@@ -25,8 +25,16 @@ pub struct AppConfig {
     pub notification_sound: bool,
     pub typing_timeout_ms: u64,
     pub hotkey_mode: String, // "CtrlShift", "AltZ", "CtrlSpace", "ShiftSpace", "AltShift", "CapsLock"
+    #[serde(default)]
+    pub english_keywords: Vec<String>,
+    #[serde(default = "default_foreign_initials")]
+    pub foreign_initials: String,
     pub excluded_apps: Vec<String>,
     pub macros: HashMap<String, String>,
+}
+
+fn default_foreign_initials() -> String {
+    "fjwz".to_string()
 }
 
 impl Default for AppConfig {
@@ -57,6 +65,8 @@ impl Default for AppConfig {
             notification_sound: true,
             typing_timeout_ms: 3000,
             hotkey_mode: "CtrlShift".to_string(),
+            english_keywords: Vec::new(),
+            foreign_initials: "fjwz".to_string(),
             excluded_apps: vec![
                 "valorant.exe".to_string(),
                 "cs2.exe".to_string(),
@@ -98,5 +108,68 @@ impl AppConfig {
         if let Ok(json) = serde_json::to_string_pretty(self) {
             let _ = fs::write(path, json);
         }
+    }
+
+    /// Lowercase, de-duplicated, sorted custom English/foreign keywords.
+    pub fn normalized_english_keywords(&self) -> Vec<String> {
+        let mut words: Vec<String> = self
+            .english_keywords
+            .iter()
+            .map(|word| word.trim().to_ascii_lowercase())
+            .filter(|word| !word.is_empty())
+            .collect();
+        words.sort();
+        words.dedup();
+        words
+    }
+
+    /// Letters that suppress Vietnamese marks on foreign-looking words.
+    /// Falls back to the engine default when the user clears the field.
+    pub fn normalized_foreign_initials(&self) -> Vec<char> {
+        let mut initials = Vec::new();
+        for c in self.foreign_initials.chars().filter(|c| c.is_alphabetic()) {
+            let lower = c.to_ascii_lowercase();
+            if !initials.contains(&lower) {
+                initials.push(lower);
+                if initials.len() == 26 {
+                    break;
+                }
+            }
+        }
+        if initials.is_empty() {
+            vec!['f', 'j', 'w', 'z']
+        } else {
+            initials
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_lists_fall_back_to_engine_defaults() {
+        let config = AppConfig::default();
+        assert_eq!(config.normalized_foreign_initials(), vec!['f', 'j', 'w', 'z']);
+        assert!(config.normalized_english_keywords().is_empty());
+    }
+
+    #[test]
+    fn custom_lists_are_normalized_and_deduplicated() {
+        let mut config = AppConfig::default();
+        config.foreign_initials = "B, f b".to_string();
+        config.english_keywords = vec![
+            " Case ".to_string(),
+            String::new(),
+            "case".to_string(),
+            "API".to_string(),
+        ];
+
+        assert_eq!(config.normalized_foreign_initials(), vec!['b', 'f']);
+        assert_eq!(
+            config.normalized_english_keywords(),
+            vec!["api".to_string(), "case".to_string()]
+        );
     }
 }

@@ -16,9 +16,18 @@ extern "system" {
     fn MapVirtualKeyW(uCode: u32, uMapType: u32) -> u32;
 }
 
+const ATOMIC_BACKSPACE_LIMIT: usize = 8;
+const ATOMIC_CHAR_LIMIT: usize = 32;
+const MAX_ATOMIC_INPUTS: usize = (ATOMIC_BACKSPACE_LIMIT + ATOMIC_CHAR_LIMIT) * 2;
+
 #[inline]
 pub fn create_vk_input(vk: u16, key_up: bool) -> INPUT {
     let scan = unsafe { MapVirtualKeyW(vk as u32, 0) as u16 };
+    create_vk_input_scanned(vk, scan, key_up)
+}
+
+#[inline]
+fn create_vk_input_scanned(vk: u16, scan: u16, key_up: bool) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -58,28 +67,29 @@ pub fn send_atomic_batch(backspaces: usize, text: &str) {
         return;
     }
 
-    const ATOMIC_BACKSPACE_LIMIT: usize = 8;
-    const ATOMIC_CHAR_LIMIT: usize = 32;
-
     let char_count = text.chars().count();
 
     if backspaces <= ATOMIC_BACKSPACE_LIMIT && char_count <= ATOMIC_CHAR_LIMIT {
-        let total_inputs = (backspaces * 2) + (char_count * 2);
-        let mut inputs = Vec::with_capacity(total_inputs);
+        // Fixed-size stack buffer: a normal keystroke must not hit the allocator.
+        let mut inputs: [INPUT; MAX_ATOMIC_INPUTS] = unsafe { std::mem::zeroed() };
+        let mut count = 0usize;
+        let back_scan = unsafe { MapVirtualKeyW(VK_BACK as u32, 0) as u16 };
 
         for _ in 0..backspaces {
-            inputs.push(create_vk_input(VK_BACK, false));
-            inputs.push(create_vk_input(VK_BACK, true));
+            inputs[count] = create_vk_input_scanned(VK_BACK, back_scan, false);
+            inputs[count + 1] = create_vk_input_scanned(VK_BACK, back_scan, true);
+            count += 2;
         }
 
         for c in text.chars() {
-            inputs.push(create_unicode_input(c, false));
-            inputs.push(create_unicode_input(c, true));
+            inputs[count] = create_unicode_input(c, false);
+            inputs[count + 1] = create_unicode_input(c, true);
+            count += 2;
         }
 
         unsafe {
             SendInput(
-                inputs.len() as u32,
+                count as u32,
                 inputs.as_ptr(),
                 size_of::<INPUT>() as i32,
             );

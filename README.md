@@ -1,56 +1,74 @@
 # VietFlow
 
-High-performance, modern Vietnamese input method written in 100% Rust.
-Source: [https://github.com/KienPC1234/VietFlow](https://github.com/KienPC1234/VietFlow)
+Bộ gõ tiếng Việt hiệu năng cao với kiến trúc Rust Core kết hợp Qt 6 Configuration UI và Windows Low-Level Keyboard Hook.
 
-## Architecture Overview
+Mã nguồn: [https://github.com/KienPC1234/VietFlow](https://github.com/KienPC1234/VietFlow)
+
+---
+
+## Kiến trúc & Cấu trúc mã nguồn
 
 ```
-                        +----------------------------+
-                        |       vietflow-core        |
-                        | (100% Pure Rust Engine)   |
-                        | Telex, VNI, Tone, Macro    |
-                        +--------------+-------------+
-                                       |
-                 +---------------------+---------------------+
-                 |                                           |
-                 v                                           v
-      +--------------------+                      +--------------------+
-      |  vietflow-windows  |                      |    Fcitx5 Addon    |
-      | Windows Native Host|                      |    (Linux Host)    |
-      | Low-level Hook     |                      | C-ABI Integration  |
-      +---------+----------+                      +--------------------+
-                |
-                v
-      +--------------------+
-      |    vietflow-gui    |
-      |  Modern Slint UI   |
-      | Unified Config/Tool|
-      +--------------------+
+vietflow/
+├── core/                  Rust input engine (std-only, C ABI ffi/vietflow_core.h)
+├── platforms/windows/     Native Windows hook daemon (WH_KEYBOARD_LL, tray icon, Velopack updater)
+├── ui/                    Qt 6 / QML configuration UI (C++ backend, chạy tiến trình riêng biệt)
+├── assets/                Logo, icon PNG/ICO chuẩn High-DPI
+├── docs/                  Tài liệu kiến trúc và hướng dẫn build (BUILD_CMAKE.md)
+├── scripts/build.ps1      Script tự động build và đóng gói release
+├── CMakeLists.txt         Unified multi-platform build orchestrator
+└── Cargo.toml             Rust workspace configuration
 ```
 
-## Workspace Crates
+- **Tiến trình Hook độc lập**: Qt UI chạy tiến trình riêng biệt khi mở cài đặt. Hook bàn phím chạy native Win32 thuần, không tải Qt runtime vào hook thread.
+- **Nhận diện tiếng Anh tự động**: Danh mục 226 từ khóa lập trình và tiếng Anh phổ biến chống dính dấu tiếng Việt ngoài ý muốn.
+- **Cập nhật Velopack**: Kích hoạt theo nhu cầu người dùng qua menu khay hệ thống, không chạy polling ngầm hay ép buộc cập nhật.
 
-* `crates/vietflow-core`: Pure Rust cross-platform Vietnamese engine with full Telex/VNI support, tone placement algorithms, macro expansion with dynamic variables (`@date`, `@time`, `@clipboard`, etc.), spellcheck, and C-ABI export.
-* `crates/vietflow-windows`: High-performance, lightweight Windows daemon with `WH_KEYBOARD_LL` hook, system tray icon, Game Mode blacklist, auto-startup, and global hotkeys (`Ctrl+Shift`, `Ctrl+Shift+F5`, `Ctrl+Shift+F9`). Binary size < 400 KB, memory footprint < 2 MB.
-* `crates/vietflow-gui`: Modern, declarative configuration panel and clipboard charset converter powered by Slint.
+---
 
-## Build & Test
+## Hướng dẫn biên dịch & Đóng gói
 
-```bash
-# Run unit tests across workspace
+### 1. Yêu cầu môi trường
+- Rust 1.75+ (MSVC toolchain x64)
+- Qt 6.5+ (tùy chọn, để biên dịch giao diện Qt UI)
+- .NET SDK & Velopack CLI (`dotnet tool install -g vpk`, tùy chọn cho đóng gói)
+
+### 2. Lệnh thực thi
+
+#### Cách 1: Qua CMake (Khuyên dùng cho CI/CD và đa nền tảng)
+```powershell
+# Cấu hình dự án
+cmake -B build -S . -DCMAKE_PREFIX_PATH="C:\Qt\6.8.3\msvc2022_64"
+
+# Chạy kiểm thử tự động
+cmake --build build --target vietflow_test
+
+# Đóng gói bản cài đặt Velopack và MSI
+cmake --build build --target package_msi
+```
+Chi tiết các target và tùy chọn xem tại [`docs/BUILD_CMAKE.md`](file:///c:/Users/kienp/source/repos/x-unikey-1.0.4/vietflow/docs/BUILD_CMAKE.md).
+
+#### Cách 2: Qua Script PowerShell trực tiếp
+```powershell
+# Kiểm thử toàn bộ workspace
 cargo test --workspace
 
-# Build optimized release binaries
+# Biên dịch Release
 cargo build --workspace --release
+
+# Đóng gói bộ cài đặt Velopack (Setup.exe và delta nupkg)
+.\scripts\build.ps1 -Velopack
+
+# Đóng gói bộ cài đặt kèm MSI
+.\scripts\build.ps1 -Velopack -Msi
+
+# Đóng gói bản tách rời Qt DLLs phục vụ phát triển
+.\scripts\build.ps1 -Separate
 ```
 
-Release binaries are produced in `target/release/`:
-* `vietflow-windows.exe`: Background daemon and hook runner.
-* `vietflow-gui.exe`: Configuration dashboard and charset converter.
-* `vietflow_core.dll` / `libvietflow_core.rlib`: Core library and C-ABI exports.
+---
 
-## License
+## Giấy phép
 
-GNU General Public License v3.0 (GPLv3).
-Core input algorithms derived and evolved from UniKey by Pham Kim Long.
+Phát hành theo giấy phép **GNU General Public License v3.0 (GPLv3)**.
+Thuật toán xử lý tiếng Việt kế thừa và tối ưu hóa từ nền tảng UniKey (tác giả Phạm Kim Long).

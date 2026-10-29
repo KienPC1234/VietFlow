@@ -9,26 +9,38 @@ mod inject;
 mod process;
 mod startup;
 mod tray;
+mod updater;
+
+mod ui_payload {
+    include!(concat!(env!("OUT_DIR"), "/ui_payload.rs"));
+}
 
 use std::ffi::c_void;
+use std::io::Cursor;
 use std::mem::zeroed;
+use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
+use std::sync::Mutex;
+use std::time::SystemTime;
+use ui_payload::UI_PAYLOAD;
 use vietflow_core::models::{CharsetId, InputMethod};
+use zip::ZipArchive;
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetMessageW, PostMessageW,
-    PostQuitMessage, RegisterClassW, TranslateMessage, MSG, WNDCLASSW, WM_COMMAND, WM_DESTROY,
-    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetMessageW, MessageBoxW,
+    PostMessageW, PostQuitMessage, RegisterClassW, SetTimer, TranslateMessage, MB_ICONERROR,
+    MB_ICONWARNING, MB_OK, MSG, WNDCLASSW, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK,
+    WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER,
 };
 
 use crate::config::AppConfig;
-use crate::hook::{install_hook, uninstall_hook, STATE};
+use crate::hook::{apply_config, install_hook, uninstall_hook, STATE};
 use crate::icon::{create_e_icon, create_v_icon};
 use crate::startup::set_start_with_windows;
 use crate::tray::{
-    to_wide, TrayIcon, IDM_CHARSET_COMPOSITE, IDM_CHARSET_TCVN3, IDM_CHARSET_UNICODE,
-    IDM_CHARSET_VNI, IDM_CONVERT_TOOL, IDM_EXIT, IDM_METHOD_SIMPLE_TELEX, IDM_METHOD_TELEX,
-    IDM_METHOD_VNI, IDM_SETTINGS, IDM_TOGGLE, IDM_TOGGLE_MACRO, IDM_TOGGLE_SPELL,
+    to_wide, TrayIcon, IDM_ABOUT, IDM_CHARSET_COMPOSITE, IDM_CHARSET_TCVN3, IDM_CHARSET_UNICODE,
+    IDM_CHARSET_VNI, IDM_CHECK_UPDATE, IDM_CONVERT_TOOL, IDM_EXIT, IDM_METHOD_SIMPLE_TELEX,
+    IDM_METHOD_TELEX, IDM_METHOD_VNI, IDM_SETTINGS, IDM_TOGGLE, IDM_TOGGLE_MACRO, IDM_TOGGLE_SPELL,
     IDM_TOGGLE_STARTUP, WM_CONVERT, WM_SETTINGS, WM_TRAYICON,
 };
 
@@ -42,26 +54,192 @@ extern "system" {
 
 static mut TRAY_PTR: *mut TrayIcon = null_mut();
 
+const TIMER_ID_CONFIG: usize = 1;
+static CONFIG_MTIME: Mutex<Option<SystemTime>> = Mutex::new(None);
+
+fn config_mtime() -> Option<SystemTime> {
+    std::fs::metadata(AppConfig::config_path())
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+}
+
+/// Launch the Qt configuration UI. The UI is always a separate process: Qt never
+/// runs inside the keyboard-hook process.
+///
+/// - Development layout: `vietflow-ui.exe` next to the daemon is used directly.
+/// - Single-file release: a compressed Qt runtime is embedded in this exe and
+///   extracted to `%LOCALAPPDATA%\VietFlow\ui-<version>-<size>` on first use.
 fn spawn_gui(convert_mode: bool) {
-    if let Ok(exe) = std::env::current_exe() {
-        let mut cmd = std::process::Command::new(exe);
-        if convert_mode {
-            cmd.arg("--convert");
-        } else {
-            cmd.arg("--gui");
+    if let Some(ui) = local_ui() {
+        launch_ui(&ui, convert_mode);
+        return;
+    }
+
+    if !UI_PAYLOAD.is_empty() {
+        match extract_embedded_ui() {
+            Ok(ui) => launch_ui(&ui, convert_mode),
+            Err(error) => show_error(&format!(
+                "Không thể khởi động giao diện VietFlow.\n{error}"
+            )),
         }
-        let _ = cmd.spawn();
+        return;
+    }
+
+    show_error(
+        "Không tìm thấy vietflow-ui.exe.\nVui lòng dùng bản cài đặt đầy đủ của VietFlow.",
+    );
+}
+
+fn local_ui() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let ui = exe.parent()?.join("vietflow-ui.exe");
+    ui.is_file().then_some(ui)
+}
+
+fn launch_ui(ui: &Path, convert_mode: bool) {
+    let mut command = std::process::Command::new(ui);
+    if convert_mode {
+        command.arg("--convert");
+    }
+    if let Some(dir) = ui.parent() {
+        command.current_dir(dir);
+    }
+    let _ = command.spawn();
+}
+
+fn extract_embedded_ui() -> Result<PathBuf, String> {
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("TEMP").map(PathBuf::from))
+        .ok_or_else(|| "Không tìm thấy thư mục dữ liệu người dùng.".to_string())?;
+
+    let ui_root = base.join("VietFlow");
+    let dir = ui_root.join(format!(
+        "ui-{}-{}",
+        env!("CARGO_PKG_VERSION"),
+        UI_PAYLOAD.len()
+    ));
+    let ui = dir.join("vietflow-ui.exe");
+    let marker = dir.join(".complete");
+    if ui.is_file() && marker.is_file() {
+        return Ok(ui);
+    }
+
+    // A previous extraction may have been interrupted.
+    if dir.exists() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    let mut archive = ZipArchive::new(Cursor::new(UI_PAYLOAD))
+        .map_err(|error| format!("Gói giao diện bị hỏng: {error}"))?;
+
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("Không thể tạo {}: {error}", dir.display()))?;
+
+    for index in 0..archive.len() {
+        let mut entry = match archive.by_index(index) {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+
+        let Some(relative) = entry.enclosed_name() else {
+            continue;
+        };
+        let target = dir.join(relative);
+
+        if entry.is_dir() {
+            std::fs::create_dir_all(&target)
+                .map_err(|error| format!("Không thể tạo {}: {error}", target.display()))?;
+            continue;
+        }
+
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("Không thể tạo {}: {error}", parent.display()))?;
+        }
+
+        let mut file = std::fs::File::create(&target)
+            .map_err(|error| format!("Không thể ghi {}: {error}", target.display()))?;
+        std::io::copy(&mut entry, &mut file)
+            .map_err(|error| format!("Không thể giải nén {}: {error}", target.display()))?;
+    }
+
+    if !ui.is_file() {
+        return Err("Gói giao diện không chứa vietflow-ui.exe.".to_string());
+    }
+
+    std::fs::write(&marker, b"ok")
+        .map_err(|error| format!("Không thể hoàn tất giải nén: {error}"))?;
+
+    cleanup_old_ui_dirs(&ui_root, &dir);
+    Ok(ui)
+}
+
+fn cleanup_old_ui_dirs(parent: &Path, current: &Path) {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == current || !path.is_dir() {
+            continue;
+        }
+        if entry.file_name().to_string_lossy().starts_with("ui-") {
+            let _ = std::fs::remove_dir_all(path);
+        }
     }
 }
 
+fn show_error(message: &str) {
+    show_message(message, MB_OK | MB_ICONERROR);
+}
+
+fn show_warning(message: &str) {
+    show_message(message, MB_OK | MB_ICONWARNING);
+}
+
+fn show_message(message: &str, flags: u32) {
+    let message = to_wide(message);
+    let title = to_wide("VietFlow");
+    unsafe {
+        MessageBoxW(null_mut(), message.as_ptr(), title.as_ptr(), flags);
+    }
+}
+
+/// A second launch should open the settings window of the running daemon.
+/// If the first instance is still starting up, wait briefly for its message
+/// window instead of exiting silently.
+unsafe fn open_existing_settings() -> bool {
+    let class_name = to_wide("VietFlowMessageWindowClass");
+    let window_title = to_wide("VietFlowDaemon");
+
+    for _ in 0..30 {
+        let hwnd = FindWindowW(class_name.as_ptr(), window_title.as_ptr());
+        if !hwnd.is_null() {
+            PostMessageW(hwnd, WM_SETTINGS, 0, 0);
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    false
+}
+
 fn main() {
+    // Velopack lifecycle events handler. Must run before single-instance check.
+    // Explicitly disable auto apply on startup so updates are only executed on demand.
+    velopack::VelopackApp::build()
+        .set_auto_apply_on_startup(false)
+        .run();
+
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--gui" || a == "-g") {
-        let _ = vietflow_gui::run_gui(false);
+        spawn_gui(false);
         return;
     }
     if args.iter().any(|a| a == "--convert" || a == "-c") {
-        let _ = vietflow_gui::run_gui(true);
+        spawn_gui(true);
         return;
     }
 
@@ -69,12 +247,16 @@ fn main() {
         // Enforce single instance for daemon
         let mutex_name = to_wide("Global\\VietFlowSingleInstanceMutex");
         let mutex = CreateMutexW(null_mut(), 1, mutex_name.as_ptr());
-        if mutex.is_null() || GetLastError() == ERROR_ALREADY_EXISTS {
-            let class_name = to_wide("VietFlowMessageWindowClass");
-            let window_title = to_wide("VietFlowDaemon");
-            let hwnd = FindWindowW(class_name.as_ptr(), window_title.as_ptr());
-            if !hwnd.is_null() {
-                PostMessageW(hwnd, WM_SETTINGS, 0, 0);
+        let last_error = GetLastError();
+        if mutex.is_null() || last_error == ERROR_ALREADY_EXISTS {
+            if last_error == ERROR_ALREADY_EXISTS {
+                if !open_existing_settings() {
+                    show_warning(
+                        "VietFlow đang khởi động hoặc chưa sẵn sàng.\nVui lòng thử lại sau vài giây.",
+                    );
+                }
+            } else {
+                show_error("Không thể khởi động VietFlow.");
             }
             return;
         }
@@ -111,6 +293,9 @@ fn main() {
         TRAY_PTR = &mut tray;
 
         install_hook(hwnd, config);
+
+        *CONFIG_MTIME.lock().unwrap() = config_mtime();
+        SetTimer(hwnd, TIMER_ID_CONFIG, 1000, None);
 
         let mut msg: MSG = zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
@@ -163,6 +348,32 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_SETTINGS => {
             spawn_gui(false);
+            0
+        }
+        WM_TIMER => {
+            if w_param == TIMER_ID_CONFIG {
+                let current = config_mtime();
+                let changed = {
+                    let mut last = match CONFIG_MTIME.lock() {
+                        Ok(lock) => lock,
+                        Err(_) => return 0,
+                    };
+                    if current.is_some() && *last != current {
+                        *last = current;
+                        true
+                    } else {
+                        false
+                    }
+                };
+
+                if changed {
+                    let config = AppConfig::load();
+                    apply_config(config.clone());
+                    if !TRAY_PTR.is_null() {
+                        (*TRAY_PTR).update_status(config.enabled);
+                    }
+                }
+            }
             0
         }
         WM_CONVERT => {
@@ -251,6 +462,12 @@ unsafe extern "system" fn wnd_proc(
                 }
                 IDM_SETTINGS => {
                     spawn_gui(false);
+                }
+                IDM_CHECK_UPDATE => {
+                    crate::updater::check_for_updates_interactive();
+                }
+                IDM_ABOUT => {
+                    crate::updater::show_about_dialog();
                 }
                 IDM_EXIT => {
                     PostQuitMessage(0);

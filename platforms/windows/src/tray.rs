@@ -36,6 +36,8 @@ pub const IDM_TOGGLE_STARTUP: usize = 1052;
 pub const IDM_CONVERT_TOOL: usize = 1060;
 
 pub const IDM_SETTINGS: usize = 1030;
+pub const IDM_CHECK_UPDATE: usize = 1070;
+pub const IDM_ABOUT: usize = 1071;
 pub const IDM_EXIT: usize = 1040;
 
 pub struct TrayIcon {
@@ -209,6 +211,19 @@ impl TrayIcon {
             MF_STRING,
             IDM_SETTINGS,
             to_wide("Bảng điều khiển... [Ctrl+Shift+F5]").as_ptr(),
+        );
+        AppendMenuW(hmenu, MF_SEPARATOR, 0, null_mut());
+        AppendMenuW(
+            hmenu,
+            MF_STRING,
+            IDM_CHECK_UPDATE,
+            to_wide("Kiểm tra cập nhật...").as_ptr(),
+        );
+        AppendMenuW(
+            hmenu,
+            MF_STRING,
+            IDM_ABOUT,
+            to_wide("Thông tin (About)...").as_ptr(),
         );
         AppendMenuW(hmenu, MF_SEPARATOR, 0, null_mut());
         AppendMenuW(

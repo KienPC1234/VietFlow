@@ -200,7 +200,8 @@ pub struct EngineOptions {
     pub enable_macro: bool,
     pub allow_macro_when_disabled: bool,
     pub use_clipboard_for_unicode: bool,
-    pub foreign_initials: [char; 4],
+    pub foreign_initials: Vec<char>,
+    pub custom_english_keywords: Vec<String>,
 }
 
 impl Default for EngineOptions {
@@ -217,7 +218,8 @@ impl Default for EngineOptions {
             enable_macro: false,
             allow_macro_when_disabled: false,
             use_clipboard_for_unicode: false,
-            foreign_initials: ['f', 'j', 'w', 'z'],
+            foreign_initials: vec!['f', 'j', 'w', 'z'],
+            custom_english_keywords: Vec::new(),
         }
     }
 }

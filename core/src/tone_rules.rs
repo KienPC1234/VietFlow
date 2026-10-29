@@ -30,8 +30,25 @@ pub fn normalize_vowel(raw_vowel: VnLexiName) -> VnLexiName {
         _ => {
             let val = raw_vowel as i16;
             if (0..TOTAL_VN_CHARS as i16).contains(&val) {
-                let root = crate::tables::STD_VN_ROOT_CHAR[val as usize];
-                unsafe { std::mem::transmute(root as i16) }
+                let mut root = crate::tables::STD_VN_ROOT_CHAR[val as usize];
+                if (root & 1) != 0 {
+                    root -= 1;
+                }
+                match root {
+                    0 => VnLexiName::A,
+                    12 => VnLexiName::Ar,
+                    24 => VnLexiName::Ah,
+                    44 => VnLexiName::E,
+                    56 => VnLexiName::Er,
+                    74 => VnLexiName::I,
+                    96 => VnLexiName::O,
+                    108 => VnLexiName::Or,
+                    120 => VnLexiName::Oh,
+                    142 => VnLexiName::U,
+                    154 => VnLexiName::Uh,
+                    172 => VnLexiName::Y,
+                    _ => raw_vowel,
+                }
             } else {
                 raw_vowel
             }

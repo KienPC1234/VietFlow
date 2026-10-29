@@ -7,6 +7,7 @@ use crate::input_proc::{
     get_char_type, get_modify_key, get_tone_key, is_ascii_upper, is_letter_fast,
     is_word_break_fast, to_lower_ascii, to_vn_lexi_tone,
 };
+use crate::key_text::KeyText;
 use crate::macro_table::MacroTable;
 use crate::models::{
     CharType, CharsetId, EngineOptions, InputMethod, ModifyKeyType, ToneKeyType, VnLexiName,
@@ -104,7 +105,7 @@ impl VietFlowEngine {
         self.vowel_count = 0;
     }
 
-    pub fn process_key(&mut self, c: char) -> (usize, String) {
+    pub fn process_key(&mut self, c: char) -> (usize, KeyText) {
         if c == '\x08' {
             return self.process_backspace();
         }
@@ -133,7 +134,7 @@ impl VietFlowEngine {
                 self.capitalize_next = true;
             }
 
-            return (0, c.to_string());
+            return (0, KeyText::from_char(c));
         }
 
         // Try tone key
@@ -168,7 +169,7 @@ impl VietFlowEngine {
         self.process_word_break(c)
     }
 
-    fn try_bracket_shortcut(&mut self, c: char) -> Option<(usize, String)> {
+    fn try_bracket_shortcut(&mut self, c: char) -> Option<(usize, KeyText)> {
         match c {
             '[' => Some(self.append_mapped_letter(c, VnLexiName::oh, false)),
             '{' => Some(self.append_mapped_letter(c, VnLexiName::Oh, true)),
@@ -178,7 +179,7 @@ impl VietFlowEngine {
         }
     }
 
-    fn append_mapped_letter(&mut self, raw_key: char, lexi: VnLexiName, mut is_upper: bool) -> (usize, String) {
+    fn append_mapped_letter(&mut self, raw_key: char, lexi: VnLexiName, mut is_upper: bool) -> (usize, KeyText) {
         if self.buffer.is_empty() && self.capitalize_next && self.options.auto_capitalize {
             is_upper = true;
             self.capitalize_next = false;
@@ -218,7 +219,7 @@ impl VietFlowEngine {
         (0, out)
     }
 
-    fn process_first_letter(&mut self, mut c: char) -> (usize, String) {
+    fn process_first_letter(&mut self, mut c: char) -> (usize, KeyText) {
         if self.capitalize_next && self.options.auto_capitalize && c.is_alphabetic() {
             c = c.to_ascii_uppercase();
             self.capitalize_next = false;
@@ -253,7 +254,7 @@ impl VietFlowEngine {
         (0, out)
     }
 
-    fn rebuild_shortcut(&mut self, first: VnLexiName, second: VnLexiName, is_upper: bool) -> (usize, String) {
+    fn rebuild_shortcut(&mut self, first: VnLexiName, second: VnLexiName, is_upper: bool) -> (usize, KeyText) {
         let mut slot0 = Slot::new(if is_upper { 'P' } else { 'p' });
         slot0.lexi = if is_upper { first.to_upper() } else { first };
         slot0.is_upper = is_upper;
@@ -271,7 +272,7 @@ impl VietFlowEngine {
         self.rebuild_current_word()
     }
 
-    fn process_lone_w(&mut self, c: char) -> (usize, String) {
+    fn process_lone_w(&mut self, c: char) -> (usize, KeyText) {
         self.raw_chars.push(c);
         let is_upper = is_ascii_upper(c);
 
@@ -290,7 +291,7 @@ impl VietFlowEngine {
         (0, out)
     }
 
-    fn process_subsequent_letter(&mut self, c: char) -> (usize, String) {
+    fn process_subsequent_letter(&mut self, c: char) -> (usize, KeyText) {
         self.raw_chars.push(c);
 
         let vowel_start = self.get_vowel_start();
@@ -359,7 +360,7 @@ impl VietFlowEngine {
         (0, out)
     }
 
-    fn append_non_vn_letter(&mut self, c: char) -> (usize, String) {
+    fn append_non_vn_letter(&mut self, c: char) -> (usize, KeyText) {
         let slot = Slot::new(c);
         self.buffer.push(slot);
         self.word_form = WordForm::NonVn;
@@ -377,7 +378,7 @@ impl VietFlowEngine {
         matches!(to_lower_ascii(c), 'a' | 'e' | 'o' | 'd')
     }
 
-    fn try_apply_tone(&mut self, tone_key: ToneKeyType, raw_key: char) -> Option<(usize, String)> {
+    fn try_apply_tone(&mut self, tone_key: ToneKeyType, raw_key: char) -> Option<(usize, KeyText)> {
         let vowel_count = self.vowel_count;
         if vowel_count == 0 || self.word_form == WordForm::NonVn {
             return None;
@@ -413,17 +414,21 @@ impl VietFlowEngine {
 
         // Stop codas (c, ch, p, t) never take huyền/hỏi/ngã
         if has_coda {
-            let coda_chars: Vec<char> = self.buffer[last_vowel + 1..]
-                .iter()
-                .map(|s| to_lower_ascii(s.raw_char))
-                .collect();
-            if is_stop_coda(&coda_chars)
-                && matches!(
-                    new_tone,
-                    VnLexiTone::Grave | VnLexiTone::Hook | VnLexiTone::Tilde
-                )
-            {
-                return None;
+            let coda = &self.buffer[last_vowel + 1..];
+            let coda_len = coda.len();
+            if coda_len <= 2 {
+                let mut coda_chars = ['\0'; 2];
+                for (i, slot) in coda.iter().enumerate() {
+                    coda_chars[i] = to_lower_ascii(slot.raw_char);
+                }
+                if is_stop_coda(&coda_chars[..coda_len])
+                    && matches!(
+                        new_tone,
+                        VnLexiTone::Grave | VnLexiTone::Hook | VnLexiTone::Tilde
+                    )
+                {
+                    return None;
+                }
             }
         }
 
@@ -444,12 +449,7 @@ impl VietFlowEngine {
 
         self.current_tone = new_tone;
 
-        let vowel_lexis: Vec<VnLexiName> = self.buffer[first_vowel..first_vowel + vowel_count]
-            .iter()
-            .map(|s| s.lexi)
-            .collect();
-
-        let target_pos = get_tone_position(&vowel_lexis, has_coda, self.options.modern_style);
+        let target_pos = self.tone_position_at(vowel_count, has_coda);
 
         for i in 0..vowel_count {
             self.buffer[first_vowel + i].tone = if i == target_pos {
@@ -466,7 +466,7 @@ impl VietFlowEngine {
         &mut self,
         modify_key: ModifyKeyType,
         raw_key: char,
-    ) -> Option<(usize, String)> {
+    ) -> Option<(usize, KeyText)> {
         let lower = to_lower_ascii(raw_key);
 
         if self.options.spell_check
@@ -491,7 +491,7 @@ impl VietFlowEngine {
                         slot.lexi = if slot.is_upper { VnLexiName::D } else { VnLexiName::d };
                         slot.modified = false;
                         let (bk, mut s) = self.rebuild_current_word();
-                        s.push(raw_key);
+                        s.push_char(raw_key);
                         self.display_len += 1;
                         return Some((bk, s));
                     }
@@ -512,7 +512,7 @@ impl VietFlowEngine {
                         slot.lexi = iso_to_vn_lexi(slot_char);
                         slot.modified = false;
                         let (bk, mut s) = self.rebuild_current_word();
-                        s.push(raw_key);
+                        s.push_char(raw_key);
                         self.display_len += 1;
                         return Some((bk, s));
                     }
@@ -617,7 +617,7 @@ impl VietFlowEngine {
         None
     }
 
-    fn apply_hook_all(&mut self, raw_key: char) -> Option<(usize, String)> {
+    fn apply_hook_all(&mut self, raw_key: char) -> Option<(usize, KeyText)> {
         let vowel_start = self.get_vowel_start();
         let mut u_idx = None;
         let mut o_idx = None;
@@ -644,7 +644,7 @@ impl VietFlowEngine {
                 self.buffer[o].modified = false;
                 self.refresh_tone_position();
                 let (bk, mut s) = self.rebuild_current_word();
-                s.push(raw_key);
+                s.push_char(raw_key);
                 self.display_len += 1;
                 return Some((bk, s));
             }
@@ -655,7 +655,7 @@ impl VietFlowEngine {
                 self.buffer[o].modified = false;
                 self.refresh_tone_position();
                 let (bk, mut s) = self.rebuild_current_word();
-                s.push(raw_key);
+                s.push_char(raw_key);
                 self.display_len += 1;
                 return Some((bk, s));
             }
@@ -713,7 +713,7 @@ impl VietFlowEngine {
             last_slot.modified = false;
             self.refresh_tone_position();
             let (bk, mut s) = self.rebuild_current_word();
-            s.push(raw_key);
+            s.push_char(raw_key);
             self.display_len += 1;
             return Some((bk, s));
         }
@@ -745,7 +745,7 @@ impl VietFlowEngine {
         None
     }
 
-    fn process_word_break(&mut self, c: char) -> (usize, String) {
+    fn process_word_break(&mut self, c: char) -> (usize, KeyText) {
         if self.options.auto_capitalize && matches!(c, '.' | '!' | '?' | '\r' | '\n') {
             self.capitalize_next = true;
         }
@@ -755,11 +755,12 @@ impl VietFlowEngine {
             && (!self.buffer.is_empty() || !self.raw_chars.is_empty())
         {
             let trigger: String = self.raw_chars.iter().collect();
-            if let Some(mut replacement) = self.macros.get(&trigger) {
+            if let Some(replacement) = self.macros.get(&trigger) {
                 let backspaces = self.display_len;
-                replacement.push(c);
+                let mut out = KeyText::from_str(&replacement);
+                out.push_char(c);
                 self.reset_word();
-                return (backspaces, replacement);
+                return (backspaces, out);
             }
         }
 
@@ -784,21 +785,21 @@ impl VietFlowEngine {
             let prefix_len = self.measure_range(0, match_len);
             let backspaces = self.display_len.saturating_sub(prefix_len);
 
-            let mut out = String::new();
+            let mut out = KeyText::new();
             for i in match_len..self.raw_chars.len() {
-                out.push(self.raw_chars[i]);
+                out.push_char(self.raw_chars[i]);
             }
-            out.push(c);
+            out.push_char(c);
 
             self.reset_word();
             return (backspaces, out);
         }
 
         self.reset_word();
-        (0, c.to_string())
+        (0, KeyText::from_char(c))
     }
 
-    fn restore_raw_buffer_with_new_char(&mut self, _c: char) -> (usize, String) {
+    fn restore_raw_buffer_with_new_char(&mut self, _c: char) -> (usize, KeyText) {
         let prev_display_len = self.display_len;
 
         let mut match_len = 0;
@@ -816,9 +817,9 @@ impl VietFlowEngine {
         let prefix_len = self.measure_range(0, match_len);
         let backspaces = prev_display_len.saturating_sub(prefix_len);
 
-        let mut out = String::new();
+        let mut out = KeyText::new();
         for i in match_len..self.raw_chars.len() {
-            out.push(self.raw_chars[i]);
+            out.push_char(self.raw_chars[i]);
         }
 
         self.buffer.clear();
@@ -836,13 +837,13 @@ impl VietFlowEngine {
         (backspaces, out)
     }
 
-    fn process_backspace(&mut self) -> (usize, String) {
+    fn process_backspace(&mut self) -> (usize, KeyText) {
         if !self.raw_chars.is_empty() {
             self.raw_chars.pop();
         }
 
         if self.buffer.is_empty() {
-            return (1, String::new());
+            return (1, KeyText::new());
         }
 
         let word_len = self.measure_range(0, self.buffer.len());
@@ -850,7 +851,7 @@ impl VietFlowEngine {
         if self.display_len > word_len {
             let bk = self.display_len - word_len;
             self.display_len = word_len;
-            return (bk, String::new());
+            return (bk, KeyText::new());
         }
 
         let prev_display_len = self.display_len;
@@ -859,7 +860,7 @@ impl VietFlowEngine {
 
         if self.buffer.is_empty() {
             self.reset_word();
-            return (prev_display_len, String::new());
+            return (prev_display_len, KeyText::new());
         }
 
         self.recalculate_word_form();
@@ -875,14 +876,14 @@ impl VietFlowEngine {
         (prev_display_len, out)
     }
 
-    fn rebuild_current_word(&mut self) -> (usize, String) {
+    fn rebuild_current_word(&mut self) -> (usize, KeyText) {
         let bk = self.display_len;
         let out = self.encode_range(0, self.buffer.len());
         self.display_len = out.chars().count();
         (bk, out)
     }
 
-    fn rebuild_from_index(&mut self, from: usize) -> (usize, String) {
+    fn rebuild_from_index(&mut self, from: usize) -> (usize, KeyText) {
         let from_idx = from.min(self.buffer.len());
         let prefix_len = self.measure_range(0, from_idx);
         let bk = self.display_len.saturating_sub(prefix_len);
@@ -891,23 +892,23 @@ impl VietFlowEngine {
         (bk, out)
     }
 
-    fn encode_range(&self, from: usize, to: usize) -> String {
-        let mut s = String::with_capacity((to - from) * 2);
+    fn encode_range(&self, from: usize, to: usize) -> KeyText {
+        let mut s = KeyText::new();
         for i in from..to {
             let slot = &self.buffer[i];
             let enc = encode_slot(slot.lexi, slot.tone, slot.is_upper, slot.raw_char, self.charset);
             for &c in enc.as_slice() {
-                s.push(c);
+                s.push_char(c);
             }
         }
         s
     }
 
-    fn encode_slot_str(&self, slot: &Slot) -> String {
+    fn encode_slot_str(&self, slot: &Slot) -> KeyText {
         let enc = encode_slot(slot.lexi, slot.tone, slot.is_upper, slot.raw_char, self.charset);
-        let mut s = String::with_capacity(enc.len);
+        let mut s = KeyText::new();
         for &c in enc.as_slice() {
-            s.push(c);
+            s.push_char(c);
         }
         s
     }
@@ -1025,6 +1026,21 @@ impl VietFlowEngine {
         Some(self.vowel_start)
     }
 
+    /// Tone position within the current vowel nucleus, without heap allocation.
+    /// Nuclei longer than three vowels are outside Vietnamese phonotactics; the
+    /// fallback matches `get_tone_position`'s behavior for unknown sequences.
+    #[inline]
+    fn tone_position_at(&self, count: usize, has_coda: bool) -> usize {
+        if count > 3 {
+            return 1;
+        }
+        let mut vowels = [VnLexiName::None; 3];
+        for (i, vowel) in vowels.iter_mut().enumerate().take(count) {
+            *vowel = self.buffer[self.vowel_start + i].lexi;
+        }
+        get_tone_position(&vowels[..count], has_coda, self.options.modern_style)
+    }
+
     fn refresh_tone_position(&mut self) -> bool {
         if self.current_tone == VnLexiTone::None {
             return false;
@@ -1036,13 +1052,8 @@ impl VietFlowEngine {
             return true;
         }
 
-        let vowels: Vec<VnLexiName> = self.buffer[self.vowel_start..self.vowel_start + count]
-            .iter()
-            .map(|s| s.lexi)
-            .collect();
-
         let has_coda = self.vowel_start + count < self.buffer.len();
-        let target = get_tone_position(&vowels, has_coda, self.options.modern_style);
+        let target = self.tone_position_at(count, has_coda);
 
         let mut changed = false;
         for i in 0..count {
@@ -1091,6 +1102,16 @@ impl VietFlowEngine {
         self.buffer.iter().any(|s| s.tone != VnLexiTone::None || s.modified)
     }
 
+    #[inline]
+    fn matches_english_keyword(&self, word: &str) -> bool {
+        is_english_keyword(word)
+            || self
+                .options
+                .custom_english_keywords
+                .iter()
+                .any(|keyword| keyword == word)
+    }
+
     pub fn is_valid_vietnamese_word(&self) -> bool {
         if self.buffer.is_empty() {
             return true;
@@ -1106,12 +1127,12 @@ impl VietFlowEngine {
         }
 
         let raw_str: String = self.raw_chars.iter().map(|&c| to_lower_ascii(c)).collect();
-        if is_english_keyword(&raw_str) {
+        if self.matches_english_keyword(&raw_str) {
             return false;
         }
 
         let buf_str: String = self.buffer.iter().map(|s| to_lower_ascii(s.raw_char)).collect();
-        if is_english_keyword(&buf_str) {
+        if self.matches_english_keyword(&buf_str) {
             return false;
         }
 
@@ -1120,21 +1141,30 @@ impl VietFlowEngine {
         }
 
         if self.vowel_count == 1 && self.vowel_start > 0 {
-            let initial: Vec<char> = self.buffer[..self.vowel_start]
-                .iter()
-                .map(|s| to_lower_ascii(s.raw_char))
-                .collect();
-            if !is_valid_initial_with_vowel(&initial, self.buffer[self.vowel_start].lexi) {
-                return false;
+            let initial_len = self.vowel_start;
+            if initial_len <= 3 {
+                let mut initial = ['\0'; 3];
+                for (i, slot) in self.buffer[..initial_len].iter().enumerate() {
+                    initial[i] = to_lower_ascii(slot.raw_char);
+                }
+                if !is_valid_initial_with_vowel(&initial[..initial_len], self.buffer[self.vowel_start].lexi) {
+                    return false;
+                }
             }
         }
 
-        if self.vowel_start + self.vowel_count < self.buffer.len() {
-            let ending: Vec<char> = self.buffer[self.vowel_start + self.vowel_count..]
-                .iter()
-                .map(|s| to_lower_ascii(s.raw_char))
-                .collect();
-            if !is_valid_ending_consonant(&ending) {
+        let ending_start = self.vowel_start + self.vowel_count;
+        if ending_start < self.buffer.len() {
+            let ending_len = self.buffer.len() - ending_start;
+            // No Vietnamese syllable ends with more than two consonants.
+            if ending_len > 2 {
+                return false;
+            }
+            let mut ending = ['\0'; 2];
+            for (i, slot) in self.buffer[ending_start..].iter().enumerate() {
+                ending[i] = to_lower_ascii(slot.raw_char);
+            }
+            if !is_valid_ending_consonant(&ending[..ending_len]) {
                 return false;
             }
         }

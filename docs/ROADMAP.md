@@ -4,50 +4,65 @@ All active and completed work items across the VietFlow codebase.
 
 ---
 
-## I. Completed Milestones (Rust Architecture)
+## I. Completed Milestones
 
-- [x] **100% Rust Core Rewrite (`vietflow-core`)**:
-  - [x] High-performance Telex, Simple Telex, VNI, and VIQR input state machine.
+- [x] **100% Rust Core (`core/`)**:
+  - [x] High-performance Telex, Simple Telex, VNI and VIQR state machine.
   - [x] Modern tone placement rules (dấu mới `oà, uỳ, oè` vs dấu cũ `òa, ùy, òe`).
   - [x] Auto-restore key sequence on English words.
-  - [x] Smart consonant shortcuts (`f` -> `ph`, `j` -> `gi`, `w` -> `qu`).
-  - [x] Shift lag automatic fix (sửa dính Shift chữ thứ hai).
-  - [x] Smart macro engine with dynamic variables (`@date`, `@time`, `@datetime`, `@clipboard`, `@tab`, `@newline`).
-  - [x] Cross-charset converter (Unicode dựng sẵn, Tổ hợp, TCVN3 ABC, VNI Windows).
-  - [x] Stable C-ABI exports (`vf_engine_*`) for external consumers.
-  - [x] 100% test suite passing with UniKey algorithmic parity.
+  - [x] Smart consonant shortcuts (`f` → `ph`, `j` → `gi`, `w` → `qu`).
+  - [x] Shift-lag auto fix (sửa dính Shift chữ thứ hai).
+  - [x] Macro engine with dynamic variables (`@date`, `@time`, `@datetime`, `@clipboard`, `@tab`, `@newline`).
+  - [x] Cross-charset converter (Unicode NFC, Unicode NFD, TCVN3, VNI Windows).
+  - [x] Allocation-free steady-state key output (`KeyText`) and stack-based tone lookup.
+  - [x] Stable C ABI (`ffi/vietflow_core.h`) with charset conversion helpers.
+  - [x] Full unit test suite passing.
 
-- [x] **Native Windows Host (`vietflow-windows`)**:
-  - [x] `WH_KEYBOARD_LL` low-level keyboard hook with `SendInput` atomic injection.
-  - [x] Thread-safe modifier key state tracking (`Ctrl`, `Shift`, `Alt`, `CapsLock`).
-  - [x] Global mode switching hotkey (`Ctrl+Shift`, `Alt+Z`, etc.) with beep audio feedback.
-  - [x] Windows system tray icon with live `[V]` / `[E]` visual status badge.
-  - [x] Context menu for instant method, charset, macro, and startup toggling.
-  - [x] Automated Game Mode: Excluded process detection via Win32 process query.
-  - [x] System auto-start integration via Windows Registry `Run` key.
+- [x] **Windows Host (`platforms/windows/`)**:
+  - [x] `WH_KEYBOARD_LL` hook with atomic `SendInput` batches and display shadow diffing.
+  - [x] Modifier tracking and global hotkeys.
+  - [x] System tray with live `[V]` / `[E]` status.
+  - [x] Context menu for method, charset, macro, spellcheck and startup.
+  - [x] Game Mode process exclusion.
+  - [x] Auto-start via the Windows `Run` registry key.
+  - [x] Live configuration reload (file watcher timer, no daemon restart).
 
-- [x] **Unified GUI (`vietflow-gui`)**:
-  - [x] Modern Slint declarative interface (0 C++ / 0 Qt SDK dependency).
-  - [x] 5 complete tabs: Tổng quan, Bộ gõ & Chính tả, Gõ tắt & Biến số, Game & Loại trừ, Công cụ & Giới thiệu.
-  - [x] Text & Clipboard converter utility with hotkey trigger (`Ctrl+Shift+F9`).
-  - [x] Fully integrated dark theme matching Windows 11 Fluent style.
-  - [x] Embedded brand assets (`app-logo.png`, `VietFlow.ico`).
+- [x] **Qt 6 Configuration UI (`ui/`)**:
+  - [x] Qt Quick/QML interface with C++ backend (`SettingsBackend`, `EngineBridge`).
+  - [x] Seven pages: Overview, Typing & Spelling, Macros, Game Mode, Converter, Advanced, About.
+  - [x] Advanced page restored from C# parity: English/foreign keyword list, foreign initials, config folder shortcut.
+  - [x] Rust Core accessed through the C ABI; no Qt in the hook process.
+  - [x] Compact dark theme, short user-facing copy, 900×600 window.
+  - [x] Clipboard and direct-text charset conversion.
+  - [x] Removed the old Slint UI and the legacy Qt Widgets prototype.
 
 ---
 
 ## II. Active & Upcoming Tasks
 
-- [ ] **Single Binary Packaging**:
-  - [ ] Consolidate daemon host and Slint GUI into a single unified `VietFlow.exe` executable.
-  - [ ] Support `--gui` and `--convert` command-line flags from the same binary.
-  - [ ] Automated release export script copying production binaries to `dist/`.
+- [x] **Packaging**:
+  - [x] Single-file `VietFlow.exe`: Rust host + embedded Qt UI runtime.
+  - [x] First-launch extraction to `%LOCALAPPDATA%` and reuse afterwards.
+  - [x] `scripts/build.ps1` produces the single-file release (and `-Separate` for dev).
+  - [x] Trimmed embedded runtime (unused Qt plugins/libraries): ~19 MB single file.
+  - [ ] Signed installer / Microsoft Store package (optional).
+
+- [ ] **Updater integration (concurrent session)**:
+  - [ ] Wire the velopack updater or remove the `test_api` stub; currently emits a
+        `dead_code` warning. Coordinate through `docs/ACTIVE_WORK.md` before editing.
 
 - [ ] **Elevated / Administrator Privileges**:
-  - [ ] Option to create an elevated scheduled task (`TaskScheduler`) allowing VietFlow to type into games or developer tools running as Administrator without UAC prompts on boot.
+  - [ ] Optional elevated scheduled task so VietFlow can type into games or tools
+        running as Administrator without UAC prompts on boot.
 
 - [ ] **Linux Integration**:
-  - [ ] Build and package the Fcitx5 C++ addon connecting to `libvietflow_core.so` via C-ABI.
-  - [ ] Verify Linux X11 and Wayland input forwarding.
+  - [ ] Fcitx5 addon connecting to `libvietflow_core.so` via the C ABI.
+  - [ ] Verify X11 and Wayland input forwarding.
+  - [ ] Package the Qt UI for Linux distributions.
+
+- [ ] **macOS Integration**:
+  - [ ] InputMethodKit adapter (Swift/Obj-C) using the Rust core.
+  - [ ] Code signing and notarization for the Qt UI bundle.
 
 - [ ] **Benchmark & Performance**:
-  - [ ] Continuous benchmarking suite comparing keystroke latency against UniKey and EVKey.
+  - [ ] Continuous benchmark suite comparing keystroke latency against UniKey and EVKey.

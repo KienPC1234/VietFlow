@@ -7,6 +7,7 @@ pub mod converter;
 pub mod english;
 pub mod engine;
 pub mod input_proc;
+pub mod key_text;
 pub mod macro_table;
 pub mod models;
 pub mod tables;
@@ -15,6 +16,7 @@ pub mod tone_rules;
 pub use charset::encode_slot;
 pub use converter::{convert_charset, strip_accents};
 pub use engine::{Slot, VietFlowEngine};
+pub use key_text::KeyText;
 pub use macro_table::MacroTable;
 pub use models::{CharsetId, EngineOptions, InputMethod, VnLexiName, VnLexiTone};
 
@@ -295,5 +297,98 @@ mod tests {
         engine.reset();
         let actual_code = process_string(&mut engine, "custom ");
         assert_eq!(actual_code, "custom ");
+    }
+
+    #[test]
+    fn test_custom_english_keywords() {
+        let mut engine = VietFlowEngine::new(
+            EngineOptions {
+                custom_english_keywords: vec!["nam".to_string()],
+                ..Default::default()
+            },
+            CharsetId::Unicode,
+        );
+
+        for c in "nam".chars() {
+            engine.process_key(c);
+        }
+        assert!(
+            !engine.is_valid_vietnamese_word(),
+            "user-added keyword must be treated as non-Vietnamese"
+        );
+    }
+
+    #[test]
+    fn test_custom_foreign_initials() {
+        let mut engine = VietFlowEngine::new(
+            EngineOptions {
+                foreign_initials: vec!['b'],
+                ..Default::default()
+            },
+            CharsetId::Unicode,
+        );
+        assert_eq!(process_string(&mut engine, "bas"), "bas");
+
+        let mut default_engine = VietFlowEngine::default();
+        assert_eq!(process_string(&mut default_engine, "bas"), "bá");
+    }
+
+    #[test]
+    fn test_convert_charset_all_codecs() {
+        let text = "Tiếng Việt Nam đường hoa Nguyễn Huệ";
+
+        // Unicode to TCVN3 and back
+        let tcvn3 = convert_charset(text, CharsetId::Unicode, CharsetId::Tcvn3);
+        assert_ne!(tcvn3, text);
+        let back_from_tcvn3 = convert_charset(&tcvn3, CharsetId::Tcvn3, CharsetId::Unicode);
+        assert_eq!(back_from_tcvn3, text);
+
+        // Unicode to VNI Windows and back
+        let vni = convert_charset(text, CharsetId::Unicode, CharsetId::VniWindows);
+        assert_ne!(vni, text);
+        let back_from_vni = convert_charset(&vni, CharsetId::VniWindows, CharsetId::Unicode);
+        assert_eq!(back_from_vni, text);
+
+        // Unicode to Unicode Composite (NFD) and back
+        let nfd = convert_charset(text, CharsetId::Unicode, CharsetId::UnicodeComposite);
+        assert_ne!(nfd, text);
+        // Ensure NFD contains combining marks
+        assert!(nfd.contains('\u{0301}') || nfd.contains('\u{0323}'));
+        let back_from_nfd = convert_charset(&nfd, CharsetId::UnicodeComposite, CharsetId::Unicode);
+        assert_eq!(back_from_nfd, text);
+    }
+
+    #[test]
+    fn test_tone_placement_and_vowel_normalization() {
+        use crate::tone_rules::{get_tone_position, normalize_vowel};
+
+        // Ensure vowels with tones normalize to uppercase base
+        assert_eq!(normalize_vowel(VnLexiName::a1), VnLexiName::A);
+        assert_eq!(normalize_vowel(VnLexiName::ar2), VnLexiName::Ar);
+        assert_eq!(normalize_vowel(VnLexiName::er5), VnLexiName::Er);
+
+        // Check classic vs modern tone placement for "oa"
+        let oa_vowels = [VnLexiName::O, VnLexiName::A];
+        let classic_pos = get_tone_position(&oa_vowels, false, false);
+        let modern_pos = get_tone_position(&oa_vowels, false, true);
+        assert_eq!(classic_pos, 0, "Classic style should place tone on first vowel");
+        assert_eq!(modern_pos, 1, "Modern style should place tone on second vowel");
+
+        // When coda is present, tone always lands on the second vowel
+        let coda_pos = get_tone_position(&oa_vowels, true, false);
+        assert_eq!(coda_pos, 1);
+    }
+
+    #[test]
+    fn test_english_synced_keywords() {
+        use crate::english::is_english_keyword;
+
+        assert!(is_english_keyword("context"));
+        assert!(is_english_keyword("status"));
+        assert!(is_english_keyword("create"));
+        assert!(is_english_keyword("reddit"));
+        assert!(is_english_keyword("custom"));
+        assert!(is_english_keyword("requires"));
+        assert!(!is_english_keyword("tieng"));
     }
 }

@@ -68,9 +68,10 @@ impl HookState {
 
     /// Minimizes caret movement and screen jitter by computing the longest common prefix
     /// between the current on-screen buffer and the newly desired replacement string.
+    /// The prefix comparison works on the existing shadow buffer, so a normal
+    /// keystroke does not allocate.
     pub fn send_engine_output(&mut self, backspaces: usize, text: &str) {
-        let bk = backspaces;
-        if bk == 0 && text.is_empty() {
+        if backspaces == 0 && text.is_empty() {
             return;
         }
 
@@ -78,21 +79,22 @@ impl HookState {
             .chars()
             .any(|c| c.is_whitespace() || c.is_ascii_punctuation() || c.is_ascii_digit());
 
-        let can_diff = bk > 0
-            && bk <= self.display_shadow.len()
+        let text_chars = text.chars().count();
+        let can_diff = backspaces > 0
+            && backspaces <= self.display_shadow.len()
             && self.display_shadow.len() <= 128
-            && text.chars().count() <= 256
+            && text_chars <= 256
             && !contains_break;
 
         if !can_diff {
-            send_atomic_batch(bk, text);
+            send_atomic_batch(backspaces, text);
             if contains_break {
                 self.reset_display_shadow();
             } else {
-                if bk > self.display_shadow.len() {
+                if backspaces > self.display_shadow.len() {
                     self.reset_display_shadow();
                 } else {
-                    let new_len = self.display_shadow.len() - bk;
+                    let new_len = self.display_shadow.len() - backspaces;
                     self.display_shadow.truncate(new_len);
                 }
                 for c in text.chars() {
@@ -107,46 +109,44 @@ impl HookState {
             return;
         }
 
-        let prefix_length = self.display_shadow.len() - bk;
-        let mut next: Vec<char> = self.display_shadow[..prefix_length].to_vec();
-        next.extend(text.chars());
-
-        let mut common = 0;
+        // Desired content is the kept prefix followed by `text`. The kept prefix
+        // is known to match; extend the common prefix into the replaced region.
+        let prefix_len = self.display_shadow.len() - backspaces;
         let shadow_len = self.display_shadow.len();
-        let next_len = next.len();
-        while common < shadow_len && common < next_len && self.display_shadow[common] == next[common] {
-            common += 1;
+        let mut common = prefix_len;
+        let mut suffix_offset = 0;
+
+        for (offset, c) in text.char_indices() {
+            if common < shadow_len && self.display_shadow[common] == c {
+                common += 1;
+                suffix_offset = offset + c.len_utf8();
+            } else {
+                suffix_offset = offset;
+                break;
+            }
         }
 
-        let backspaces_to_send = shadow_len - common;
-        let suffix_to_send: String = next[common..].iter().collect();
+        send_atomic_batch(shadow_len - common, &text[suffix_offset..]);
 
-        send_atomic_batch(backspaces_to_send, &suffix_to_send);
-
-        self.display_shadow = next;
+        self.display_shadow.truncate(prefix_len);
+        self.display_shadow.extend(text.chars());
+        if self.display_shadow.len() > 128 {
+            self.reset_display_shadow();
+        }
     }
 }
 
 pub static STATE: Mutex<Option<HookState>> = Mutex::new(None);
 
-pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
+fn engine_options_from_config(config: &AppConfig) -> EngineOptions {
     let method = match config.method {
-        0 => InputMethod::Telex,
         1 => InputMethod::SimpleTelex,
         2 => InputMethod::Vni,
         3 => InputMethod::Viqr,
         _ => InputMethod::Telex,
     };
 
-    let charset = match config.charset {
-        0 => CharsetId::Unicode,
-        1 => CharsetId::UnicodeComposite,
-        2 => CharsetId::Tcvn3,
-        3 => CharsetId::VniWindows,
-        _ => CharsetId::Unicode,
-    };
-
-    let options = EngineOptions {
+    EngineOptions {
         method,
         spell_check: config.spell_check,
         modern_style: config.modern_style,
@@ -158,10 +158,50 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         enable_macro: config.enable_macro,
         allow_macro_when_disabled: config.allow_macro_when_disabled,
         use_clipboard_for_unicode: config.use_clipboard_for_unicode,
-        ..Default::default()
+        foreign_initials: config.normalized_foreign_initials(),
+        custom_english_keywords: config.normalized_english_keywords(),
+    }
+}
+
+fn charset_from_config(config: &AppConfig) -> CharsetId {
+    match config.charset {
+        1 => CharsetId::UnicodeComposite,
+        2 => CharsetId::Tcvn3,
+        3 => CharsetId::VniWindows,
+        _ => CharsetId::Unicode,
+    }
+}
+
+/// Apply a freshly loaded configuration to the running hook without restarting
+/// the daemon. The engine state is reset so the next keystroke starts a word
+/// with the new options.
+pub unsafe fn apply_config(config: AppConfig) {
+    let mut lock = match STATE.lock() {
+        Ok(lock) => lock,
+        Err(_) => return,
+    };
+    let state = match lock.as_mut() {
+        Some(state) => state,
+        None => return,
     };
 
+    state.engine.options = engine_options_from_config(&config);
+    state.engine.charset = charset_from_config(&config);
+    state.engine.macros.clear();
+    for (trigger, replacement) in &config.macros {
+        state.engine.macros.insert(trigger, replacement);
+    }
+    state.config = config;
+    state.engine.reset();
+    state.reset_display_shadow();
+}
+
+pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
+    let options = engine_options_from_config(&config);
+    let charset = charset_from_config(&config);
+
     let mut engine = VietFlowEngine::new(options, charset);
+    engine.macros.clear();
     for (k, v) in &config.macros {
         engine.macros.insert(k, v);
     }
@@ -185,7 +225,7 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         tray_hwnd,
         hook_handle,
         last_tick: None,
-        display_shadow: Vec::with_capacity(32),
+        display_shadow: Vec::with_capacity(128),
     });
 }
 
@@ -349,7 +389,9 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             let (backspaces, text) = state.engine.process_key(input_char);
 
             // If the engine transformed the text (applied tone, circumflex, restored chars, or macro expanded)
-            if backspaces > 0 || text != input_char.to_string() {
+            let mut utf8 = [0u8; 4];
+            let unchanged = text.as_bytes() == input_char.encode_utf8(&mut utf8).as_bytes();
+            if backspaces > 0 || !unchanged {
                 state.send_engine_output(backspaces, &text);
                 return 1; // Consume key
             }

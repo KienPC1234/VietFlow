@@ -1,7 +1,12 @@
 /target
 /dist
-Cargo.lock
-**/*.rs.bk
+/build
+/releases
+/ui/build
+/ui/build/**
+/ui/runtime
+/ui-runtime.zip
+*.user
 *.pdb
 *.log
 vietflow_config.json
