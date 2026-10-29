@@ -1,0 +1,10 @@
+[package]
+name = "vietflow-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["KienPC1234"]
+description = "High-performance Vietnamese input engine core (C-ABI shared library & staticlib)"
+
+[lib]
+name = "vietflow_core"
+crate-type = ["cdylib", "staticlib", "rlib"]
