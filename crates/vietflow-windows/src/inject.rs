@@ -1,7 +1,9 @@
-// VietFlow Windows - Keystroke Injection (Atomic SendInput)
+// VietFlow Windows - Keystroke Injection (Atomic & Paced SendInput)
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
 use std::mem::size_of;
+use std::thread::sleep;
+use std::time::Duration;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
     VK_BACK,
@@ -9,14 +11,20 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 
 pub const VIETFLOW_MAGIC: usize = 0x56494554; // 'VIET'
 
+#[link(name = "user32")]
+extern "system" {
+    fn MapVirtualKeyW(uCode: u32, uMapType: u32) -> u32;
+}
+
 #[inline]
-fn create_vk_input(vk: u16, key_up: bool) -> INPUT {
+pub fn create_vk_input(vk: u16, key_up: bool) -> INPUT {
+    let scan = unsafe { MapVirtualKeyW(vk as u32, 0) as u16 };
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: vk,
-                wScan: 0,
+                wScan: scan,
                 dwFlags: if key_up { KEYEVENTF_KEYUP } else { 0 },
                 time: 0,
                 dwExtraInfo: VIETFLOW_MAGIC,
@@ -26,7 +34,7 @@ fn create_vk_input(vk: u16, key_up: bool) -> INPUT {
 }
 
 #[inline]
-fn create_unicode_input(c: char, key_up: bool) -> INPUT {
+pub fn create_unicode_input(c: char, key_up: bool) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -41,31 +49,73 @@ fn create_unicode_input(c: char, key_up: bool) -> INPUT {
     }
 }
 
+/// Sends backspaces and replacement Unicode characters to the active window.
+/// Normal keystroke adjustments (<= 8 backspaces, <= 32 chars) are sent in ONE
+/// atomic SendInput call so the caret never visibly jumps or flickers.
+/// Large macro restorations pace backspaces with a tiny delay to prevent apps from dropping them.
 pub fn send_atomic_batch(backspaces: usize, text: &str) {
     if backspaces == 0 && text.is_empty() {
         return;
     }
 
+    const ATOMIC_BACKSPACE_LIMIT: usize = 8;
+    const ATOMIC_CHAR_LIMIT: usize = 32;
+
     let char_count = text.chars().count();
-    let total_inputs = (backspaces * 2) + (char_count * 2);
 
-    let mut inputs = Vec::with_capacity(total_inputs);
+    if backspaces <= ATOMIC_BACKSPACE_LIMIT && char_count <= ATOMIC_CHAR_LIMIT {
+        let total_inputs = (backspaces * 2) + (char_count * 2);
+        let mut inputs = Vec::with_capacity(total_inputs);
 
-    for _ in 0..backspaces {
-        inputs.push(create_vk_input(VK_BACK, false));
-        inputs.push(create_vk_input(VK_BACK, true));
+        for _ in 0..backspaces {
+            inputs.push(create_vk_input(VK_BACK, false));
+            inputs.push(create_vk_input(VK_BACK, true));
+        }
+
+        for c in text.chars() {
+            inputs.push(create_unicode_input(c, false));
+            inputs.push(create_unicode_input(c, true));
+        }
+
+        unsafe {
+            SendInput(
+                inputs.len() as u32,
+                inputs.as_ptr(),
+                size_of::<INPUT>() as i32,
+            );
+        }
+        return;
     }
 
-    for c in text.chars() {
-        inputs.push(create_unicode_input(c, false));
-        inputs.push(create_unicode_input(c, true));
+    // Large restorations or macro expansions
+    if backspaces > 0 {
+        let mut back_inputs = Vec::with_capacity(backspaces * 2);
+        for _ in 0..backspaces {
+            back_inputs.push(create_vk_input(VK_BACK, false));
+            back_inputs.push(create_vk_input(VK_BACK, true));
+        }
+        unsafe {
+            SendInput(
+                back_inputs.len() as u32,
+                back_inputs.as_ptr(),
+                size_of::<INPUT>() as i32,
+            );
+        }
+        sleep(Duration::from_millis(3));
     }
 
-    unsafe {
-        SendInput(
-            inputs.len() as u32,
-            inputs.as_ptr(),
-            size_of::<INPUT>() as i32,
-        );
+    if !text.is_empty() {
+        let mut char_inputs = Vec::with_capacity(char_count * 2);
+        for c in text.chars() {
+            char_inputs.push(create_unicode_input(c, false));
+            char_inputs.push(create_unicode_input(c, true));
+        }
+        unsafe {
+            SendInput(
+                char_inputs.len() as u32,
+                char_inputs.as_ptr(),
+                size_of::<INPUT>() as i32,
+            );
+        }
     }
 }

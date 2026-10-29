@@ -39,10 +39,93 @@ pub struct HookState {
     pub tray_hwnd: HWND,
     pub hook_handle: HHOOK,
     pub last_tick: Option<Instant>,
+    pub display_shadow: Vec<char>,
 }
 
 unsafe impl Send for HookState {}
 unsafe impl Sync for HookState {}
+
+impl HookState {
+    pub fn track_display_char(&mut self, c: char) {
+        if !c.is_alphabetic() {
+            self.display_shadow.clear();
+            return;
+        }
+        if self.display_shadow.len() < 128 {
+            self.display_shadow.push(c);
+        } else {
+            self.display_shadow.clear();
+        }
+    }
+
+    pub fn remove_last_display_char(&mut self) {
+        self.display_shadow.pop();
+    }
+
+    pub fn reset_display_shadow(&mut self) {
+        self.display_shadow.clear();
+    }
+
+    /// Minimizes caret movement and screen jitter by computing the longest common prefix
+    /// between the current on-screen buffer and the newly desired replacement string.
+    pub fn send_engine_output(&mut self, backspaces: usize, text: &str) {
+        let bk = backspaces;
+        if bk == 0 && text.is_empty() {
+            return;
+        }
+
+        let contains_break = text
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_ascii_punctuation() || c.is_ascii_digit());
+
+        let can_diff = bk > 0
+            && bk <= self.display_shadow.len()
+            && self.display_shadow.len() <= 128
+            && text.chars().count() <= 256
+            && !contains_break;
+
+        if !can_diff {
+            send_atomic_batch(bk, text);
+            if contains_break {
+                self.reset_display_shadow();
+            } else {
+                if bk > self.display_shadow.len() {
+                    self.reset_display_shadow();
+                } else {
+                    let new_len = self.display_shadow.len() - bk;
+                    self.display_shadow.truncate(new_len);
+                }
+                for c in text.chars() {
+                    if self.display_shadow.len() < 128 {
+                        self.display_shadow.push(c);
+                    } else {
+                        self.reset_display_shadow();
+                        break;
+                    }
+                }
+            }
+            return;
+        }
+
+        let prefix_length = self.display_shadow.len() - bk;
+        let mut next: Vec<char> = self.display_shadow[..prefix_length].to_vec();
+        next.extend(text.chars());
+
+        let mut common = 0;
+        let shadow_len = self.display_shadow.len();
+        let next_len = next.len();
+        while common < shadow_len && common < next_len && self.display_shadow[common] == next[common] {
+            common += 1;
+        }
+
+        let backspaces_to_send = shadow_len - common;
+        let suffix_to_send: String = next[common..].iter().collect();
+
+        send_atomic_batch(backspaces_to_send, &suffix_to_send);
+
+        self.display_shadow = next;
+    }
+}
 
 pub static STATE: Mutex<Option<HookState>> = Mutex::new(None);
 
@@ -102,6 +185,7 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         tray_hwnd,
         hook_handle,
         last_tick: None,
+        display_shadow: Vec::with_capacity(32),
     });
 }
 
@@ -144,6 +228,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     if foreground != state.last_foreground {
         state.last_foreground = foreground;
         state.engine.reset();
+        state.reset_display_shadow();
 
         // Check if new foreground app is in excluded list (Game Mode)
         let proc_name = get_process_name_for_window(foreground);
@@ -220,6 +305,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     // Reset keys: Esc, Enter, Tab, Arrow keys
     if is_key_down && matches!(vk, VK_ESCAPE | VK_RETURN | VK_TAB | 0x25..=0x28) {
         state.engine.reset();
+        state.reset_display_shadow();
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
@@ -227,15 +313,17 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     if is_key_down && vk == VK_BACK && (state.config.enabled || state.config.allow_macro_when_disabled) {
         let (backspaces, text) = state.engine.process_key('\x08');
         if backspaces > 0 || !text.is_empty() {
-            send_atomic_batch(backspaces, &text);
+            state.send_engine_output(backspaces, &text);
             return 1;
         }
+        state.remove_last_display_char();
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
     // If Ctrl, Alt or Win is pressed, pass key through without processing Vietnamese
     if state.ctrl_pressed || state.alt_pressed {
         state.engine.reset();
+        state.reset_display_shadow();
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
@@ -249,10 +337,11 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         let input_char = vk_to_char(vk, state.shift_pressed);
         if input_char != '\0' {
             let now = Instant::now();
-            let timeout_ms = state.config.typing_timeout_ms.clamp(500, 10000);
+            let timeout_ms = state.config.typing_timeout_ms.clamp(300, 10000);
             if let Some(prev) = state.last_tick {
                 if now.duration_since(prev).as_millis() as u64 > timeout_ms {
                     state.engine.reset();
+                    state.reset_display_shadow();
                 }
             }
             state.last_tick = Some(now);
@@ -261,9 +350,12 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
 
             // If the engine transformed the text (applied tone, circumflex, restored chars, or macro expanded)
             if backspaces > 0 || text != input_char.to_string() {
-                send_atomic_batch(backspaces, &text);
+                state.send_engine_output(backspaces, &text);
                 return 1; // Consume key
             }
+
+            state.track_display_char(input_char);
+            return CallNextHookEx(null_mut(), n_code, w_param, l_param);
         }
     }
 

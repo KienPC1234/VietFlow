@@ -195,8 +195,13 @@ fn read_from_ui(window: &AppWindow, cfg: &mut AppConfig) {
     cfg.allow_macro_when_disabled = window.get_allow_macro_when_disabled();
 }
 
-pub fn run_gui(_convert_mode: bool) -> Result<(), slint::PlatformError> {
+pub fn run_gui(convert_mode: bool) -> Result<(), slint::PlatformError> {
     let window = AppWindow::new()?;
+    if convert_mode {
+        window.set_active_tab(4);
+    } else {
+        window.set_active_tab(0);
+    }
     let config_state = Rc::new(std::cell::RefCell::new(load_config()));
 
     sync_to_ui(&window, &config_state.borrow());

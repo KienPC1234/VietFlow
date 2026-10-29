@@ -1,18 +1,89 @@
-import { Button, CheckBox, ComboBox, LineEdit, TextEdit, ScrollView, TabWidget, Switch } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, TextEdit, ScrollView, Switch } from "std-widgets.slint";
 
 export struct MacroEntry {
     key: string,
     value: string,
 }
 
+component NavTab inherits Rectangle {
+    in property <string> text;
+    in property <bool> active: false;
+    callback clicked();
+
+    height: 36px;
+    border-radius: 6px;
+    background: root.active ? #2563eb : (touch.has-hover ? #1e293b : transparent);
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+        mouse-cursor: pointer;
+    }
+
+    Text {
+        text: root.text;
+        font-size: 13px;
+        font-weight: root.active ? 700 : 500;
+        color: root.active ? #ffffff : (touch.has-hover ? #f8fafc : #94a3b8);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+}
+
+component SettingCard inherits Rectangle {
+    in property <string> title;
+    in property <string> description;
+
+    background: #1e293b;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: #334155;
+    min-height: 58px;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 16px;
+        alignment: space-between;
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            spacing: 2px;
+            Text {
+                text: root.title;
+                font-size: 13px;
+                font-weight: 600;
+                color: #f8fafc;
+            }
+            Text {
+                text: root.description;
+                font-size: 11px;
+                color: #94a3b8;
+                wrap: word-wrap;
+            }
+        }
+
+        @children
+    }
+}
+
+component SectionTitle inherits Text {
+    font-size: 11px;
+    font-weight: 700;
+    color: #38bdf8;
+    letter-spacing: 0.5px;
+}
+
 export component AppWindow inherits Window {
-    title: "VietFlow - Cấu hình bộ gõ tiếng Việt";
+    title: "VietFlow - Bảng điều khiển bộ gõ tiếng Việt";
     icon: @image-url("../assets/app-logo.png");
-    preferred-width: 780px;
-    preferred-height: 640px;
-    min-width: 680px;
-    min-height: 520px;
-    background: #18181b;
+    preferred-width: 820px;
+    preferred-height: 680px;
+    min-width: 740px;
+    min-height: 560px;
+    background: #0f172a;
     default-font-family: "Segoe UI, sans-serif";
 
     // Callbacks to Rust
@@ -25,6 +96,9 @@ export component AppWindow inherits Window {
     callback delete_excluded_app(int);
     callback convert_text(string, int, int) -> string;
     callback convert_clipboard(int, int);
+
+    // Active Tab (0: Overview, 1: Typing, 2: Macro, 3: Game, 4: Converter/About)
+    in-out property <int> active_tab: 0;
 
     // Reactive Properties
     in-out property <bool> is_enabled: true;
@@ -60,649 +134,569 @@ export component AppWindow inherits Window {
     in-out property <string> conv_status: "";
 
     VerticalLayout {
-        padding: 14px;
+        padding: 16px;
         spacing: 12px;
 
         // TOP HEADER BAR
         Rectangle {
-            height: 64px;
-            background: #27272a;
-            border-radius: 8px;
+            height: 68px;
+            background: #1e293b;
+            border-radius: 10px;
             border-width: 1px;
-            border-color: #3f3f46;
+            border-color: #334155;
 
             HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
-                spacing: 14px;
+                padding-left: 18px;
+                padding-right: 18px;
                 alignment: space-between;
 
-                // Logo and Title
+                // Logo, Name & Subtitle
                 HorizontalLayout {
-                    spacing: 12px;
+                    spacing: 14px;
+                    alignment: center;
                     Image {
                         source: @image-url("../assets/app-logo.png");
-                        width: 38px;
-                        height: 38px;
+                        width: 42px;
+                        height: 42px;
                         vertical-alignment: center;
                     }
                     VerticalLayout {
                         alignment: center;
+                        spacing: 2px;
                         Text {
                             text: "VietFlow";
-                            font-size: 17px;
+                            font-size: 18px;
                             font-weight: 700;
-                            color: #f4f4f5;
+                            color: #f8fafc;
                         }
                         Text {
-                            text: "Bộ gõ tiếng Việt thế hệ mới (100% Rust Core)";
+                            text: "Bộ gõ tiếng Việt thế hệ mới (Rust Native · Tối ưu hiệu năng)";
                             font-size: 11px;
-                            color: #a1a1aa;
+                            color: #94a3b8;
                         }
                     }
                 }
 
-                // Live status toggle
-                HorizontalLayout {
-                    spacing: 10px;
-                    alignment: center;
+                // Live Mode Pill Card
+                Rectangle {
+                    background: #0f172a;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #334155;
+                    height: 48px;
 
-                    Rectangle {
-                        width: 32px;
-                        height: 32px;
-                        border-radius: 16px;
-                        background: root.is_enabled ? #dc2626 : #2563eb;
-                        Text {
-                            text: root.is_enabled ? "V" : "E";
-                            font-size: 15px;
-                            font-weight: 700;
-                            color: #ffffff;
-                            x: (parent.width - self.width) / 2;
-                            y: (parent.height - self.height) / 2;
-                        }
-                    }
-
-                    VerticalLayout {
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        spacing: 12px;
                         alignment: center;
-                        Text {
-                            text: root.is_enabled ? "Tiếng Việt" : "English";
-                            font-size: 13px;
-                            font-weight: 600;
-                            color: #f4f4f5;
-                        }
-                        Text {
-                            text: root.is_enabled ? "Đang bật" : "Đã tạm dừng";
-                            font-size: 10px;
-                            color: root.is_enabled ? #4ade80 : #94a3b8;
-                        }
-                    }
 
-                    Button {
-                        text: root.is_enabled ? "Tắt [V]" : "Bật [E]";
-                        clicked => {
-                            root.toggle_mode();
+                        Rectangle {
+                            width: 32px;
+                            height: 32px;
+                            border-radius: 16px;
+                            background: root.is_enabled ? #dc2626 : #2563eb;
+                            Text {
+                                text: root.is_enabled ? "V" : "E";
+                                font-size: 15px;
+                                font-weight: 800;
+                                color: #ffffff;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 1px;
+                            Text {
+                                text: root.is_enabled ? "Tiếng Việt" : "English";
+                                font-size: 12px;
+                                font-weight: 700;
+                                color: #f8fafc;
+                            }
+                            Text {
+                                text: root.is_enabled ? "Đang bật (Sẵn sàng)" : "Tạm dừng gõ dấu";
+                                font-size: 10px;
+                                color: root.is_enabled ? #4ade80 : #94a3b8;
+                            }
+                        }
+
+                        Switch {
+                            checked: root.is_enabled;
+                            toggled => { root.toggle_mode(); }
                         }
                     }
                 }
             }
         }
 
-        // TAB WIDGET
-        TabWidget {
-            // TAB 1: TỔNG QUAN
-            Tab {
-                title: "Tổng quan";
-                ScrollView {
-                    VerticalLayout {
-                        padding: 16px;
-                        spacing: 14px;
+        // MODERN NAVIGATION BAR
+        Rectangle {
+            height: 44px;
+            background: #111827;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #1e293b;
 
-                        // Method row
-                        Rectangle {
-                            background: #202023;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: #333338;
-                            height: 60px;
-                            HorizontalLayout {
-                                padding-left: 14px;
-                                padding-right: 14px;
-                                alignment: space-between;
-                                VerticalLayout {
-                                    alignment: center;
-                                    Text { text: "Kiểu gõ tiếng Việt"; font-weight: 600; font-size: 13px; color: #f4f4f5; }
-                                    Text { text: "Hỗ trợ Telex, Simple Telex, VNI và VIQR"; font-size: 11px; color: #a1a1aa; }
-                                }
-                                ComboBox {
-                                    width: 220px;
-                                    model: ["Telex", "Simple Telex", "VNI", "VIQR"];
-                                    current-index <=> root.method_index;
-                                }
-                            }
-                        }
+            HorizontalLayout {
+                padding: 4px;
+                spacing: 4px;
 
-                        // Charset row
-                        Rectangle {
-                            background: #202023;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: #333338;
-                            height: 60px;
-                            HorizontalLayout {
-                                padding-left: 14px;
-                                padding-right: 14px;
-                                alignment: space-between;
-                                VerticalLayout {
-                                    alignment: center;
-                                    Text { text: "Bảng mã ký tự"; font-weight: 600; font-size: 13px; color: #f4f4f5; }
-                                    Text { text: "Unicode dựng sẵn (NFC chuẩn), Tổ hợp, TCVN3 (ABC), VNI Windows"; font-size: 11px; color: #a1a1aa; }
-                                }
-                                ComboBox {
-                                    width: 220px;
-                                    model: ["Unicode dựng sẵn", "Unicode tổ hợp", "TCVN3 (ABC)", "VNI Windows"];
-                                    current-index <=> root.charset_index;
-                                }
-                            }
-                        }
-
-                        // Hotkey row
-                        Rectangle {
-                            background: #202023;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: #333338;
-                            height: 60px;
-                            HorizontalLayout {
-                                padding-left: 14px;
-                                padding-right: 14px;
-                                alignment: space-between;
-                                VerticalLayout {
-                                    alignment: center;
-                                    Text { text: "Phím chuyển đổi chế độ gõ [V / E]"; font-weight: 600; font-size: 13px; color: #f4f4f5; }
-                                    Text { text: "Tổ hợp phím nóng toàn cục chuyển nhanh giữa tiếng Việt và English"; font-size: 11px; color: #a1a1aa; }
-                                }
-                                ComboBox {
-                                    width: 220px;
-                                    model: ["Ctrl + Shift", "Alt + Z", "Ctrl + Space", "Alt + Shift"];
-                                    current-index <=> root.hotkey_index;
-                                }
-                            }
-                        }
-
-                        // Start with windows switch
-                        Rectangle {
-                            background: #202023;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: #333338;
-                            height: 54px;
-                            HorizontalLayout {
-                                padding-left: 14px;
-                                padding-right: 14px;
-                                alignment: space-between;
-                                VerticalLayout {
-                                    alignment: center;
-                                    Text { text: "Khởi động cùng Windows"; font-weight: 600; font-size: 13px; color: #f4f4f5; }
-                                    Text { text: "Tự động chạy VietFlow nền khi đăng nhập hệ thống"; font-size: 11px; color: #a1a1aa; }
-                                }
-                                Switch {
-                                    checked <=> root.start_with_windows;
-                                }
-                            }
-                        }
-
-                        // Notification sound switch
-                        Rectangle {
-                            background: #202023;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: #333338;
-                            height: 54px;
-                            HorizontalLayout {
-                                padding-left: 14px;
-                                padding-right: 14px;
-                                alignment: space-between;
-                                VerticalLayout {
-                                    alignment: center;
-                                    Text { text: "Âm thanh thông báo (Beep)"; font-weight: 600; font-size: 13px; color: #f4f4f5; }
-                                    Text { text: "Phát âm thanh nhẹ khi chuyển đổi trạng thái V / E bằng phím nóng"; font-size: 11px; color: #a1a1aa; }
-                                }
-                                Switch {
-                                    checked <=> root.notification_sound;
-                                }
-                            }
-                        }
-                    }
+                NavTab {
+                    text: "Tổng quan";
+                    active: root.active_tab == 0;
+                    clicked => { root.active_tab = 0; }
+                }
+                NavTab {
+                    text: "Bộ gõ & Chính tả";
+                    active: root.active_tab == 1;
+                    clicked => { root.active_tab = 1; }
+                }
+                NavTab {
+                    text: "Bảng gõ tắt";
+                    active: root.active_tab == 2;
+                    clicked => { root.active_tab = 2; }
+                }
+                NavTab {
+                    text: "Game & Loại trừ";
+                    active: root.active_tab == 3;
+                    clicked => { root.active_tab = 3; }
+                }
+                NavTab {
+                    text: "Chuyển mã & Giới thiệu";
+                    active: root.active_tab == 4;
+                    clicked => { root.active_tab = 4; }
                 }
             }
+        }
 
-            // TAB 2: BỘ GÕ & CHÍNH TẢ
-            Tab {
-                title: "Bộ gõ & Chính tả";
-                ScrollView {
-                    VerticalLayout {
-                        padding: 16px;
-                        spacing: 12px;
+        // TAB CONTENT CONTAINER
+        Rectangle {
+            vertical-stretch: 1;
+            background: #111827;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: #1e293b;
 
-                        // Spellcheck
-                        Rectangle {
-                            background: #202023;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: #333338;
-                            height: 50px;
-                            HorizontalLayout {
-                                padding-left: 14px; padding-right: 14px; alignment: space-between;
-                                VerticalLayout {
-                                    alignment: center;
-                                    Text { text: "Bật kiểm tra chính tả tiếng Việt"; font-weight: 600; font-size: 13px; color: #f4f4f5; }
-                                    Text { text: "Tự động phát hiện vần tiếng Việt chuẩn"; font-size: 11px; color: #a1a1aa; }
-                                }
-                                Switch { checked <=> root.spell_check; }
-                            }
-                        }
-
-                        // Auto restore
-                        Rectangle {
-                            background: #202023;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: #333338;
-                            height: 50px;
-                            HorizontalLayout {
-                                padding-left: 14px; padding-right: 14px; alignment: space-between;
-                                VerticalLayout {
-                                    alignment: center;
-                                    Text { text: "Tự động khôi phục phím cho từ tiếng Anh"; font-weight: 600; font-size: 13px; color: #f4f4f5; }
-                                    Text { text: "Tự hủy dấu khi từ đang gõ là từ tiếng Anh"; font-size: 11px; color: #a1a1aa; }
-                                }
-                                Switch { checked <=> root.auto_restore; }
-                            }
-                        }
-
-                        // Modern style
-                        Rectangle {
-                            background: #202023;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: #333338;
-                            height: 50px;
-                            HorizontalLayout {
-                                padding-left: 14px; padding-right: 14px; alignment: space-between;
-                                VerticalLayout {
-                                    alignment: center;
-                                    Text { text: "Đặt dấu thanh kiểu mới (oà, uỳ, oè)"; font-weight: 600; font-size: 13px; color: #f4f4f5; }
-                                    Text { text: "Đặt dấu trên âm chính theo chuẩn hiện đại"; font-size: 11px; color: #a1a1aa; }
-                                }
-                                Switch { checked <=> root.modern_style; }
-                            }
-                        }
-
-                        // Free marking
-                        Rectangle {
-                            background: #202023;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: #333338;
-                            height: 50px;
-                            HorizontalLayout {
-                                padding-left: 14px; padding-right: 14px; alignment: space-between;
-                                VerticalLayout {
-                                    alignment: center;
-                                    Text { text: "Cho phép gõ tự do"; font-weight: 600; font-size: 13px; color: #f4f4f5; }
-                                    Text { text: "Bỏ dấu ở bất kỳ vị trí nào trong từ mà không cần gõ ngay sau nguyên âm"; font-size: 11px; color: #a1a1aa; }
-                                }
-                                Switch { checked <=> root.free_marking; }
-                            }
-                        }
-
-                        // Fix shift lag
-                        Rectangle {
-                            background: #202023;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: #333338;
-                            height: 50px;
-                            HorizontalLayout {
-                                padding-left: 14px; padding-right: 14px; alignment: space-between;
-                                VerticalLayout {
-                                    alignment: center;
-                                    Text { text: "Tự sửa dính Shift chữ thứ hai (VIệt -> Việt)"; font-weight: 600; font-size: 13px; color: #f4f4f5; }
-                                    Text { text: "Khắc phục triệt để lỗi khi gõ nhanh nhả Shift trễ"; font-size: 11px; color: #a1a1aa; }
-                                }
-                                Switch { checked <=> root.fix_shift_lag; }
-                            }
-                        }
-
-                        // Consonant shortcuts
-                        Rectangle {
-                            background: #202023;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: #333338;
-                            height: 50px;
-                            HorizontalLayout {
-                                padding-left: 14px; padding-right: 14px; alignment: space-between;
-                                VerticalLayout {
-                                    alignment: center;
-                                    Text { text: "Tốc ký phụ âm đầu (f -> ph, j -> gi, w -> qu)"; font-weight: 600; font-size: 13px; color: #f4f4f5; }
-                                    Text { text: "Tăng tốc độ gõ bằng các phím tắt phụ âm"; font-size: 11px; color: #a1a1aa; }
-                                }
-                                Switch { checked <=> root.consonant_shortcuts; }
-                            }
-                        }
-
-                        // Auto capitalize
-                        Rectangle {
-                            background: #202023;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: #333338;
-                            height: 50px;
-                            HorizontalLayout {
-                                padding-left: 14px; padding-right: 14px; alignment: space-between;
-                                VerticalLayout {
-                                    alignment: center;
-                                    Text { text: "Tự động viết hoa sau Enter và dấu chấm (. ! ?)"; font-weight: 600; font-size: 13px; color: #f4f4f5; }
-                                    Text { text: "Viết hoa chữ cái đầu tiên của câu tiếp theo"; font-size: 11px; color: #a1a1aa; }
-                                }
-                                Switch { checked <=> root.auto_capitalize; }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // TAB 3: GÕ TẮT & BIẾN ĐỘNG
-            Tab {
-                title: "Gõ tắt & Biến động";
-                VerticalLayout {
-                    padding: 16px;
-                    spacing: 10px;
-
-                    HorizontalLayout {
-                        spacing: 20px;
-                        Switch {
-                            text: "Bật gõ tắt (Macro)";
-                            checked <=> root.enable_macro;
-                        }
-                        Switch {
-                            text: "Cho phép gõ tắt khi ở chế độ [E]";
-                            checked <=> root.allow_macro_when_disabled;
-                        }
-                    }
-
-                    // Smart variables banner
-                    Rectangle {
-                        height: 44px;
-                        background: #1e293b;
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: #38bdf8;
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            alignment: start;
-                            Text {
-                                text: "Hỗ trợ biến động: @date (ngày), @time (giờ), @datetime, @clipboard (dán), @tab, @newline";
-                                font-size: 11px;
-                                color: #38bdf8;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-
-                    // Macro list view
-                    Rectangle {
-                        background: #202023;
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: #333338;
-                        VerticalLayout {
-                            padding: 8px;
-                            ScrollView {
-                                VerticalLayout {
-                                    spacing: 4px;
-                                    for entry[i] in root.macro_list: Rectangle {
-                                        height: 32px;
-                                        background: root.selected_macro_index == i ? #3b82f6 : (Math.mod(i, 2) == 0 ? #27272a : #18181b);
-                                        border-radius: 4px;
-                                        TouchArea {
-                                            clicked => { root.selected_macro_index = i; }
-                                        }
-                                        HorizontalLayout {
-                                            padding-left: 10px;
-                                            padding-right: 10px;
-                                            Text {
-                                                text: entry.key;
-                                                font-weight: 700;
-                                                width: 140px;
-                                                color: #f4f4f5;
-                                                vertical-alignment: center;
-                                            }
-                                            Text {
-                                                text: "→ " + entry.value;
-                                                color: #e2e8f0;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Add / Delete macro inputs
-                    HorizontalLayout {
-                        spacing: 8px;
-                        macro_key_input := LineEdit {
-                            placeholder-text: "Từ tắt (vd: vn)";
-                            width: 140px;
-                        }
-                        macro_val_input := LineEdit {
-                            placeholder-text: "Cụm thay thế (vd: Việt Nam hoặc @date)";
-                        }
-                        Button {
-                            text: "Thêm / Sửa";
-                            clicked => {
-                                if (macro_key_input.text != "" && macro_val_input.text != "") {
-                                    root.add_macro(macro_key_input.text, macro_val_input.text);
-                                    macro_key_input.text = "";
-                                    macro_val_input.text = "";
-                                }
-                            }
-                        }
-                        Button {
-                            text: "Xóa từ";
-                            clicked => {
-                                if (root.selected_macro_index >= 0) {
-                                    root.delete_macro(root.selected_macro_index);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // TAB 4: GAME & LOẠI TRỪ
-            Tab {
-                title: "Game & Loại trừ";
+            // ==================== TAB 0: TỔNG QUAN ====================
+            if root.active_tab == 0: ScrollView {
                 VerticalLayout {
                     padding: 16px;
                     spacing: 12px;
 
-                    Text {
-                        text: "Chế độ Game Mode: Tự động chuyển về tiếng Anh [E] khi chạy các game hoặc ứng dụng sau:";
-                        font-size: 12px;
-                        color: #a1a1aa;
+                    SectionTitle { text: "THIẾT LẬP BỘ GÕ"; }
+
+                    SettingCard {
+                        title: "Kiểu gõ tiếng Việt";
+                        description: "Hỗ trợ Telex, Simple Telex (không bỏ dấu w), VNI và VIQR";
+                        ComboBox {
+                            width: 220px;
+                            model: ["Telex", "Simple Telex", "VNI", "VIQR"];
+                            current-index <=> root.method_index;
+                        }
                     }
 
-                    // Excluded apps list
-                    Rectangle {
-                        background: #202023;
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: #333338;
-                        VerticalLayout {
-                            padding: 8px;
-                            ScrollView {
-                                VerticalLayout {
-                                    spacing: 4px;
-                                    for app[idx] in root.excluded_apps: Rectangle {
-                                        height: 32px;
-                                        background: root.selected_app_index == idx ? #3b82f6 : (Math.mod(idx, 2) == 0 ? #27272a : #18181b);
-                                        border-radius: 4px;
-                                        TouchArea {
-                                            clicked => { root.selected_app_index = idx; }
+                    SettingCard {
+                        title: "Bảng mã ký tự";
+                        description: "Unicode dựng sẵn (NFC chuẩn), Tổ hợp, TCVN3 (ABC), VNI Windows";
+                        ComboBox {
+                            width: 220px;
+                            model: ["Unicode dựng sẵn (NFC)", "Unicode tổ hợp", "TCVN3 (ABC)", "VNI Windows"];
+                            current-index <=> root.charset_index;
+                        }
+                    }
+
+                    SettingCard {
+                        title: "Phím chuyển đổi (V / E)";
+                        description: "Tổ hợp phím nóng chuyển nhanh giữa chế độ Tiếng Việt và English";
+                        ComboBox {
+                            width: 220px;
+                            model: ["Ctrl + Shift", "Alt + Z", "Ctrl + Space", "Alt + Shift"];
+                            current-index <=> root.hotkey_index;
+                        }
+                    }
+
+                    SectionTitle { text: "HỆ THỐNG & KHỞI ĐỘNG"; }
+
+                    SettingCard {
+                        title: "Khởi động cùng Windows";
+                        description: "Tự động chạy VietFlow nền vào khay hệ thống khi đăng nhập máy tính";
+                        Switch {
+                            checked <=> root.start_with_windows;
+                        }
+                    }
+
+                    SettingCard {
+                        title: "Âm thanh thông báo (Beep)";
+                        description: "Phát âm thanh nhẹ của Windows khi chuyển đổi trạng thái V / E bằng phím tắt";
+                        Switch {
+                            checked <=> root.notification_sound;
+                        }
+                    }
+                }
+            }
+
+            // ==================== TAB 1: BỘ GÕ & CHÍNH TẢ ====================
+            if root.active_tab == 1: ScrollView {
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 10px;
+
+                    SectionTitle { text: "TÍNH NĂNG THÔNG MINH"; }
+
+                    SettingCard {
+                        title: "Bật kiểm tra chính tả tiếng Việt";
+                        description: "Tự động nhận diện vần và cấu trúc từ tiếng Việt hợp lệ";
+                        Switch { checked <=> root.spell_check; }
+                    }
+
+                    SettingCard {
+                        title: "Tự động khôi phục từ tiếng Anh";
+                        description: "Tự động xóa dấu và trả lại nguyên âm tiếng Anh khi phát hiện từ nước ngoài";
+                        Switch { checked <=> root.auto_restore; }
+                    }
+
+                    SettingCard {
+                        title: "Đặt dấu thanh kiểu mới (oà, uỳ, oè)";
+                        description: "Đặt dấu trên âm chính chuẩn cải cách thay vì kiểu cổ truyền (òa, ùy, òe)";
+                        Switch { checked <=> root.modern_style; }
+                    }
+
+                    SettingCard {
+                        title: "Cho phép bỏ dấu tự do";
+                        description: "Bỏ dấu ở bất kỳ vị trí nào trong từ mà không cần gõ ngay sau nguyên âm";
+                        Switch { checked <=> root.free_marking; }
+                    }
+
+                    SettingCard {
+                        title: "Tự sửa dính Shift chữ thứ hai (VIệt -> Việt)";
+                        description: "Khắc phục triệt để lỗi viết hoa nhầm chữ thứ hai khi gõ nhanh";
+                        Switch { checked <=> root.fix_shift_lag; }
+                    }
+
+                    SettingCard {
+                        title: "Tốc ký phụ âm đầu (f -> ph, j -> gi, w -> qu)";
+                        description: "Tăng tốc độ gõ bằng các ký tự phụ âm viết tắt thông minh";
+                        Switch { checked <=> root.consonant_shortcuts; }
+                    }
+
+                    SettingCard {
+                        title: "Tự động viết hoa sau dấu câu (. ! ?)";
+                        description: "Tự động viết hoa chữ cái đầu câu sau dấu ngắt câu hoặc xuống dòng";
+                        Switch { checked <=> root.auto_capitalize; }
+                    }
+
+                    SettingCard {
+                        title: "Sử dụng Clipboard cho bảng mã đặc biệt";
+                        description: "Tương thích cao với một số ứng dụng đồ họa cũ không hỗ trợ Unicode SendInput";
+                        Switch { checked <=> root.use_clipboard; }
+                    }
+                }
+            }
+
+            // ==================== TAB 2: BẢNG GÕ TẮT ====================
+            if root.active_tab == 2: VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+
+                HorizontalLayout {
+                    spacing: 24px;
+                    Switch {
+                        text: "Bật gõ tắt (Macro)";
+                        checked <=> root.enable_macro;
+                    }
+                    Switch {
+                        text: "Cho phép gõ tắt khi ở chế độ English [E]";
+                        checked <=> root.allow_macro_when_disabled;
+                    }
+                }
+
+                // Dynamic variables hint badge
+                Rectangle {
+                    height: 42px;
+                    background: #1e293b;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: #0284c7;
+
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        spacing: 8px;
+                        alignment: start;
+                        Text {
+                            text: "💡 Biến động hỗ trợ:";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: #38bdf8;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "@date (ngày) · @time (giờ) · @datetime · @clipboard (dán) · @tab · @newline";
+                            font-size: 11px;
+                            color: #e2e8f0;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Macro Table
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: #1e293b;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #334155;
+
+                    VerticalLayout {
+                        padding: 6px;
+                        ScrollView {
+                            VerticalLayout {
+                                spacing: 3px;
+                                for entry[i] in root.macro_list: Rectangle {
+                                    height: 36px;
+                                    background: root.selected_macro_index == i ? #2563eb : (Math.mod(i, 2) == 0 ? #172554 : #1e293b);
+                                    border-radius: 4px;
+
+                                    TouchArea {
+                                        clicked => { root.selected_macro_index = i; }
+                                    }
+
+                                    HorizontalLayout {
+                                        padding-left: 14px;
+                                        padding-right: 14px;
+                                        Text {
+                                            text: entry.key;
+                                            font-weight: 700;
+                                            font-size: 13px;
+                                            width: 160px;
+                                            color: #38bdf8;
+                                            vertical-alignment: center;
                                         }
-                                        HorizontalLayout {
-                                            padding-left: 12px;
-                                            padding-right: 12px;
-                                            Text {
-                                                text: "🎮  " + app;
-                                                font-weight: 600;
-                                                color: #f4f4f5;
-                                                vertical-alignment: center;
-                                            }
+                                        Text {
+                                            text: "→ " + entry.value;
+                                            font-size: 12px;
+                                            color: #f8fafc;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
                                         }
                                     }
                                 }
                             }
                         }
                     }
+                }
 
-                    HorizontalLayout {
-                        spacing: 8px;
-                        app_input := LineEdit {
-                            placeholder-text: "Nhập tên file thực thi (ví dụ: cs2.exe hoặc valorant.exe)";
-                        }
-                        Button {
-                            text: "Thêm ứng dụng";
-                            clicked => {
-                                if (app_input.text != "") {
-                                    root.add_excluded_app(app_input.text);
-                                    app_input.text = "";
-                                }
+                // Inputs
+                HorizontalLayout {
+                    spacing: 10px;
+                    macro_key_input := LineEdit {
+                        placeholder-text: "Từ viết tắt (vd: vn)";
+                        width: 160px;
+                    }
+                    macro_val_input := LineEdit {
+                        placeholder-text: "Cụm từ thay thế (vd: Việt Nam hoặc @date)";
+                        horizontal-stretch: 1;
+                    }
+                    Button {
+                        text: "Thêm / Cập nhật";
+                        clicked => {
+                            if (macro_key_input.text != "" && macro_val_input.text != "") {
+                                root.add_macro(macro_key_input.text, macro_val_input.text);
+                                macro_key_input.text = "";
+                                macro_val_input.text = "";
                             }
                         }
-                        Button {
-                            text: "Xóa chọn";
-                            clicked => {
-                                if (root.selected_app_index >= 0) {
-                                    root.delete_excluded_app(root.selected_app_index);
-                                }
+                    }
+                    Button {
+                        text: "Xóa mục đã chọn";
+                        clicked => {
+                            if (root.selected_macro_index >= 0) {
+                                root.delete_macro(root.selected_macro_index);
                             }
                         }
                     }
                 }
             }
 
-            // TAB 5: CÔNG CỤ & GIỚI THIỆU
-            Tab {
-                title: "Công cụ & Giới thiệu";
-                ScrollView {
+            // ==================== TAB 3: GAME & LOẠI TRỪ ====================
+            if root.active_tab == 3: VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+
+                Text {
+                    text: "Chế độ Game Mode: VietFlow sẽ tự động chuyển sang English [E] khi các ứng dụng / game dưới đây hoạt động:";
+                    font-size: 12px;
+                    color: #94a3b8;
+                }
+
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: #1e293b;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #334155;
+
                     VerticalLayout {
-                        padding: 16px;
-                        spacing: 14px;
-
-                        // Clipboard converter section
-                        Rectangle {
-                            background: #202023;
-                            border-radius: 8px;
-                            border-width: 1px;
-                            border-color: #333338;
+                        padding: 6px;
+                        ScrollView {
                             VerticalLayout {
-                                padding: 14px;
-                                spacing: 10px;
+                                spacing: 3px;
+                                for app[idx] in root.excluded_apps: Rectangle {
+                                    height: 36px;
+                                    background: root.selected_app_index == idx ? #2563eb : (Math.mod(idx, 2) == 0 ? #172554 : #1e293b);
+                                    border-radius: 4px;
 
-                                Text {
-                                    text: "Công cụ chuyển mã nhanh văn bản & Clipboard";
-                                    font-size: 14px;
-                                    font-weight: 700;
-                                    color: #f4f4f5;
-                                }
+                                    TouchArea {
+                                        clicked => { root.selected_app_index = idx; }
+                                    }
 
-                                HorizontalLayout {
-                                    spacing: 12px;
-                                    Text { text: "Mã nguồn:"; vertical-alignment: center; font-size: 12px; color: #a1a1aa; }
-                                    ComboBox {
-                                        width: 170px;
-                                        model: ["Unicode", "Unicode tổ hợp", "TCVN3 (ABC)", "VNI Windows"];
-                                        current-index <=> root.conv_source_charset;
-                                    }
-                                    Text { text: "Mã đích:"; vertical-alignment: center; font-size: 12px; color: #a1a1aa; }
-                                    ComboBox {
-                                        width: 170px;
-                                        model: ["Unicode", "Unicode tổ hợp", "TCVN3 (ABC)", "VNI Windows"];
-                                        current-index <=> root.conv_target_charset;
-                                    }
-                                    Button {
-                                        text: "Chuyển mã Clipboard";
-                                        clicked => {
-                                            root.convert_clipboard(root.conv_source_charset, root.conv_target_charset);
+                                    HorizontalLayout {
+                                        padding-left: 14px;
+                                        padding-right: 14px;
+                                        Text {
+                                            text: "🎮  " + app;
+                                            font-size: 13px;
+                                            font-weight: 600;
+                                            color: #f8fafc;
+                                            vertical-alignment: center;
                                         }
-                                    }
-                                }
-
-                                conv_input := TextEdit {
-                                    height: 90px;
-                                    text: "Nhập văn bản cần chuyển mã vào đây...";
-                                }
-
-                                HorizontalLayout {
-                                    spacing: 8px;
-                                    Button {
-                                        text: "Thực hiện chuyển mã";
-                                        clicked => {
-                                            conv_input.text = root.convert_text(conv_input.text, root.conv_source_charset, root.conv_target_charset);
-                                        }
-                                    }
-                                    Text {
-                                        text: root.conv_status;
-                                        font-size: 12px;
-                                        color: #4ade80;
-                                        vertical-alignment: center;
                                     }
                                 }
                             }
                         }
+                    }
+                }
 
-                        // About section
-                        Rectangle {
-                            background: #202023;
-                            border-radius: 8px;
-                            border-width: 1px;
-                            border-color: #333338;
-                            VerticalLayout {
-                                padding: 16px;
-                                spacing: 10px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    app_input := LineEdit {
+                        placeholder-text: "Nhập tên tiến trình thực thi (ví dụ: cs2.exe hoặc valorant.exe)";
+                        horizontal-stretch: 1;
+                    }
+                    Button {
+                        text: "Thêm tiến trình";
+                        clicked => {
+                            if (app_input.text != "") {
+                                root.add_excluded_app(app_input.text);
+                                app_input.text = "";
+                            }
+                        }
+                    }
+                    Button {
+                        text: "Xóa mục chọn";
+                        clicked => {
+                            if (root.selected_app_index >= 0) {
+                                root.delete_excluded_app(root.selected_app_index);
+                            }
+                        }
+                    }
+                }
+            }
 
-                                HorizontalLayout {
-                                    spacing: 16px;
-                                    Image {
-                                        source: @image-url("../assets/app-logo.png");
-                                        width: 48px;
-                                        height: 48px;
-                                        vertical-alignment: center;
+            // ==================== TAB 4: CHUYỂN MÃ & GIỚI THIỆU ====================
+            if root.active_tab == 4: ScrollView {
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 14px;
+
+                    SectionTitle { text: "CÔNG CỤ CHUYỂN MÃ VĂN BẢN & CLIPBOARD"; }
+
+                    Rectangle {
+                        background: #1e293b;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: #334155;
+
+                        VerticalLayout {
+                            padding: 14px;
+                            spacing: 12px;
+
+                            HorizontalLayout {
+                                spacing: 12px;
+                                Text { text: "Mã nguồn:"; vertical-alignment: center; font-size: 12px; color: #94a3b8; }
+                                ComboBox {
+                                    width: 180px;
+                                    model: ["Unicode", "Unicode tổ hợp", "TCVN3 (ABC)", "VNI Windows"];
+                                    current-index <=> root.conv_source_charset;
+                                }
+                                Text { text: "Mã đích:"; vertical-alignment: center; font-size: 12px; color: #94a3b8; }
+                                ComboBox {
+                                    width: 180px;
+                                    model: ["Unicode", "Unicode tổ hợp", "TCVN3 (ABC)", "VNI Windows"];
+                                    current-index <=> root.conv_target_charset;
+                                }
+                                Button {
+                                    text: "Chuyển mã Clipboard";
+                                    clicked => {
+                                        root.convert_clipboard(root.conv_source_charset, root.conv_target_charset);
                                     }
-                                    VerticalLayout {
-                                        alignment: center;
-                                        Text {
-                                            text: "VietFlow - Phiên bản 1.0.4";
-                                            font-size: 16px;
-                                            font-weight: 700;
-                                            color: #f4f4f5;
-                                        }
-                                        Text {
-                                            text: "Kiến trúc mới: 100% Rust Core + Native Windows Host + Fcitx5 Linux";
-                                            font-size: 12px;
-                                            color: #a1a1aa;
-                                        }
-                                        Text {
-                                            text: "Giấy phép: Mã nguồn mở GPLv3 / MIT · Kế thừa và phát triển từ UniKey";
-                                            font-size: 11px;
-                                            color: #71717a;
-                                        }
+                                }
+                            }
+
+                            conv_input := TextEdit {
+                                height: 80px;
+                                text: "Nhập nội dung cần chuyển mã trực tiếp vào đây...";
+                            }
+
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Button {
+                                    text: "Chuyển mã hộp văn bản";
+                                    clicked => {
+                                        conv_input.text = root.convert_text(conv_input.text, root.conv_source_charset, root.conv_target_charset);
+                                    }
+                                }
+                                Text {
+                                    text: root.conv_status;
+                                    font-size: 12px;
+                                    color: #4ade80;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    SectionTitle { text: "THÔNG TIN ỨNG DỤNG"; }
+
+                    Rectangle {
+                        background: #1e293b;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: #334155;
+
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 12px;
+
+                            HorizontalLayout {
+                                spacing: 18px;
+                                alignment: start;
+                                Image {
+                                    source: @image-url("../assets/app-logo.png");
+                                    width: 56px;
+                                    height: 56px;
+                                    vertical-alignment: center;
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 3px;
+                                    Text {
+                                        text: "VietFlow - Phiên bản 1.0.4";
+                                        font-size: 18px;
+                                        font-weight: 700;
+                                        color: #f8fafc;
+                                    }
+                                    Text {
+                                        text: "Kiến trúc 100% Rust Native · Tích hợp sẵn bộ điều khiển Slint GUI";
+                                        font-size: 12px;
+                                        color: #38bdf8;
+                                    }
+                                    Text {
+                                        text: "Giấy phép: GNU General Public License v3.0 (GPLv3) · Kế thừa từ nền tảng UniKey";
+                                        font-size: 11px;
+                                        color: #94a3b8;
                                     }
                                 }
                             }
@@ -714,15 +708,15 @@ export component AppWindow inherits Window {
 
         // BOTTOM ACTION BAR
         Rectangle {
-            height: 52px;
-            background: #27272a;
-            border-radius: 8px;
+            height: 54px;
+            background: #1e293b;
+            border-radius: 10px;
             border-width: 1px;
-            border-color: #3f3f46;
+            border-color: #334155;
 
             HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
+                padding-left: 18px;
+                padding-right: 18px;
                 alignment: space-between;
 
                 Button {
