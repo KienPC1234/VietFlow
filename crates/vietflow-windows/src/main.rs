@@ -16,8 +16,8 @@ use std::ptr::null_mut;
 use vietflow_core::models::{CharsetId, InputMethod};
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostQuitMessage,
-    RegisterClassW, TranslateMessage, MSG, WNDCLASSW, WM_COMMAND, WM_DESTROY,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetMessageW, PostMessageW,
+    PostQuitMessage, RegisterClassW, TranslateMessage, MSG, WNDCLASSW, WM_COMMAND, WM_DESTROY,
     WM_LBUTTONUP, WM_RBUTTONUP,
 };
 
@@ -42,12 +42,40 @@ extern "system" {
 
 static mut TRAY_PTR: *mut TrayIcon = null_mut();
 
+fn spawn_gui(convert_mode: bool) {
+    if let Ok(exe) = std::env::current_exe() {
+        let mut cmd = std::process::Command::new(exe);
+        if convert_mode {
+            cmd.arg("--convert");
+        } else {
+            cmd.arg("--gui");
+        }
+        let _ = cmd.spawn();
+    }
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--gui" || a == "-g") {
+        let _ = vietflow_gui::run_gui(false);
+        return;
+    }
+    if args.iter().any(|a| a == "--convert" || a == "-c") {
+        let _ = vietflow_gui::run_gui(true);
+        return;
+    }
+
     unsafe {
-        // Enforce single instance
+        // Enforce single instance for daemon
         let mutex_name = to_wide("Global\\VietFlowSingleInstanceMutex");
         let mutex = CreateMutexW(null_mut(), 1, mutex_name.as_ptr());
         if mutex.is_null() || GetLastError() == ERROR_ALREADY_EXISTS {
+            let class_name = to_wide("VietFlowMessageWindowClass");
+            let window_title = to_wide("VietFlowDaemon");
+            let hwnd = FindWindowW(class_name.as_ptr(), window_title.as_ptr());
+            if !hwnd.is_null() {
+                PostMessageW(hwnd, WM_SETTINGS, 0, 0);
+            }
             return;
         }
 
@@ -131,13 +159,11 @@ unsafe extern "system" fn wnd_proc(
             0
         }
         WM_SETTINGS => {
-            let _ = std::process::Command::new("vietflow-gui.exe").spawn();
+            spawn_gui(false);
             0
         }
         WM_CONVERT => {
-            let _ = std::process::Command::new("vietflow-gui.exe")
-                .arg("--convert")
-                .spawn();
+            spawn_gui(true);
             0
         }
         WM_COMMAND => {
@@ -218,12 +244,10 @@ unsafe extern "system" fn wnd_proc(
                     }
                 }
                 IDM_CONVERT_TOOL => {
-                    let _ = std::process::Command::new("vietflow-gui.exe")
-                        .arg("--convert")
-                        .spawn();
+                    spawn_gui(true);
                 }
                 IDM_SETTINGS => {
-                    let _ = std::process::Command::new("vietflow-gui.exe").spawn();
+                    spawn_gui(false);
                 }
                 IDM_EXIT => {
                     PostQuitMessage(0);

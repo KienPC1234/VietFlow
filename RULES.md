@@ -1,44 +1,57 @@
-# Engineering rules
+# VietFlow Engineering Rules & Architecture Standards
 
-Short, enforceable rules for VietFlow. Keep the engine fast, portable and boring.
+Core rules for developing, maintaining, and shipping VietFlow across Windows and Linux.
 
-## Architecture
+---
 
-- `src/VietFlow` (`VietFlow.Core`) is **platform-neutral**: no P/Invoke, registry, `System.Drawing`, `System.Windows` or Win32 types.
-- Platform code lives in `src/VietFlow.Windows` (Avalonia shell, `WH_KEYBOARD_LL` hook, `SendInput`, tray).
-- **Do not add TSF / IME / TIP components.** VietFlow deliberately uses a low-level keyboard hook + `SendInput`; TSF adds complexity and breaks in games/legacy apps.
+## I. Architecture & Modular Boundaries
 
-## Commits
+1. **`vietflow-core` (Platform-Agnostic Engine)**:
+   - Must remain **100% platform-neutral** with zero OS dependencies (`std`-only).
+   - Absolute prohibition against Win32, X11, Wayland, or GUI types in the core.
+   - Hot path (`process_key`) must remain zero-allocation on steady-state typing.
+   - Must export a stable C-ABI (`c_abi.rs`) for native integration (e.g., Linux Fcitx5 C++ addon).
+   - Any modification to tone placement or charset mapping must be accompanied by comprehensive tests in `vietflow-core`.
 
-- **Batch changes.** Commit only when a coherent feature, fix or refactor is complete and green.
-- Never commit per-file, per-typo or WIP. One logical change = one commit.
-- Conventional messages: `feat:`, `fix:`, `refactor:`, `perf:`, `docs:`, `test:`, `chore:`.
-- Before a commit: Release build with **0 warnings**, all tests green, no generated files (`bin/`, `obj/`, `*.user`).
+2. **`vietflow-windows` (Native Windows Host)**:
+   - Direct Win32 API integration via `windows-sys`. No heavy runtime or external DLL dependencies.
+   - Thread-safe, non-blocking `WH_KEYBOARD_LL` low-level keyboard hook with `SendInput` atomic injection.
+   - **Do not add TSF / IME / TIP components.** VietFlow deliberately uses low-level keyboard hooks to maintain 100% anti-cheat and full-screen game compatibility.
+   - Game Mode: Background process inspection via `GetWindowThreadProcessId` + `QueryFullProcessImageNameW`, bypassing hook interception for blacklisted game executables.
 
-## Code
+3. **`vietflow-gui` (Unified GUI Toolkit)**:
+   - Powered by **Slint** in pure Rust. Zero external C++ or Qt SDK installation required.
+   - Declarative QML-style UI with automatic layout, native responsiveness, and dark theme support.
+   - Communicates with the daemon via `%APPDATA%\VietFlow\vietflow_config.json`.
+   - Embeds all brand assets (PNG logos, vector icons) directly into the compiled artifact.
 
-- No `TODO`, `FIXME`, `XXX` or commented-out code in source. Track work in `TODO.md`.
-- Nullable enabled. Avoid `!` unless the invariant is obvious and local.
-- No new dependencies in the engine. Windows-only packages stay in `VietFlow.Windows`.
-- Public engine APIs stay span-based and allocation-free.
-- Prefer `ReadOnlySpan<char>` / `stackalloc` / packed integer keys over strings and LINQ in hot paths.
-- Engine state must stay per-instance; only documented snapshots may be global (`EnglishPhonetics` keywords, `CustomCharset` mappings), updated on config apply.
+4. **Single Binary Distribution (`VietFlow.exe`)**:
+   - The daemon and configuration GUI compile into a **single, unified executable** (`VietFlow.exe`).
+   - Normal launch executes the background daemon and system tray runner (< 2 MB RAM).
+   - Parameterized execution (`--gui`, `--convert`) launches the Slint configuration panel on demand from the same binary.
 
-## Engine hot path
+---
 
-`ProcessKey(char, Span<char>, out int)` must not allocate or call Win32.
-Keep incremental updates (`ValidateIncremental`, `_vowelStartIndex`, `_fastVowelKey`) instead of rescanning the buffer.
-Any tone/charset fix must be covered by a test in `tests/VietFlow.Tests` (UniKey parity when possible).
+## II. Code Quality & Standards
 
-## UI
+1. **Safety & Concurrency**:
+   - Limit `unsafe` strictly to necessary FFI/Win32 hook dispatch boundaries.
+   - Guard shared state across thread boundaries using `std::sync::Mutex` or atomic primitives.
 
-- Colors only through theme resources (`{DynamicResource Brush...}`); no hardcoded hex in windows.
-- Every card description needs `TextTrimming` or `TextWrapping`; no overlapping text.
-- Verify both **Light** and **Dark** themes after UI changes.
-- New visible strings go through `Localization` when practical.
-- Keep `README.md` English and minimal.
+2. **Zero Incomplete Code**:
+   - Prohibit `todo!()`, `unimplemented!()`, or dummy placeholder stubs in production branches.
+   - Any untracked technical debt must be registered in `TODO.md`.
 
-## Versioning
+3. **Sanitization**:
+   - Zero compiler warnings (`#[warn(unused)]` enforced).
+   - Remove unused imports, debug macros (`println!`, `dbg!`), and transient scaffolding before commit.
 
-- Current line: `0.1.0-alpha` (`<InformationalVersion>`).
-- Bump `<Version>` / `<InformationalVersion>` only for user-visible milestones.
+---
+
+## III. Versioning & Commit Conventions
+
+- Current milestone: `1.0.4`.
+- Commit messages follow Conventional Commits: `feat:`, `fix:`, `refactor:`, `perf:`, `docs:`, `test:`, `chore:`.
+- Release validation checklist:
+  1. `cargo test --workspace` passes 100%.
+  2. `cargo build --workspace --release` compiles with zero warnings.

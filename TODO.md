@@ -1,30 +1,53 @@
-# TODO
+# VietFlow Project Roadmap & Task Tracker
 
-Tracked work. Do not put TODO comments in source files.
+All active and completed work items across the VietFlow codebase.
 
-## Features
+---
 
-- [ ] Per-app special cases: app -> Vietnamese on/off, input method, charset, mode.
-- [ ] Show-settings-on-startup option and admin-startup option (UAC-free task).
-- [ ] Auto-exclude foreground apps / auto game mode.
-- [ ] Update checker (GitHub releases) and "Check for updates" UI.
-- [ ] "Standard key send" and "Disable Vietnamese on non-US keyboard layout".
-- [ ] Correct tone-bug modes (Go 1 / Go 2).
-- [ ] Custom charset: import/export mapping (JSON), preview sample text.
-- [ ] Macro import/export (CSV/JSON) and per-app macros.
-- [ ] Localization for the newer labels (Advanced, theme, tray dialog, About note).
+## I. Completed Milestones (Rust Architecture)
 
-## Engine
+- [x] **100% Rust Core Rewrite (`vietflow-core`)**:
+  - [x] High-performance Telex, Simple Telex, VNI, and VIQR input state machine.
+  - [x] Modern tone placement rules (dấu mới `oà, uỳ, oè` vs dấu cũ `òa, ùy, òe`).
+  - [x] Auto-restore key sequence on English words.
+  - [x] Smart consonant shortcuts (`f` -> `ph`, `j` -> `gi`, `w` -> `qu`).
+  - [x] Shift lag automatic fix (sửa dính Shift chữ thứ hai).
+  - [x] Smart macro engine with dynamic variables (`@date`, `@time`, `@datetime`, `@clipboard`, `@tab`, `@newline`).
+  - [x] Cross-charset converter (Unicode dựng sẵn, Tổ hợp, TCVN3 ABC, VNI Windows).
+  - [x] Stable C-ABI exports (`vf_engine_*`) for external consumers.
+  - [x] 100% test suite passing with UniKey algorithmic parity.
 
-- [ ] Make keyword list + custom charset injectable per session (multi-session hosts).
-- [ ] Add a porting sample: console/Avalonia adapter using `ProcessKey`/`ProcessUtf8`.
-- [ ] Multi-target `net9.0` for hosts that cannot move to .NET 10 yet.
-- [ ] In-repo benchmark harness (currently ad-hoc, measured with the Demo).
-- [ ] Fuzz tests for `ProcessKey` (random key streams, backspace, undo, charsets).
+- [x] **Native Windows Host (`vietflow-windows`)**:
+  - [x] `WH_KEYBOARD_LL` low-level keyboard hook with `SendInput` atomic injection.
+  - [x] Thread-safe modifier key state tracking (`Ctrl`, `Shift`, `Alt`, `CapsLock`).
+  - [x] Global mode switching hotkey (`Ctrl+Shift`, `Alt+Z`, etc.) with beep audio feedback.
+  - [x] Windows system tray icon with live `[V]` / `[E]` visual status badge.
+  - [x] Context menu for instant method, charset, macro, and startup toggling.
+  - [x] Automated Game Mode: Excluded process detection via Win32 process query.
+  - [x] System auto-start integration via Windows Registry `Run` key.
 
-## UI / polish
+- [x] **Unified GUI (`vietflow-gui`)**:
+  - [x] Modern Slint declarative interface (0 C++ / 0 Qt SDK dependency).
+  - [x] 5 complete tabs: Tổng quan, Bộ gõ & Chính tả, Gõ tắt & Biến số, Game & Loại trừ, Công cụ & Giới thiệu.
+  - [x] Text & Clipboard converter utility with hotkey trigger (`Ctrl+Shift+F9`).
+  - [x] Fully integrated dark theme matching Windows 11 Fluent style.
+  - [x] Embedded brand assets (`app-logo.png`, `VietFlow.ico`).
 
-- [ ] Dark scrollbar + dark WinForms tray menu renderer.
-- [ ] Resize/min-size behavior for the settings window at 125%/150% DPI.
-- [ ] Screenshot/QA mode cleanup (`--shot` is developer-only).
-- [ ] Replace default `DataGrid` chrome with the compact theme style.
+---
+
+## II. Active & Upcoming Tasks
+
+- [ ] **Single Binary Packaging**:
+  - [ ] Consolidate daemon host and Slint GUI into a single unified `VietFlow.exe` executable.
+  - [ ] Support `--gui` and `--convert` command-line flags from the same binary.
+  - [ ] Automated release export script copying production binaries to `dist/`.
+
+- [ ] **Elevated / Administrator Privileges**:
+  - [ ] Option to create an elevated scheduled task (`TaskScheduler`) allowing VietFlow to type into games or developer tools running as Administrator without UAC prompts on boot.
+
+- [ ] **Linux Integration**:
+  - [ ] Build and package the Fcitx5 C++ addon connecting to `libvietflow_core.so` via C-ABI.
+  - [ ] Verify Linux X11 and Wayland input forwarding.
+
+- [ ] **Benchmark & Performance**:
+  - [ ] Continuous benchmarking suite comparing keystroke latency against UniKey and EVKey.
