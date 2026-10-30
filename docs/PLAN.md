@@ -27,7 +27,7 @@ and prefer features that can be implemented and tested without a cloud service.
       macro import/export, configurable auto-capitalize characters, hotkey-lock
       checkbox and admin relaunch are implemented.
 - [x] Windows host tests and core tests pass.
-- [ ] ARM64 executable validated on the native CI runner.
+- [x] ARM64 executable validated on the native CI runner (`Arm64`, PE32+).
 - [ ] Installer packaging and code signing.
 
 ## Phase 0: Build and release foundation
@@ -43,8 +43,9 @@ and prefer features that can be implemented and tested without a cloud service.
 - [x] ARM64 builds on the native `windows-11-vs2026-arm` runner; x64/x86 build on
       `windows-latest`.
 
-Acceptance: x64 and x86 were validated locally. ARM64 is validated by the ARM64
-CI runner because the local Visual Studio installation lacks the ARM64 toolset.
+Acceptance: x64 and x86 were validated locally. ARM64 was built by the
+`windows-11-vs2026-arm` runner; the artifact was downloaded and its PE header
+reports `Arm64` / PE32+.
 
 ## Phase 1: Per-app profiles and injection modes
 
@@ -109,8 +110,8 @@ Each mode keeps the existing atomic backspace + text behavior where possible.
 
 ## Next actions
 
-1. **Run the ARM64 workflow** on the native `windows-11-vs2026-arm` runner and
-   fix any toolchain or packaging failure. x64/x86 are already green locally.
+1. [x] **Run the ARM64 workflow** on the native `windows-11-vs2026-arm` runner.
+   x64, x86 and ARM64 jobs are green; the ARM64 artifact was verified as PE32+ Arm64.
 2. **Manual runtime matrix** on a real desktop. Use
    [`VALIDATION.md`](VALIDATION.md) as the checklist:
    - hotkey lock checkbox on/off; V/E, settings and converter shortcuts;
