@@ -78,6 +78,29 @@ Releases are published only for a feature milestone, a breaking change or a crit
 
 `VERSION` and `CHANGELOG.md` are the single source of truth. Run `.\scripts\build.ps1 -Arch All -Velopack` to build the executables and installers. See [docs/RELEASING.md](docs/RELEASING.md) for the asset and updater checklist.
 
+## Issues and feedback
+
+Bug reports and feature requests go through GitHub Issues:
+
+- **Bug report**: include the exact keystrokes, the app, and what you expected. Open a [new bug report](https://github.com/KienPC1234/VietFlow/issues/new?template=bug_report.md).
+- **Feature request**: describe the typing method, shortcut or workflow you need. Open a [new feature request](https://github.com/KienPC1234/VietFlow/issues/new?template=feature_request.md).
+- **Community discussion**: ask questions and share setups in [GitHub Discussions](https://github.com/KienPC1234/VietFlow/discussions).
+
+## Donation
+
+If VietFlow saves you time, you can support the author through a Vietnamese bank transfer (VietQR / Napas 247):
+
+| Detail | Value |
+| :--- | :--- |
+| **Bank** | Techcombank (Napas 247) |
+| **Account number** | `9978 5892 20` |
+| **Account holder** | HA TRI KIEN |
+| **Transfer note** | `Ung ho VietFlow` |
+
+<p align="center">
+  <img src="https://img.vietqr.io/image/970407-9978589220-compact2.png?amount=0&addInfo=Ung%20ho%20VietFlow&accountName=HA%20TRI%20KIEN" alt="VietQR code for supporting VietFlow" width="320" />
+</p>
+
 ## License
 
 Released under the GNU General Public License v3.0 (GPLv3).
