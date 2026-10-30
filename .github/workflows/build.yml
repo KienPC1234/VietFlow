@@ -1,0 +1,89 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (x64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc, i686-pc-windows-msvc, aarch64-pc-windows-msvc
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build ImGui UI (x64)
+        shell: pwsh
+        run: |
+          cmake -B ui_imgui/build -S ui_imgui -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=ON
+          cmake --build ui_imgui/build --config Release
+
+      - name: Run workspace tests
+        shell: pwsh
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo test --workspace
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          - arch: x86
+            runner: windows-latest
+          - arch: arm64
+            runner: windows-11-vs2026-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc, i686-pc-windows-msvc, aarch64-pc-windows-msvc
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
+
+      - name: Build portable executable
+        shell: pwsh
+        run: ./scripts/build.ps1 -Arch ${{ matrix.arch }} -SkipTests
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VietFlow-${{ matrix.arch }}
+          path: |
+            dist/VietFlow*.exe
+            dist/version.txt
+            dist/latest.json
+          if-no-files-found: error

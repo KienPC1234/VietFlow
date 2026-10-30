@@ -11,16 +11,29 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 - Phím tắt riêng cho mở bảng điều khiển và mở công cụ chuyển mã (mặc định `Ctrl + Shift + F5` / `Ctrl + Shift + F9`).
 - Hướng dẫn ngắn ở trang Gõ tắt và Chuyển mã.
 - Không tự loại trừ cửa sổ VietFlow, để người dùng soạn macro/nguồn chuyển mã ngay trong app.
+- Cấu hình riêng theo từng ứng dụng: kiểu gõ, bảng mã, cách gửi phím và gõ tắt.
+- Chế độ gửi phím Unicode, scan-code, clipboard và an toàn cho app/game khó nhận ký tự.
+- Gõ tắt chỉ chạy ở chế độ macro khi tiếng Việt đang tắt hoặc app bị loại trừ.
+- Nhập/xuất danh sách gõ tắt từ file TSV/TXT/CSV.
+- Tùy chỉnh ký tự kết thúc câu dùng để tự viết hoa.
+- Nút chạy lại với quyền quản trị từ menu khay.
+- Build ARM64 native và GitHub Actions cho x64/x86/ARM64.
 
 ### Fixed
 
 - Undo bằng cách bấm đúp `[`, `]`, `{`, `}` (trước đây thành `ơơ`, `ưư`, `ƠƠ`, `ƯƯ`).
 - Tone undo khôi phục đúng chuỗi gốc (`owss` → `ows`, `[ss` → `[s`), không còn `ơs`/`ưs`.
-- Mở rộng từ tiếng Anh thông dụng (`test`, `reset`, `work`, `the`...) và chỉ đối chiếu chuỗi phím gốc, tránh nhầm `mẹ` thành `me`.
+- Chỉ đối chiếu chuỗi phím gốc khi nhận diện từ tiếng Anh, tránh nhầm `mẹ` (`mej`) thành `me`.
+- Danh sách tiếng Anh mặc định chỉ còn từ kỹ thuật rõ ràng; các từ ngắn dễ trùng (`test`, `reset`, `me`, `the`) không bị ép tiếng Anh, vẫn gõ được tiếng Việt. Có thể thêm/xóa trong popup.
+- Khóa toàn bộ phím tắt toàn cục khi app đang focus nằm trong danh sách loại trừ; icon khay/menu vẫn đổi V/E thủ công (override tạm thời).
 - Nút "Phát âm thanh" phát thử khi bật và dùng PlaySoundW/MessageBeep ổn định hơn; mặc định tắt.
 - "Khởi động cùng Windows" được áp dụng ngay cả khi daemon khởi động sau khi UI đã lưu.
 - Bố cục cửa sổ hẹp: tab không bị rút ngắn/ellipsis, nút phím tắt tự xuống dòng, bỏ thanh cuộn ngang ngoài, gợi ý dài xuống dòng.
 - Không tự loại trừ cửa sổ VietFlow, để soạn macro/nguồn chuyển mã ngay trong app.
+- Chuyển mã thật qua core C ABI, gồm chuyển byte thô TCVN3/VNI qua clipboard.
+- Chế độ gửi phím "Tự động" tự chuyển sang clipboard nếu Windows chặn `SendInput`; việc khôi phục clipboard chạy nền để không chặn hook.
+- Có thể tắt khóa phím tắt trong app loại trừ bằng checkbox.
+- Tray override trong app loại trừ bật/tắt đúng ngay lần bấm đầu.
 
 ## [0.1.1] - 2026-10-30
 

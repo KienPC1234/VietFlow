@@ -5,10 +5,10 @@ fn main() {
 
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-    let imgui_lib_dir = manifest_dir.join(if target_arch == "x86" {
-        "../../ui_imgui/build-x86/Release"
-    } else {
-        "../../ui_imgui/build/Release"
+    let imgui_lib_dir = manifest_dir.join(match target_arch.as_str() {
+        "x86" => "../../ui_imgui/build-x86/Release",
+        "aarch64" => "../../ui_imgui/build-arm64/Release",
+        _ => "../../ui_imgui/build/Release",
     });
     println!(
         "cargo:rerun-if-changed={}",

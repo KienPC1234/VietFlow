@@ -1,11 +1,16 @@
 #include "ui_manager.h"
+#include "constants.h"
 #include "theme.h"
 #include <imgui.h>
 #include <windows.h>
 #include <commdlg.h>
 #include <shellapi.h>
 #include <algorithm>
+#include <cctype>
+#include <cfloat>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <map>
 
 #ifndef VIETFLOW_VERSION
@@ -13,8 +18,290 @@
 #endif
 
 extern "C" void vf_play_notification_sound();
+extern "C" size_t vf_english_keywords(uint8_t* out, size_t out_cap);
+extern "C" size_t vf_convert_charset(const unsigned char* input, size_t input_len,
+                                     unsigned char source, unsigned char target,
+                                     unsigned char* out, size_t out_cap);
+extern "C" size_t vf_convert_charset_bytes(const unsigned char* input, size_t input_len,
+                                           unsigned char source, unsigned char target,
+                                           unsigned char* out, size_t out_cap);
+extern "C" size_t vf_strip_accents(const unsigned char* input, size_t input_len,
+                                   unsigned char* out, size_t out_cap);
 
 namespace vietflow {
+
+static std::vector<std::string> LoadDefaultEnglishKeywords() {
+    const size_t needed = vf_english_keywords(nullptr, 0);
+    if (needed == 0) return {};
+
+    std::string buffer(needed, '\0');
+    vf_english_keywords(reinterpret_cast<uint8_t*>(&buffer[0]), buffer.size());
+
+    std::vector<std::string> words;
+    size_t start = 0;
+    while (start < buffer.size()) {
+        size_t end = buffer.find('\n', start);
+        if (end == std::string::npos) end = buffer.size();
+        if (end > start) words.push_back(buffer.substr(start, end - start));
+        start = end + 1;
+    }
+    std::sort(words.begin(), words.end());
+    words.erase(std::unique(words.begin(), words.end()), words.end());
+    return words;
+}
+
+static std::string TrimLower(const char* text) {
+    if (!text) return {};
+    std::string out;
+    out.reserve(strlen(text));
+    for (const char* p = text; *p; ++p) {
+        unsigned char c = (unsigned char)*p;
+        if (std::isspace(c)) continue;
+        out.push_back((char)std::tolower(c));
+    }
+    return out;
+}
+
+static bool ContainsWord(const std::vector<std::string>& words, const std::string& word) {
+    return std::find(words.begin(), words.end(), word) != words.end();
+}
+
+static void SortUnique(std::vector<std::string>& words) {
+    std::sort(words.begin(), words.end());
+    words.erase(std::unique(words.begin(), words.end()), words.end());
+}
+
+static std::string ConvertText(const std::string& input, int source, int target, bool strip) {
+    if (input.empty()) return {};
+    const auto* bytes = reinterpret_cast<const unsigned char*>(input.data());
+    if (strip) {
+        const size_t needed = vf_strip_accents(bytes, input.size(), nullptr, 0);
+        if (needed == 0) return {};
+        std::string out(needed, '\0');
+        vf_strip_accents(bytes, input.size(), reinterpret_cast<unsigned char*>(&out[0]), out.size());
+        return out;
+    }
+    const size_t needed = vf_convert_charset(
+        bytes, input.size(), static_cast<unsigned char>(source),
+        static_cast<unsigned char>(target), nullptr, 0);
+    if (needed == 0) return {};
+    std::string out(needed, '\0');
+    vf_convert_charset(
+        bytes, input.size(), static_cast<unsigned char>(source),
+        static_cast<unsigned char>(target), reinterpret_cast<unsigned char*>(&out[0]), out.size());
+    return out;
+}
+
+static std::string ConvertRaw(const std::string& input, int source, int target) {
+    if (input.empty()) return {};
+    const auto* bytes = reinterpret_cast<const unsigned char*>(input.data());
+    const size_t needed = vf_convert_charset_bytes(
+        bytes, input.size(), static_cast<unsigned char>(source),
+        static_cast<unsigned char>(target), nullptr, 0);
+    if (needed == 0) return {};
+    std::string out(needed, '\0');
+    vf_convert_charset_bytes(
+        bytes, input.size(), static_cast<unsigned char>(source),
+        static_cast<unsigned char>(target), reinterpret_cast<unsigned char*>(&out[0]), out.size());
+    return out;
+}
+
+static std::string ReadClipboardAnsi() {
+    if (!OpenClipboard(nullptr)) return {};
+    std::string out;
+    HANDLE handle = GetClipboardData(CF_TEXT);
+    if (handle) {
+        const char* ptr = static_cast<const char*>(GlobalLock(handle));
+        if (ptr) {
+            size_t len = 0;
+            while (len < 1'048'576 && ptr[len] != '\0') ++len;
+            out.assign(ptr, len);
+            GlobalUnlock(handle);
+        }
+    }
+    CloseClipboard();
+    return out;
+}
+
+static bool WriteClipboardRaw(const std::string& raw_ansi, const std::string& unicode_preview) {
+    if (!OpenClipboard(nullptr)) return false;
+    EmptyClipboard();
+
+    auto set_ansi = [&]() -> bool {
+        HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, raw_ansi.size() + 1);
+        if (!mem) return false;
+        char* ptr = static_cast<char*>(GlobalLock(mem));
+        if (!ptr) { GlobalFree(mem); return false; }
+        memcpy(ptr, raw_ansi.c_str(), raw_ansi.size() + 1);
+        GlobalUnlock(mem);
+        if (!SetClipboardData(CF_TEXT, mem)) { GlobalFree(mem); return false; }
+        return true;
+    };
+
+    auto set_unicode = [&]() -> bool {
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, unicode_preview.c_str(), (int)unicode_preview.size(), nullptr, 0);
+        if (wlen <= 0) return false;
+        HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, (wlen + 1) * sizeof(wchar_t));
+        if (!mem) return false;
+        wchar_t* ptr = static_cast<wchar_t*>(GlobalLock(mem));
+        if (!ptr) { GlobalFree(mem); return false; }
+        MultiByteToWideChar(CP_UTF8, 0, unicode_preview.c_str(), (int)unicode_preview.size(), ptr, wlen);
+        ptr[wlen] = L'\0';
+        GlobalUnlock(mem);
+        if (!SetClipboardData(CF_UNICODETEXT, mem)) { GlobalFree(mem); return false; }
+        return true;
+    };
+
+    bool ok = set_ansi();
+    if (!unicode_preview.empty()) ok = set_unicode() || ok;
+    CloseClipboard();
+    return ok;
+}
+
+static bool CopyConvertedToClipboard(const std::string& utf8_input, int source, int target) {
+    if (target >= 2) {
+        std::string raw = ConvertRaw(utf8_input, source, target);
+        if (raw.empty()) return false;
+        std::string preview = ConvertRaw(raw, target, 0);
+        return WriteClipboardRaw(raw, preview);
+    }
+    std::string result = ConvertText(utf8_input, source, target, false);
+    if (result.empty()) return false;
+    ImGui::SetClipboardText(result.c_str());
+    return true;
+}
+
+static std::string ApplyCase(const std::string& text, bool upper, bool lower) {
+    if (text.empty() || (!upper && !lower)) return text;
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), (int)text.size(), nullptr, 0);
+    if (wlen <= 0) return text;
+    std::wstring wide((size_t)wlen, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), (int)text.size(), &wide[0], wlen);
+    if (upper) CharUpperBuffW(&wide[0], (DWORD)wide.size());
+    if (lower) CharLowerBuffW(&wide[0], (DWORD)wide.size());
+    int len = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), (int)wide.size(), nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return text;
+    std::string out((size_t)len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), (int)wide.size(), &out[0], len, nullptr, nullptr);
+    return out;
+}
+
+static std::string TrimString(const std::string& text) {
+    size_t start = 0;
+    while (start < text.size() && std::isspace((unsigned char)text[start])) ++start;
+    size_t end = text.size();
+    while (end > start && std::isspace((unsigned char)text[end - 1])) --end;
+    return text.substr(start, end - start);
+}
+
+static bool ParseMacroLine(const std::string& raw, std::string& key, std::string& value) {
+    std::string line = TrimString(raw);
+    if (line.empty() || line[0] == '#') return false;
+    size_t split = line.find("||");
+    if (split == std::string::npos) split = line.find('\t');
+    if (split == std::string::npos) split = line.find('=');
+    if (split == std::string::npos) split = line.find(':');
+    if (split == std::string::npos) split = line.find(',');
+    if (split == std::string::npos) return false;
+    key = TrimString(line.substr(0, split));
+    value = TrimString(line.substr(split + (line.compare(split, 2, "||") == 0 ? 2 : 1)));
+    return !key.empty() && !value.empty();
+}
+
+static std::string PickMacroFile(bool save) {
+    OPENFILENAMEW ofn = { sizeof(ofn) };
+    wchar_t file[MAX_PATH] = { 0 };
+    if (save) wcscpy_s(file, L"vietflow-macros.tsv");
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFilter = L"Danh sách gõ tắt (*.tsv;*.txt;*.csv)\0*.tsv;*.txt;*.csv\0Tất cả tập tin (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
+                (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+    const BOOL ok = save ? GetSaveFileNameW(&ofn) : GetOpenFileNameW(&ofn);
+    if (!ok) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, file, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1) return {};
+    std::string path((size_t)len - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, file, -1, &path[0], len, nullptr, nullptr);
+    return path;
+}
+
+static size_t ImportMacros(const std::string& path, std::map<std::string, std::string>& macros) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) return 0;
+    size_t imported = 0;
+    std::string line;
+    while (std::getline(file, line)) {
+        std::string key, value;
+        if (!ParseMacroLine(line, key, value)) continue;
+        macros[key] = value;
+        ++imported;
+    }
+    return imported;
+}
+
+static size_t ExportMacros(const std::string& path, const std::map<std::string, std::string>& macros) {
+    std::ofstream file(path, std::ios::binary);
+    if (!file.is_open()) return 0;
+    for (const auto& [key, value] : macros) {
+        file << key << '\t' << value << '\n';
+    }
+    return macros.size();
+}
+
+// Returns 0 while waiting, 1 when a combination was captured, 2 on Esc.
+static int PollHotkey(std::string& out) {
+    if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) return 2;
+
+    const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    const bool win = ((GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) ||
+                     ((GetAsyncKeyState(VK_RWIN) & 0x8000) != 0);
+
+    struct KeyDef { int vk; const char* name; };
+    static const KeyDef keys[] = {
+        { VK_SPACE, "Space" }, { VK_CAPITAL, "CapsLock" }, { VK_TAB, "Tab" },
+        { 0xC0, "~" },
+        { VK_F1, "F1" }, { VK_F2, "F2" }, { VK_F3, "F3" }, { VK_F4, "F4" },
+        { VK_F5, "F5" }, { VK_F6, "F6" }, { VK_F7, "F7" }, { VK_F8, "F8" },
+        { VK_F9, "F9" }, { VK_F10, "F10" }, { VK_F11, "F11" }, { VK_F12, "F12" },
+    };
+
+    std::string key;
+    for (const auto& def : keys) {
+        if ((GetAsyncKeyState(def.vk) & 0x8000) != 0) {
+            key = def.name;
+            break;
+        }
+    }
+    if (key.empty()) {
+        for (int k = 'A'; k <= 'Z'; ++k) {
+            if ((GetAsyncKeyState(k) & 0x8000) != 0) {
+                key = std::string(1, (char)k);
+                break;
+            }
+        }
+    }
+    if (key.empty()) {
+        for (int k = '0'; k <= '9'; ++k) {
+            if ((GetAsyncKeyState(k) & 0x8000) != 0) {
+                key = std::string(1, (char)k);
+                break;
+            }
+        }
+    }
+    if (key.empty()) return 0;
+
+    out.clear();
+    if (ctrl) out += "Ctrl + ";
+    if (alt) out += "Alt + ";
+    if (shift) out += "Shift + ";
+    if (win) out += "Win + ";
+    out += key;
+    return 1;
+}
 
 static std::vector<RunningApp> GetRunningApps() {
     std::vector<RunningApp> apps;
@@ -81,10 +368,153 @@ UiManager::UiManager(const std::string& config_path, bool convert_mode, void* hw
     strncpy_s(foreign_initials_buf_, config_.foreign_initials.c_str(), sizeof(foreign_initials_buf_) - 1);
     strncpy_s(hotkey_settings_buf_, config_.hotkey_settings.c_str(), sizeof(hotkey_settings_buf_) - 1);
     strncpy_s(hotkey_converter_buf_, config_.hotkey_converter.c_str(), sizeof(hotkey_converter_buf_) - 1);
+    strncpy_s(auto_capitalize_buf_, config_.auto_capitalize_chars.c_str(), sizeof(auto_capitalize_buf_) - 1);
+    english_defaults_ = LoadDefaultEnglishKeywords();
+    SyncCustomKeymapBuffersFromConfig();
+}
+
+void UiManager::SyncCustomKeymapBuffersFromConfig() {
+    auto copy_str = [](char* dst, size_t dst_size, const std::string& src) {
+        strncpy_s(dst, dst_size, src.c_str(), dst_size - 1);
+    };
+    copy_str(custom_acute_, sizeof(custom_acute_), config_.custom_keymap.acute);
+    copy_str(custom_grave_, sizeof(custom_grave_), config_.custom_keymap.grave);
+    copy_str(custom_hook_, sizeof(custom_hook_), config_.custom_keymap.hook);
+    copy_str(custom_tilde_, sizeof(custom_tilde_), config_.custom_keymap.tilde);
+    copy_str(custom_dot_, sizeof(custom_dot_), config_.custom_keymap.dot);
+    copy_str(custom_remove_tone_, sizeof(custom_remove_tone_), config_.custom_keymap.remove_tone);
+
+    copy_str(custom_circumflex_, sizeof(custom_circumflex_), config_.custom_keymap.circumflex);
+    copy_str(custom_horn_, sizeof(custom_horn_), config_.custom_keymap.horn);
+    copy_str(custom_breve_, sizeof(custom_breve_), config_.custom_keymap.breve);
+    copy_str(custom_d_mark_, sizeof(custom_d_mark_), config_.custom_keymap.d_mark);
+    copy_str(custom_hook_all_, sizeof(custom_hook_all_), config_.custom_keymap.hook_all);
+
+    copy_str(custom_roof_a_, sizeof(custom_roof_a_), config_.custom_keymap.roof_a);
+    copy_str(custom_roof_e_, sizeof(custom_roof_e_), config_.custom_keymap.roof_e);
+    copy_str(custom_roof_o_, sizeof(custom_roof_o_), config_.custom_keymap.roof_o);
+    copy_str(custom_horn_o_, sizeof(custom_horn_o_), config_.custom_keymap.horn_o);
+    copy_str(custom_horn_u_, sizeof(custom_horn_u_), config_.custom_keymap.horn_u);
+    copy_str(custom_breve_a_, sizeof(custom_breve_a_), config_.custom_keymap.breve_a);
+    copy_str(custom_d_lower_, sizeof(custom_d_lower_), config_.custom_keymap.d_lower);
+}
+
+void UiManager::SyncCustomKeymapBuffersToConfig() {
+    config_.custom_keymap.acute = custom_acute_;
+    config_.custom_keymap.grave = custom_grave_;
+    config_.custom_keymap.hook = custom_hook_;
+    config_.custom_keymap.tilde = custom_tilde_;
+    config_.custom_keymap.dot = custom_dot_;
+    config_.custom_keymap.remove_tone = custom_remove_tone_;
+
+    config_.custom_keymap.circumflex = custom_circumflex_;
+    config_.custom_keymap.horn = custom_horn_;
+    config_.custom_keymap.breve = custom_breve_;
+    config_.custom_keymap.d_mark = custom_d_mark_;
+    config_.custom_keymap.hook_all = custom_hook_all_;
+
+    config_.custom_keymap.roof_a = custom_roof_a_;
+    config_.custom_keymap.roof_e = custom_roof_e_;
+    config_.custom_keymap.roof_o = custom_roof_o_;
+    config_.custom_keymap.horn_o = custom_horn_o_;
+    config_.custom_keymap.horn_u = custom_horn_u_;
+    config_.custom_keymap.breve_a = custom_breve_a_;
+    config_.custom_keymap.d_lower = custom_d_lower_;
+}
+
+void UiManager::LoadCustomKeymapPreset(int preset_id) {
+    if (preset_id == 0) { // Telex
+        config_.custom_keymap.acute = "s";
+        config_.custom_keymap.grave = "f";
+        config_.custom_keymap.hook = "r";
+        config_.custom_keymap.tilde = "x";
+        config_.custom_keymap.dot = "j";
+        config_.custom_keymap.remove_tone = "z";
+        config_.custom_keymap.circumflex = "";
+        config_.custom_keymap.horn = "";
+        config_.custom_keymap.breve = "";
+        config_.custom_keymap.d_mark = "";
+        config_.custom_keymap.hook_all = "w";
+        config_.custom_keymap.roof_a = "";
+        config_.custom_keymap.roof_e = "";
+        config_.custom_keymap.roof_o = "";
+        config_.custom_keymap.horn_o = "";
+        config_.custom_keymap.horn_u = "";
+        config_.custom_keymap.breve_a = "";
+        config_.custom_keymap.d_lower = "";
+        config_.custom_keymap.telex_double_keys = true;
+        config_.custom_keymap.lone_w = true;
+    } else if (preset_id == 1) { // VNI
+        config_.custom_keymap.acute = "1";
+        config_.custom_keymap.grave = "2";
+        config_.custom_keymap.hook = "3";
+        config_.custom_keymap.tilde = "4";
+        config_.custom_keymap.dot = "5";
+        config_.custom_keymap.remove_tone = "0";
+        config_.custom_keymap.circumflex = "6";
+        config_.custom_keymap.horn = "7";
+        config_.custom_keymap.breve = "8";
+        config_.custom_keymap.d_mark = "9";
+        config_.custom_keymap.hook_all = "";
+        config_.custom_keymap.roof_a = "";
+        config_.custom_keymap.roof_e = "";
+        config_.custom_keymap.roof_o = "";
+        config_.custom_keymap.horn_o = "";
+        config_.custom_keymap.horn_u = "";
+        config_.custom_keymap.breve_a = "";
+        config_.custom_keymap.d_lower = "";
+        config_.custom_keymap.telex_double_keys = false;
+        config_.custom_keymap.lone_w = false;
+    } else if (preset_id == 2) { // VIQR
+        config_.custom_keymap.acute = "'";
+        config_.custom_keymap.grave = "`";
+        config_.custom_keymap.hook = "?";
+        config_.custom_keymap.tilde = "~";
+        config_.custom_keymap.dot = ".";
+        config_.custom_keymap.remove_tone = "0";
+        config_.custom_keymap.circumflex = "^";
+        config_.custom_keymap.horn = "+*";
+        config_.custom_keymap.breve = "(";
+        config_.custom_keymap.d_mark = "d";
+        config_.custom_keymap.hook_all = "";
+        config_.custom_keymap.roof_a = "";
+        config_.custom_keymap.roof_e = "";
+        config_.custom_keymap.roof_o = "";
+        config_.custom_keymap.horn_o = "";
+        config_.custom_keymap.horn_u = "";
+        config_.custom_keymap.breve_a = "";
+        config_.custom_keymap.d_lower = "";
+        config_.custom_keymap.telex_double_keys = false;
+        config_.custom_keymap.lone_w = false;
+    } else { // Clear all
+        config_.custom_keymap.acute = "";
+        config_.custom_keymap.grave = "";
+        config_.custom_keymap.hook = "";
+        config_.custom_keymap.tilde = "";
+        config_.custom_keymap.dot = "";
+        config_.custom_keymap.remove_tone = "";
+        config_.custom_keymap.circumflex = "";
+        config_.custom_keymap.horn = "";
+        config_.custom_keymap.breve = "";
+        config_.custom_keymap.d_mark = "";
+        config_.custom_keymap.hook_all = "";
+        config_.custom_keymap.roof_a = "";
+        config_.custom_keymap.roof_e = "";
+        config_.custom_keymap.roof_o = "";
+        config_.custom_keymap.horn_o = "";
+        config_.custom_keymap.horn_u = "";
+        config_.custom_keymap.breve_a = "";
+        config_.custom_keymap.d_lower = "";
+        config_.custom_keymap.telex_double_keys = false;
+        config_.custom_keymap.lone_w = false;
+    }
+    SyncCustomKeymapBuffersFromConfig();
 }
 
 void UiManager::SaveConfig() {
+    SyncCustomKeymapBuffersToConfig();
     config_.foreign_initials = foreign_initials_buf_;
+    config_.auto_capitalize_chars = auto_capitalize_buf_;
     config_.hotkey_settings = hotkey_settings_buf_;
     config_.hotkey_converter = hotkey_converter_buf_;
     config_.Save(config_path_);
@@ -94,9 +524,9 @@ void UiManager::SaveConfig() {
         on_saved_cb_();
     }
     // Notify running daemon
-    HWND hwnd = FindWindowW(L"VietFlowMessageWindowClass", L"VietFlowDaemon");
+    HWND hwnd = FindWindowW(WINDOW_CLASS_DAEMON, WINDOW_TITLE_DAEMON);
     if (hwnd) {
-        PostMessageW(hwnd, 0x0400 + 104, 0, 0); // WM_USER + 104 = WM_RELOAD_CONFIG
+        PostMessageW(hwnd, WM_VF_RELOAD_CONFIG, 0, 0);
     }
 }
 
@@ -271,10 +701,15 @@ void UiManager::PageOverview() {
         ImGui::TextUnformatted("Kiểu gõ chính:");
         ImGui::SetNextItemWidth(-Px(10.0f));
         const char* methods[] = {
-            "Telex (Chuẩn)", "VNI", "VIQR", "Simple Telex", "Simple Telex 2", "Telex + VNI (Hỗn hợp)"
+            "Telex (Chuẩn)", "VNI", "VIQR", "Simple Telex", "Simple Telex 2", "Telex + VNI (Hỗn hợp)", "Tự định nghĩa"
         };
         if (ImGui::Combo("##MethodCombo", &config_.method, methods, IM_ARRAYSIZE(methods))) {
             SaveConfig();
+        }
+        if (config_.method == 6) {
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), "Đang dùng kiểu gõ Tự định nghĩa.");
+            ImGui::TextDisabled("Vào tab [Gõ] để tùy chỉnh chi tiết từng phím gõ.");
         }
 
         ImGui::TableSetColumnIndex(1);
@@ -477,19 +912,50 @@ void UiManager::PageOverview() {
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Mở bảng điều khiển:");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(Px(240.0f));
+    ImGui::SetNextItemWidth(Px(210.0f));
     if (ImGui::InputText("##HotkeySettings", hotkey_settings_buf_, sizeof(hotkey_settings_buf_))) {
         SaveConfig();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(recording_hotkey_target_ == 1 ? NF_BOLT " Đang nghe..." : NF_COG " Ghi",
+                      ImVec2(Px(110.0f), Px(26.0f)))) {
+        recording_hotkey_target_ = 1;
     }
 
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Mở công cụ chuyển mã:");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(Px(240.0f));
+    ImGui::SetNextItemWidth(Px(210.0f));
     if (ImGui::InputText("##HotkeyConverter", hotkey_converter_buf_, sizeof(hotkey_converter_buf_))) {
         SaveConfig();
     }
-    ImGui::TextDisabled("Dùng dấu + giữa các phím, ví dụ: Ctrl + Shift + F5");
+    ImGui::SameLine();
+    if (ImGui::Button(recording_hotkey_target_ == 2 ? NF_BOLT " Đang nghe..." : NF_COG " Ghi",
+                      ImVec2(Px(110.0f), Px(26.0f)))) {
+        recording_hotkey_target_ = 2;
+    }
+    ImGui::TextDisabled("Bấm Ghi rồi nhấn tổ hợp phím (Esc để hủy). Có thể gõ tay, ví dụ: Ctrl + Shift + F5");
+
+    if (recording_hotkey_target_ != 0) {
+        std::string captured;
+        const int result = PollHotkey(captured);
+        if (result == 2) {
+            recording_hotkey_target_ = 0;
+        } else if (result == 1) {
+            if (recording_hotkey_target_ == 1) {
+                config_.hotkey_settings = captured;
+                strncpy_s(hotkey_settings_buf_, captured.c_str(), sizeof(hotkey_settings_buf_) - 1);
+            } else {
+                config_.hotkey_converter = captured;
+                strncpy_s(hotkey_converter_buf_, captured.c_str(), sizeof(hotkey_converter_buf_) - 1);
+            }
+            recording_hotkey_target_ = 0;
+            SaveConfig();
+        } else {
+            ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.30f, 1.0f),
+                               "Đang nghe... nhấn tổ hợp phím (Esc để hủy)");
+        }
+    }
 
     SectionHeader("Hệ thống & Khởi động");
     if (ImGui::Checkbox("Khởi động cùng Windows khi bật máy", &config_.start_with_windows)) SaveConfig();
@@ -516,10 +982,30 @@ void UiManager::PageTyping() {
     if (ImGui::Checkbox("Chống dính phím Shift khi gõ hoa", &config_.fix_shift_lag)) SaveConfig();
     if (ImGui::Checkbox("Cho phép gõ tắt phụ âm đầu (f->ph, j->gi, w->qu)", &config_.consonant_shortcuts)) SaveConfig();
     if (ImGui::Checkbox("Tự động viết hoa chữ cái đầu câu", &config_.auto_capitalize)) SaveConfig();
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(Px(150.0f));
+    if (ImGui::InputTextWithHint("##AutoCapChars", ".!?", auto_capitalize_buf_, sizeof(auto_capitalize_buf_))) {
+        config_.auto_capitalize_chars = auto_capitalize_buf_;
+        SaveConfig();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Các ký tự kết thúc câu. Mặc định: . ! ? và xuống dòng.");
+    }
     if (ImGui::Checkbox("Tắt tiếng Việt khi bàn phím không phải US", &config_.disable_on_non_us_layout)) SaveConfig();
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Tránh gõ sai khi bạn chuyển sang bố cục bàn phím khác (ví dụ tiếng Pháp, Đức).");
     }
+
+    SectionHeader("Cách gửi phím cho ứng dụng");
+    static const char* injection_modes[] = {
+        "Tự động (khuyến nghị)", "Unicode", "Scan-code (game DirectInput)",
+        "Clipboard (Chromium, remote)", "An toàn (chậm, chống mất ký tự)"
+    };
+    ImGui::SetNextItemWidth(Px(340.0f));
+    if (ImGui::Combo("##InjectionMode", &config_.injection_mode, injection_modes, IM_ARRAYSIZE(injection_modes))) {
+        SaveConfig();
+    }
+    ImGui::TextDisabled("Tự động dùng Unicode và chuyển sang clipboard nếu Windows chặn SendInput. Có thể ghi đè riêng cho từng app ở tab Loại trừ.");
 
     SectionHeader("Ký tự ngoại lai & Từ tiếng Anh");
     ImGui::AlignTextToFramePadding();
@@ -532,40 +1018,239 @@ void UiManager::PageTyping() {
     ImGui::TextDisabled("(Mặc định: fjwz. Bỏ qua dấu khi gặp các chữ cái này ở đầu từ)");
 
     ImGui::Spacing();
-    ImGui::TextUnformatted("Danh sách từ khóa tiếng Anh không bỏ dấu:");
-    ImGui::SetNextItemWidth(Px(260.0f));
-    ImGui::InputTextWithHint("##NewEngKw", "case, api, github...", new_english_kw_, sizeof(new_english_kw_));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Từ khóa tiếng Anh không bỏ dấu:");
     ImGui::SameLine();
+    if (ImGui::Button(NF_COG "  Chỉnh sửa danh sách...", ImVec2(0.0f, Px(26.0f)))) {
+        ImGui::OpenPopup("Từ tiếng Anh");
+    }
+    ImGui::TextDisabled("Mặc định + từ bạn thêm. Mở popup để thêm/xóa, kể cả từ mặc định.");
 
-    if (ImGui::Button(NF_PLUS "  Thêm từ", ImVec2(0.0f, Px(26.0f)))) {
-        if (strlen(new_english_kw_) > 0) {
-            config_.english_keywords.push_back(new_english_kw_);
-            new_english_kw_[0] = '\0';
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(Px(640.0f), Px(500.0f)), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Từ tiếng Anh", nullptr, ImGuiWindowFlags_NoResize)) {
+        ImGui::TextDisabled("Các từ này được giữ nguyên, không bỏ dấu khi gõ.");
+        ImGui::SetNextItemWidth(-Px(10.0f));
+        ImGui::InputTextWithHint("##EngFilter", "Tìm từ...", english_keyword_filter_, sizeof(english_keyword_filter_));
+        ImGui::Spacing();
+
+        std::vector<std::string> words = english_defaults_;
+        for (const auto& raw : config_.english_keywords) {
+            std::string word = TrimLower(raw.c_str());
+            if (!word.empty() && !ContainsWord(words, word)) words.push_back(word);
+        }
+        words.erase(std::remove_if(words.begin(), words.end(), [&](const std::string& word) {
+            return ContainsWord(config_.english_keywords_removed, word);
+        }), words.end());
+        SortUnique(words);
+
+        const std::string filter = TrimLower(english_keyword_filter_);
+        if (ImGui::BeginChild("##EngList", ImVec2(0.0f, Px(300.0f)), true)) {
+            int shown = 0;
+            for (const auto& word : words) {
+                if (!filter.empty() && word.find(filter) == std::string::npos) continue;
+                ++shown;
+                ImGui::PushID(word.c_str());
+                ImGui::TextUnformatted(word.c_str());
+                ImGui::SameLine(ImGui::GetContentRegionAvail().x - Px(60.0f));
+                if (ImGui::SmallButton(NF_TRASH " Xóa")) {
+                    config_.english_keywords.erase(
+                        std::remove(config_.english_keywords.begin(), config_.english_keywords.end(), word),
+                        config_.english_keywords.end());
+                    if (ContainsWord(english_defaults_, word) &&
+                        !ContainsWord(config_.english_keywords_removed, word)) {
+                        config_.english_keywords_removed.push_back(word);
+                        SortUnique(config_.english_keywords_removed);
+                    }
+                    SaveConfig();
+                }
+                ImGui::PopID();
+            }
+            if (shown == 0) {
+                ImGui::TextDisabled("Không có từ phù hợp.");
+            }
+        }
+        ImGui::EndChild();
+
+        ImGui::SetNextItemWidth(-Px(100.0f));
+        ImGui::InputTextWithHint("##EngNew", "Thêm từ tiếng Anh...", new_english_kw_, sizeof(new_english_kw_));
+        ImGui::SameLine();
+        if (ImGui::Button(NF_PLUS "  Thêm", ImVec2(Px(90.0f), Px(26.0f)))) {
+            std::string word = TrimLower(new_english_kw_);
+            if (!word.empty()) {
+                config_.english_keywords_removed.erase(
+                    std::remove(config_.english_keywords_removed.begin(), config_.english_keywords_removed.end(), word),
+                    config_.english_keywords_removed.end());
+                if (!ContainsWord(english_defaults_, word) &&
+                    !ContainsWord(config_.english_keywords, word)) {
+                    config_.english_keywords.push_back(word);
+                    SortUnique(config_.english_keywords);
+                }
+                new_english_kw_[0] = '\0';
+                SaveConfig();
+            }
+        }
+
+        if (ImGui::Button("Khôi phục từ mặc định", ImVec2(0.0f, Px(26.0f)))) {
+            config_.english_keywords_removed.clear();
             SaveConfig();
         }
+        ImGui::SameLine();
+        if (ImGui::Button("Đóng", ImVec2(Px(90.0f), Px(26.0f)))) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    SectionHeader("Kiểu gõ tự định nghĩa (Custom Keymap)");
+    ImGui::TextDisabled("Tùy biến phím cho dấu thanh, mũ, móc. Hỗ trợ gán nhiều ký tự cho cùng một dấu (ví dụ: 's1').");
+    ImGui::Spacing();
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Nạp nhanh từ mẫu:");
+    ImGui::SameLine();
+    if (ImGui::Button("Mẫu Telex", ImVec2(Px(90.0f), Px(24.0f)))) {
+        LoadCustomKeymapPreset(0);
+        SaveConfig();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Mẫu VNI", ImVec2(Px(90.0f), Px(24.0f)))) {
+        LoadCustomKeymapPreset(1);
+        SaveConfig();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Mẫu VIQR", ImVec2(Px(90.0f), Px(24.0f)))) {
+        LoadCustomKeymapPreset(2);
+        SaveConfig();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Xóa hết", ImVec2(Px(80.0f), Px(24.0f)))) {
+        LoadCustomKeymapPreset(3);
+        SaveConfig();
     }
 
     ImGui::Spacing();
-    int to_remove = -1;
-    for (size_t i = 0; i < config_.english_keywords.size(); ++i) {
-        ImGui::Text("  • %s", config_.english_keywords[i].c_str());
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x - Px(70.0f));
-        ImGui::PushID((int)i);
-        if (ImGui::SmallButton(NF_TRASH "  Xóa")) {
-            to_remove = (int)i;
+    auto RenderKeyInput = [this](const char* label, char* buf, size_t buf_size, const char* hint) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(label);
+        ImGui::SameLine(Px(110.0f));
+        ImGui::SetNextItemWidth(Px(80.0f));
+        std::string id = std::string("##CustomKey_") + label;
+        if (ImGui::InputTextWithHint(id.c_str(), hint, buf, buf_size)) {
+            SaveConfig();
         }
-        ImGui::PopID();
+    };
+
+    if (ImGui::BeginTable("CustomKeymapTable", 2, ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Dấu thanh", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+        ImGui::TableSetupColumn("Dấu mũ & móc", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextDisabled("Phím gán dấu thanh:");
+        RenderKeyInput("Dấu sắc:", custom_acute_, sizeof(custom_acute_), "s, 1...");
+        RenderKeyInput("Dấu huyền:", custom_grave_, sizeof(custom_grave_), "f, 2...");
+        RenderKeyInput("Dấu hỏi:", custom_hook_, sizeof(custom_hook_), "r, 3...");
+        RenderKeyInput("Dấu ngã:", custom_tilde_, sizeof(custom_tilde_), "x, 4...");
+        RenderKeyInput("Dấu nặng:", custom_dot_, sizeof(custom_dot_), "j, 5...");
+        RenderKeyInput("Xóa dấu:", custom_remove_tone_, sizeof(custom_remove_tone_), "z, 0...");
+
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextDisabled("Phím biến đổi ký tự:");
+        RenderKeyInput("Mũ (â, ê, ô):", custom_circumflex_, sizeof(custom_circumflex_), "6, ^...");
+        RenderKeyInput("Móc (ơ, ư):", custom_horn_, sizeof(custom_horn_), "7, +...");
+        RenderKeyInput("Trăng (ă):", custom_breve_, sizeof(custom_breve_), "8, (...");
+        RenderKeyInput("Chữ đ:", custom_d_mark_, sizeof(custom_d_mark_), "9, d...");
+        RenderKeyInput("Móc & trăng:", custom_hook_all_, sizeof(custom_hook_all_), "w...");
+
+        ImGui::EndTable();
     }
-    if (to_remove >= 0) {
-        config_.english_keywords.erase(config_.english_keywords.begin() + to_remove);
-        SaveConfig();
+
+    ImGui::Spacing();
+    if (ImGui::TreeNode("Phím mũ & móc riêng biệt cho từng chữ (Tùy chọn nâng cao)")) {
+        ImGui::TextDisabled("Chỉ thiết lập nếu bạn muốn dùng phím riêng thay vì phím chung:");
+        if (ImGui::BeginTable("CustomIndividualTable", 2, ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Chữ Â, Ê, Ô", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+            ImGui::TableSetupColumn("Chữ Ơ, Ư, Ă, Đ", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            RenderKeyInput("Chữ â riêng:", custom_roof_a_, sizeof(custom_roof_a_), "");
+            RenderKeyInput("Chữ ê riêng:", custom_roof_e_, sizeof(custom_roof_e_), "");
+            RenderKeyInput("Chữ ô riêng:", custom_roof_o_, sizeof(custom_roof_o_), "");
+
+            ImGui::TableSetColumnIndex(1);
+            RenderKeyInput("Chữ ơ riêng:", custom_horn_o_, sizeof(custom_horn_o_), "");
+            RenderKeyInput("Chữ ư riêng:", custom_horn_u_, sizeof(custom_horn_u_), "");
+            RenderKeyInput("Chữ ă riêng:", custom_breve_a_, sizeof(custom_breve_a_), "");
+            RenderKeyInput("Chữ đ riêng:", custom_d_lower_, sizeof(custom_d_lower_), "");
+
+            ImGui::EndTable();
+        }
+        ImGui::TreePop();
+    }
+
+    ImGui::Spacing();
+    if (ImGui::Checkbox("Cho phép gõ lặp mũ kiểu Telex (aa -> â, ee -> ê, oo -> ô, dd -> đ)", &config_.custom_keymap.telex_double_keys)) SaveConfig();
+    if (ImGui::Checkbox("Gõ phím móc đứng độc lập thành chữ 'ư'", &config_.custom_keymap.lone_w)) SaveConfig();
+
+    ImGui::Spacing();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Khung gõ thử nghiệm:");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(Px(280.0f));
+    ImGui::InputTextWithHint("##TestCustomTyping", "Gõ thử tiếng Việt tại đây...", custom_test_buf_, sizeof(custom_test_buf_));
+    ImGui::SameLine();
+    if (ImGui::Button("Xóa chữ", ImVec2(Px(70.0f), Px(24.0f)))) {
+        custom_test_buf_[0] = '\0';
+    }
+
+    ImGui::Spacing();
+    if (config_.method != 6) {
+        if (ImGui::Button(NF_BOLT "  Kích hoạt sử dụng Kiểu gõ tự định nghĩa này làm kiểu gõ chính", ImVec2(0.0f, Px(28.0f)))) {
+            config_.method = 6;
+            SaveConfig();
+        }
+    } else {
+        ImGui::TextColored(ImVec4(0.25f, 0.85f, 0.40f, 1.0f), "Kiểu gõ tự định nghĩa đang được kích hoạt làm kiểu gõ chính.");
     }
 }
 
 void UiManager::PageMacros() {
     SectionHeader("Thiết lập gõ tắt");
     if (ImGui::Checkbox("Bật tính năng gõ tắt", &config_.enable_macro)) SaveConfig();
-    if (ImGui::Checkbox("Cho phép gõ tắt ngay cả khi ở chế độ [E]", &config_.allow_macro_when_disabled)) SaveConfig();
+    if (ImGui::Checkbox("Cho phép gõ tắt ngay cả khi ở chế độ [E] / app loại trừ", &config_.allow_macro_when_disabled)) SaveConfig();
+
+    if (ImGui::Button(NF_FOLDER "  Nhập từ file...", ImVec2(0.0f, Px(26.0f)))) {
+        std::string path = PickMacroFile(false);
+        if (!path.empty()) {
+            size_t count = ImportMacros(path, config_.macros);
+            if (count > 0) {
+                SaveConfig();
+                macro_status_msg_ = "Đã nhập " + std::to_string(count) + " từ gõ tắt.";
+                macro_status_ok_ = true;
+            } else {
+                macro_status_msg_ = "Không tìm thấy dòng gõ tắt hợp lệ trong file.";
+                macro_status_ok_ = false;
+            }
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(NF_SAVE "  Xuất ra file...", ImVec2(0.0f, Px(26.0f)))) {
+        std::string path = PickMacroFile(true);
+        if (!path.empty()) {
+            size_t count = ExportMacros(path, config_.macros);
+            macro_status_msg_ = "Đã xuất " + std::to_string(count) + " từ gõ tắt.";
+            macro_status_ok_ = count > 0;
+        }
+    }
+    if (!macro_status_msg_.empty()) {
+        ImGui::TextColored(
+            macro_status_ok_ ? ImVec4(0.30f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.45f, 0.35f, 1.0f),
+            "%s", macro_status_msg_.c_str());
+    }
+    ImGui::TextDisabled("Định dạng: mỗi dòng 'từ khóa<TAB>thay thế', 'từ khóa=thay thế' hoặc 'từ khóa||thay thế'.");
 
     SectionHeader("Thêm từ gõ tắt mới");
     ImGui::TextDisabled("Ví dụ: thêm 'vn' -> 'Việt Nam'. Gõ 'vn' rồi nhấn Space hoặc Enter để thay thế.");
@@ -632,7 +1317,109 @@ void UiManager::PageMacros() {
 }
 
 void UiManager::PageExclusions() {
+    SectionHeader("Bảo vệ phím tắt trong app loại trừ");
+    if (ImGui::Checkbox("Khóa phím tắt V/E, cài đặt và chuyển mã khi ở app loại trừ", &config_.lock_hotkeys_in_excluded_apps)) {
+        SaveConfig();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Bật để tránh lỡ đổi chế độ khi chơi game. Bỏ chọn nếu muốn dùng lại V/E, cài đặt và chuyển mã trong app đó; icon khay/menu vẫn đổi thủ công được.");
+    }
+
+    SectionHeader("Cấu hình riêng theo ứng dụng");
+    ImGui::TextDisabled("Ghi đè kiểu gõ, bảng mã, cách gửi phím và gõ tắt cho từng app. Để trống = dùng cấu hình chung.");
+    ImGui::SetNextItemWidth(Px(240.0f));
+    ImGui::InputTextWithHint("##NewProfileApp", "vd: Code.exe, chrome.exe...", new_profile_app_, sizeof(new_profile_app_));
+    ImGui::SameLine();
+    if (ImGui::Button(NF_PLUS "  Thêm profile", ImVec2(Px(130.0f), Px(26.0f)))) {
+        std::string app = new_profile_app_;
+        std::transform(app.begin(), app.end(), app.begin(), ::tolower);
+        if (!app.empty() && config_.app_profiles.find(app) == config_.app_profiles.end()) {
+            config_.app_profiles[app] = AppProfile{};
+            SaveConfig();
+        }
+        new_profile_app_[0] = '\0';
+    }
+    if (!profile_status_.empty()) {
+        ImGui::TextColored(ImVec4(0.55f, 0.70f, 0.90f, 1.0f), "%s", profile_status_.c_str());
+    }
+
+    static const char* profile_methods[] = {
+        "Theo mặc định", "Telex", "VNI", "VIQR", "Telex đơn giản", "Telex đơn giản 2", "Telex + VNI", "Tự định nghĩa"
+    };
+    static const char* profile_charsets[] = {
+        "Theo mặc định", "Unicode", "Unicode tổ hợp", "TCVN3", "VNI Windows"
+    };
+    static const char* profile_injections[] = {
+        "Theo mặc định", "Tự động", "Unicode", "Scan-code", "Clipboard", "An toàn"
+    };
+    static const char* profile_macros[] = {
+        "Theo mặc định", "Tắt gõ tắt", "Bật gõ tắt"
+    };
+
+    std::string remove_profile;
+    if (!config_.app_profiles.empty()) {
+        if (ImGui::BeginTable("AppProfiles", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Ứng dụng", ImGuiTableColumnFlags_WidthFixed, Px(150.0f));
+            ImGui::TableSetupColumn("Kiểu gõ", ImGuiTableColumnFlags_WidthFixed, Px(130.0f));
+            ImGui::TableSetupColumn("Bảng mã", ImGuiTableColumnFlags_WidthFixed, Px(130.0f));
+            ImGui::TableSetupColumn("Gửi phím", ImGuiTableColumnFlags_WidthFixed, Px(150.0f));
+            ImGui::TableSetupColumn("Gõ tắt", ImGuiTableColumnFlags_WidthFixed, Px(120.0f));
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, Px(55.0f));
+            ImGui::TableHeadersRow();
+
+            for (auto& [name, profile] : config_.app_profiles) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(name.c_str());
+
+                int method = profile.method + 1;
+                ImGui::TableSetColumnIndex(1);
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                if (ImGui::Combo("##PMethod", &method, profile_methods, IM_ARRAYSIZE(profile_methods))) {
+                    profile.method = method - 1;
+                    SaveConfig();
+                }
+
+                int charset = profile.charset + 1;
+                ImGui::TableSetColumnIndex(2);
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                if (ImGui::Combo("##PCharset", &charset, profile_charsets, IM_ARRAYSIZE(profile_charsets))) {
+                    profile.charset = charset - 1;
+                    SaveConfig();
+                }
+
+                int injection = profile.injection_mode + 1;
+                ImGui::TableSetColumnIndex(3);
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                if (ImGui::Combo("##PInject", &injection, profile_injections, IM_ARRAYSIZE(profile_injections))) {
+                    profile.injection_mode = injection - 1;
+                    SaveConfig();
+                }
+
+                int macro = profile.allow_macro + 1;
+                ImGui::TableSetColumnIndex(4);
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                if (ImGui::Combo("##PMacro", &macro, profile_macros, IM_ARRAYSIZE(profile_macros))) {
+                    profile.allow_macro = macro - 1;
+                    SaveConfig();
+                }
+
+                ImGui::TableSetColumnIndex(5);
+                ImGui::PushID(name.c_str());
+                if (ImGui::SmallButton(NF_TRASH)) remove_profile = name;
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+    }
+    if (!remove_profile.empty()) {
+        config_.app_profiles.erase(remove_profile);
+        SaveConfig();
+    }
+
     SectionHeader("Thêm ứng dụng loại trừ (Game, đồ họa, phần mềm chuyên dụng)");
+    ImGui::TextDisabled("App trong danh sách sẽ khóa phím tắt V/E; dùng icon khay/menu để đổi thủ công.");
+    ImGui::Spacing();
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Tên ứng dụng:");
     ImGui::SameLine();
@@ -769,6 +1556,7 @@ void UiManager::PageExclusions() {
 void UiManager::PageConverter() {
     SectionHeader("Bảng mã nguồn và đích");
     ImGui::TextDisabled("Dán văn bản vào ô nguồn, chọn bảng mã rồi bấm Chuyển mã. Kết quả có thể sao chép.");
+    ImGui::TextDisabled("TCVN3/VNI dùng nút Clipboard để đọc và ghi byte gốc; hộp văn bản hiển thị bản xem trước Unicode.");
     ImGui::Spacing();
 
     const char* charsets[] = {
@@ -814,8 +1602,56 @@ void UiManager::PageConverter() {
 
     ImGui::Spacing();
     if (ImGui::Button(NF_CONVERT "  Chuyển mã Clipboard", ImVec2(0.0f, Px(26.0f)))) {
-        conv_status_msg_ = "Đã chuyển mã và lưu vào Clipboard thành công!";
-        conv_status_ok_ = true;
+        std::string input;
+        bool legacy_missing = false;
+        if (conv_src_cs_ >= 2) {
+            input = ReadClipboardAnsi();
+            legacy_missing = input.empty();
+        } else {
+            const char* clip = ImGui::GetClipboardText();
+            if (clip) input = clip;
+        }
+        if (legacy_missing) {
+            conv_status_msg_ = "Clipboard không có dữ liệu TCVN3/VNI (CF_TEXT). Hãy sao chép từ ứng dụng cũ.";
+            conv_status_ok_ = false;
+        } else if (input.empty()) {
+            conv_status_msg_ = "Clipboard đang trống.";
+            conv_status_ok_ = false;
+        } else {
+            bool ok = false;
+            if (conv_strip_accents_) {
+                std::string unicode = conv_src_cs_ >= 2
+                    ? ConvertRaw(input, conv_src_cs_, 0)
+                    : input;
+                std::string result = ApplyCase(ConvertText(unicode, 0, 0, true), conv_uppercase_, conv_lowercase_);
+                if (!result.empty()) {
+                    ImGui::SetClipboardText(result.c_str());
+                    ok = true;
+                }
+            } else if (conv_dst_cs_ >= 2) {
+                std::string raw = ConvertRaw(input, conv_src_cs_, conv_dst_cs_);
+                if (!raw.empty()) {
+                    std::string preview = ConvertRaw(raw, conv_dst_cs_, 0);
+                    if (conv_uppercase_ || conv_lowercase_) {
+                        preview = ApplyCase(preview, conv_uppercase_, conv_lowercase_);
+                        raw = ConvertRaw(preview, 0, conv_dst_cs_);
+                    }
+                    ok = WriteClipboardRaw(raw, preview);
+                }
+            } else {
+                std::string result = ApplyCase(
+                    ConvertText(input, conv_src_cs_, conv_dst_cs_, false),
+                    conv_uppercase_, conv_lowercase_);
+                if (!result.empty()) {
+                    ImGui::SetClipboardText(result.c_str());
+                    ok = true;
+                }
+            }
+            conv_status_msg_ = ok
+                ? "Đã chuyển mã và lưu vào Clipboard."
+                : "Không chuyển được. Kiểm tra bảng mã nguồn.";
+            conv_status_ok_ = ok;
+        }
     }
 
     SectionHeader("Hộp văn bản trực tiếp");
@@ -840,19 +1676,42 @@ void UiManager::PageConverter() {
 
     ImGui::Spacing();
     if (ImGui::Button(NF_CONVERT "  Chuyển mã văn bản", ImVec2(0.0f, Px(28.0f)))) {
-        strncpy_s(dst_buf, src_buf, sizeof(dst_buf) - 1);
-        conv_status_msg_ = "Đã chuyển mã văn bản thành công.";
+        std::string result = ApplyCase(
+            ConvertText(src_buf, conv_src_cs_, conv_dst_cs_, conv_strip_accents_),
+            conv_uppercase_, conv_lowercase_);
+        if (result.empty() && src_buf[0] != '\0') {
+            conv_status_msg_ = "Không chuyển được. Kiểm tra bảng mã nguồn.";
+            conv_status_ok_ = false;
+        } else {
+            strncpy_s(dst_buf, sizeof(dst_buf), result.c_str(), _TRUNCATE);
+            conv_status_msg_ = "Đã chuyển mã văn bản.";
+            conv_status_ok_ = true;
+        }
     }
 
     ImGui::SameLine();
     if (ImGui::Button(NF_COPY "  Sao chép kết quả", ImVec2(0.0f, Px(28.0f)))) {
-        ImGui::SetClipboardText(dst_buf);
+        bool ok = true;
+        if (conv_dst_cs_ >= 2) {
+            ok = CopyConvertedToClipboard(dst_buf, 0, conv_dst_cs_);
+        } else {
+            ImGui::SetClipboardText(dst_buf);
+        }
+        conv_status_msg_ = ok ? "Đã sao chép kết quả." : "Không sao chép được kết quả.";
+        conv_status_ok_ = ok;
     }
 
     ImGui::SameLine();
     if (ImGui::Button(NF_TRASH "  Xóa trắng", ImVec2(0.0f, Px(28.0f)))) {
         src_buf[0] = '\0';
         dst_buf[0] = '\0';
+        conv_status_msg_.clear();
+    }
+
+    if (!conv_status_msg_.empty()) {
+        ImGui::TextColored(
+            conv_status_ok_ ? ImVec4(0.30f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.45f, 0.35f, 1.0f),
+            "%s", conv_status_msg_.c_str());
     }
 }
 
@@ -1047,18 +1906,18 @@ void UiManager::PageAbout() {
     ImGui::TextUnformatted("Trang chủ dự án:");
     ImGui::SameLine();
     if (ImGui::SmallButton("github.com/KienPC1234/VietFlow")) {
-        ShellExecuteA(NULL, "open", "https://github.com/KienPC1234/VietFlow", NULL, NULL, SW_SHOWNORMAL);
+        ShellExecuteA(NULL, "open", REPO_URL, NULL, NULL, SW_SHOWNORMAL);
     }
 
     ImGui::Spacing();
     const char* chk_label = NF_CONVERT " Kiểm tra bản cập nhật";
     float chk_w = ImGui::CalcTextSize(chk_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(20.0f);
     if (ImGui::Button(chk_label, ImVec2(chk_w, Px(28.0f)))) {
-        HWND hwndDaemon = FindWindowW(L"VietFlowMessageWindowClass", L"VietFlowDaemon");
+        HWND hwndDaemon = FindWindowW(WINDOW_CLASS_DAEMON, WINDOW_TITLE_DAEMON);
         if (hwndDaemon) {
-            PostMessageW(hwndDaemon, WM_COMMAND, 1070 /* IDM_CHECK_UPDATE */, 0);
+            PostMessageW(hwndDaemon, WM_COMMAND, IDM_VF_CHECK_UPDATE, 0);
         } else {
-            ShellExecuteA(NULL, "open", "https://github.com/KienPC1234/VietFlow/releases", NULL, NULL, SW_SHOWNORMAL);
+            ShellExecuteA(NULL, "open", RELEASES_URL, NULL, NULL, SW_SHOWNORMAL);
         }
     }
 
@@ -1070,6 +1929,60 @@ void UiManager::PageAbout() {
         std::filesystem::path fp(p);
         std::wstring parent_dir = fp.parent_path().wstring();
         ShellExecuteW(NULL, L"open", parent_dir.c_str(), NULL, NULL, SW_SHOWNORMAL);
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    SectionHeader("Ủng hộ tác giả (Donate)");
+    ImGui::TextUnformatted("Nếu bạn thấy VietFlow hữu ích, hãy ủng hộ tác giả qua tài khoản ngân hàng:");
+
+    ImGui::Spacing();
+    if (ImGui::BeginTable("DonationTable", 2, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg, ImVec2(Px(500.0f), 0.0f))) {
+        ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthFixed, Px(130.0f));
+        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted("Ngân hàng:");
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(DONATION_BANK_NAME);
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted("Số tài khoản:");
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(DONATION_ACCOUNT_DISPLAY);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Sao chép STK")) {
+            ImGui::SetClipboardText(DONATION_ACCOUNT_NO);
+        }
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted("Chủ tài khoản:");
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(DONATION_ACCOUNT_HOLDER);
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted("Nội dung:");
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(DONATION_MESSAGE);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Sao chép nội dung")) {
+            ImGui::SetClipboardText(DONATION_MESSAGE);
+        }
+
+        ImGui::EndTable();
+    }
+
+    ImGui::Spacing();
+    const char* qr_label = NF_CONVERT " Mở mã QR chuyển khoản (VietQR)";
+    float qr_w = ImGui::CalcTextSize(qr_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(20.0f);
+    if (ImGui::Button(qr_label, ImVec2(qr_w, Px(28.0f)))) {
+        ShellExecuteA(NULL, "open", DONATION_VIETQR_URL, NULL, NULL, SW_SHOWNORMAL);
     }
 
     ImGui::Dummy(ImVec2(0.0f, Px(20.0f)));

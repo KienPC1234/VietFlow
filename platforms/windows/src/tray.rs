@@ -12,36 +12,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos,
     SetForegroundWindow, TrackPopupMenu, HICON,
     MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
-    WM_USER,
 };
 
-pub const WM_TRAYICON: u32 = WM_USER + 101;
-pub const WM_SETTINGS: u32 = WM_USER + 102;
-pub const WM_CONVERT: u32 = WM_USER + 103;
-pub const WM_RELOAD_CONFIG: u32 = WM_USER + 104;
-
-pub const IDM_TOGGLE: usize = 1001;
-pub const IDM_METHOD_TELEX: usize = 1010;
-pub const IDM_METHOD_VNI: usize = 1011;
-pub const IDM_METHOD_VIQR: usize = 1012;
-pub const IDM_METHOD_SIMPLE_TELEX: usize = 1013;
-pub const IDM_METHOD_SIMPLE_TELEX2: usize = 1014;
-pub const IDM_METHOD_TELEX_VNI: usize = 1015;
-
-pub const IDM_CHARSET_UNICODE: usize = 1020;
-pub const IDM_CHARSET_COMPOSITE: usize = 1021;
-pub const IDM_CHARSET_TCVN3: usize = 1022;
-pub const IDM_CHARSET_VNI: usize = 1023;
-
-pub const IDM_TOGGLE_MACRO: usize = 1050;
-pub const IDM_TOGGLE_SPELL: usize = 1051;
-pub const IDM_TOGGLE_STARTUP: usize = 1052;
-pub const IDM_CONVERT_TOOL: usize = 1060;
-
-pub const IDM_SETTINGS: usize = 1030;
-pub const IDM_CHECK_UPDATE: usize = 1070;
-pub const IDM_ABOUT: usize = 1071;
-pub const IDM_EXIT: usize = 1040;
+pub use crate::constants::*;
 
 pub struct TrayIcon {
     pub hwnd: HWND,
@@ -167,6 +140,12 @@ impl TrayIcon {
             to_wide("Telex + VNI").as_ptr(),
         );
         AppendMenuW(
+            hmenu_method,
+            MF_STRING | check_flag(method == 6),
+            IDM_METHOD_CUSTOM,
+            to_wide("Tự định nghĩa").as_ptr(),
+        );
+        AppendMenuW(
             hmenu,
             MF_POPUP,
             hmenu_method as usize,
@@ -241,6 +220,12 @@ impl TrayIcon {
             to_wide("Bảng điều khiển... [Ctrl+Shift+F5]").as_ptr(),
         );
         AppendMenuW(hmenu, MF_SEPARATOR, 0, null_mut());
+        AppendMenuW(
+            hmenu,
+            MF_STRING,
+            IDM_RESTART_ADMIN,
+            to_wide("Chạy lại với quyền quản trị...").as_ptr(),
+        );
         AppendMenuW(
             hmenu,
             MF_STRING,

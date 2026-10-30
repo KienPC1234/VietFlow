@@ -22,25 +22,23 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, WPARAM,
 };
 use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetMessageW, MessageBoxW,
     PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer, ShowWindow,
     TranslateMessage, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MSG, SW_RESTORE,
-    WNDCLASSW, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP,
-    WM_TIMER,
+    SW_SHOWNORMAL, WNDCLASSW, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
+    WM_RBUTTONUP, WM_TIMER,
 };
 
+pub mod constants;
+
 use crate::config::AppConfig;
+use crate::constants::*;
 use crate::hook::{apply_config, install_hook, uninstall_hook, STATE};
 use crate::icon::{create_e_icon, create_v_icon};
 use crate::startup::set_start_with_windows;
-use crate::tray::{
-    to_wide, TrayIcon, IDM_ABOUT, IDM_CHARSET_COMPOSITE, IDM_CHARSET_TCVN3, IDM_CHARSET_UNICODE,
-    IDM_CHARSET_VNI, IDM_CHECK_UPDATE, IDM_CONVERT_TOOL, IDM_EXIT, IDM_METHOD_SIMPLE_TELEX,
-    IDM_METHOD_SIMPLE_TELEX2, IDM_METHOD_TELEX, IDM_METHOD_TELEX_VNI, IDM_METHOD_VIQR,
-    IDM_METHOD_VNI, IDM_SETTINGS, IDM_TOGGLE, IDM_TOGGLE_MACRO, IDM_TOGGLE_SPELL,
-    IDM_TOGGLE_STARTUP, WM_CONVERT, WM_RELOAD_CONFIG, WM_SETTINGS, WM_TRAYICON,
-};
+use crate::tray::{to_wide, TrayIcon};
 
 extern "system" {
     fn CreateMutexW(
@@ -122,8 +120,8 @@ fn show_message(message: &str, flags: u32) {
 /// If the first instance is still starting up, wait briefly for its message
 /// window instead of exiting silently.
 unsafe fn open_existing_settings() -> bool {
-    let class_name = to_wide("VietFlowMessageWindowClass");
-    let window_title = to_wide("VietFlowDaemon");
+    let class_name = to_wide(WINDOW_CLASS_DAEMON);
+    let window_title = to_wide(WINDOW_TITLE_DAEMON);
 
     let gui_title = to_wide("VietFlow - Bảng điều khiển bộ gõ tiếng Việt");
     let gui_hwnd = FindWindowW(null_mut(), gui_title.as_ptr());
@@ -163,6 +161,27 @@ fn run_native_gui(convert_mode: bool) {
     }
 }
 
+fn relaunch_as_admin() -> bool {
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+    let verb = to_wide("runas");
+    let file = to_wide(&exe.to_string_lossy());
+    let params = to_wide("--elevated");
+    let result = unsafe {
+        ShellExecuteW(
+            null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            params.as_ptr(),
+            null_mut(),
+            SW_SHOWNORMAL,
+        )
+    };
+    result as isize > 32
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--gui" || a == "-g" || a == "--settings") {
@@ -175,10 +194,28 @@ fn main() {
     }
 
     unsafe {
-        // Enforce single instance for daemon
-        let mutex_name = to_wide("Global\\VietFlowSingleInstanceMutex");
-        let mutex = CreateMutexW(null_mut(), 1, mutex_name.as_ptr());
-        let last_error = GetLastError();
+        // Enforce single instance for daemon. An elevated relaunch is started
+        // by the old process, so give the old mutex a few seconds to disappear.
+        let mutex_name = to_wide(MUTEX_SINGLE_INSTANCE);
+        let elevated = args.iter().any(|a| a == "--elevated");
+        let mut mutex = CreateMutexW(null_mut(), 1, mutex_name.as_ptr());
+        let mut last_error = GetLastError();
+        if elevated && last_error == ERROR_ALREADY_EXISTS {
+            if !mutex.is_null() {
+                CloseHandle(mutex);
+            }
+            for _ in 0..40 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                mutex = CreateMutexW(null_mut(), 1, mutex_name.as_ptr());
+                last_error = GetLastError();
+                if last_error != ERROR_ALREADY_EXISTS {
+                    break;
+                }
+                if !mutex.is_null() {
+                    CloseHandle(mutex);
+                }
+            }
+        }
         if mutex.is_null() || last_error == ERROR_ALREADY_EXISTS {
             if last_error == ERROR_ALREADY_EXISTS {
                 if !open_existing_settings() {
@@ -201,13 +238,13 @@ fn main() {
 
         let config = AppConfig::load();
 
-        let class_name = to_wide("VietFlowMessageWindowClass");
+        let class_name = to_wide(WINDOW_CLASS_DAEMON);
         let mut wc: WNDCLASSW = zeroed();
         wc.lpfnWndProc = Some(wnd_proc);
         wc.lpszClassName = class_name.as_ptr();
         RegisterClassW(&wc);
 
-        let window_title = to_wide("VietFlowDaemon");
+        let window_title = to_wide(WINDOW_TITLE_DAEMON);
         let hwnd = CreateWindowExW(
             0,
             class_name.as_ptr(),
@@ -329,7 +366,8 @@ unsafe extern "system" fn wnd_proc(
                 | IDM_METHOD_VIQR
                 | IDM_METHOD_SIMPLE_TELEX
                 | IDM_METHOD_SIMPLE_TELEX2
-                | IDM_METHOD_TELEX_VNI => {
+                | IDM_METHOD_TELEX_VNI
+                | IDM_METHOD_CUSTOM => {
                     let m = match id {
                         IDM_METHOD_TELEX => 0,
                         IDM_METHOD_VNI => 1,
@@ -337,6 +375,7 @@ unsafe extern "system" fn wnd_proc(
                         IDM_METHOD_SIMPLE_TELEX => 3,
                         IDM_METHOD_SIMPLE_TELEX2 => 4,
                         IDM_METHOD_TELEX_VNI => 5,
+                        IDM_METHOD_CUSTOM => 6,
                         _ => 0,
                     };
                     if let Ok(mut lock) = STATE.lock() {
@@ -349,6 +388,7 @@ unsafe extern "system" fn wnd_proc(
                                 3 => InputMethod::SimpleTelex,
                                 4 => InputMethod::TelexSimple2,
                                 5 => InputMethod::TelexVni,
+                                6 => InputMethod::UserCustom,
                                 _ => InputMethod::Telex,
                             };
                             state.engine.reset();
@@ -412,6 +452,14 @@ unsafe extern "system" fn wnd_proc(
                 IDM_SETTINGS => {
                     spawn_gui(false);
                 }
+                IDM_RESTART_ADMIN => {
+                    if relaunch_as_admin() {
+                        terminate_all_ui();
+                        PostQuitMessage(0);
+                    } else {
+                        show_error("Không thể yêu cầu quyền quản trị. Bạn đã hủy hộp thoại UAC?");
+                    }
+                }
                 IDM_CHECK_UPDATE => {
                     crate::updater::check_for_updates_interactive();
                 }
@@ -455,9 +503,8 @@ unsafe fn reload_runtime_config() {
 unsafe fn toggle_mode(_hwnd: HWND) {
     if let Ok(mut lock) = STATE.lock() {
         if let Some(state) = lock.as_mut() {
-            state.user_enabled = !state.user_enabled;
-            state.config.enabled = state.user_enabled;
-            state.engine.reset();
+            // Tray action is the manual override path in excluded apps.
+            state.toggle_language();
             state.config.save();
             if state.config.notification_sound {
                 crate::hook::play_notification_sound();

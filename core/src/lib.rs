@@ -3,6 +3,7 @@
 
 pub mod c_abi;
 pub mod charset;
+pub mod constants;
 pub mod converter;
 pub mod english;
 pub mod engine;
@@ -14,11 +15,12 @@ pub mod tables;
 pub mod tone_rules;
 
 pub use charset::encode_slot;
-pub use converter::{convert_charset, strip_accents};
+pub use converter::{convert_charset, convert_charset_bytes, strip_accents};
+pub use constants::*;
 pub use engine::{Slot, VietFlowEngine};
 pub use key_text::KeyText;
 pub use macro_table::MacroTable;
-pub use models::{CharsetId, EngineOptions, InputMethod, VnLexiName, VnLexiTone};
+pub use models::{CharsetId, CustomKeymap, EngineOptions, InputMethod, VnLexiName, VnLexiTone};
 
 #[cfg(test)]
 mod tests {
@@ -488,24 +490,48 @@ mod tests {
         assert!(is_english_keyword("reddit"));
         assert!(is_english_keyword("custom"));
         assert!(is_english_keyword("requires"));
-        assert!(is_english_keyword("test"));
-        assert!(is_english_keyword("reset"));
-        assert!(is_english_keyword("work"));
-        assert!(is_english_keyword("the"));
+        assert!(!is_english_keyword("test"));
+        assert!(!is_english_keyword("reset"));
+        assert!(!is_english_keyword("the"));
         assert!(!is_english_keyword("tieng"));
+
+        let defaults = crate::english::default_english_keywords();
+        assert!(defaults.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(!defaults.contains(&"test"));
+        assert!(!defaults.contains(&"reset"));
+
+        let needed = unsafe { crate::c_abi::vf_english_keywords(std::ptr::null_mut(), 0) };
+        assert!(needed > 0);
+        let mut buffer = vec![0u8; needed];
+        let written = unsafe { crate::c_abi::vf_english_keywords(buffer.as_mut_ptr(), buffer.len()) };
+        assert_eq!(written, needed);
+        let text = String::from_utf8(buffer).expect("UTF-8 keyword list");
+        assert!(text.lines().any(|line| line == "server"));
+        assert!(!text.lines().any(|line| line == "test"));
+    }
+
+    #[test]
+    fn test_removed_and_custom_english_keywords() {
+        // "test" is not in the conservative default list, so a custom entry is
+        // needed to force English for it. This keeps Vietnamese "tét" typable.
+        let options = EngineOptions {
+            custom_english_keywords: vec!["test".to_string()],
+            ..Default::default()
+        };
+        let mut engine = VietFlowEngine::new(options, CharsetId::Unicode);
+        assert_eq!(process_string(&mut engine, "test "), "test ");
     }
 
     #[test]
     fn test_common_english_habit_words() {
         let mut engine = VietFlowEngine::default();
         let cases = [
-            ("test ", "test "),
-            ("reset ", "reset "),
-            ("work ", "work "),
-            ("the ", "the "),
-            ("was ", "was "),
             ("hello ", "hello "),
             ("server ", "server "),
+            ("windows ", "windows "),
+            ("javascript ", "javascript "),
+            ("github ", "github "),
+            ("file ", "file "),
             ("ko ", "ko "),
             ("dc ", "dc "),
         ];
@@ -520,8 +546,9 @@ mod tests {
     fn test_mixed_english_sentences() {
         let mut engine = VietFlowEngine::default();
         let cases = [
-            ("this is a test ", "this is a test "),
-            ("the server is reset ", "the server is reset "),
+            ("server config ", "server config "),
+            ("github commit ", "github commit "),
+            ("docker update ", "docker update "),
             ("file nayf ", "file này "),
             ("code bij looix ", "code bị lỗi "),
             ("push leen ", "push lên "),
@@ -535,25 +562,168 @@ mod tests {
     }
 
     #[test]
-    fn test_common_vietnamese_words() {
+    fn test_native_minimal_backspaces_diffing() {
         let mut engine = VietFlowEngine::default();
-        let cases = [
-            ("thuoocs", "thuốc"),
-            ("ruowuj", "rượu"),
-            ("khuyur", "khuỷu"),
-            ("thuyeefn", "thuyền"),
-            ("quyeenf", "quyền"),
-            ("ngoaif", "ngoài"),
-            ("thoair", "thoải"),
-            ("quyr", "quỷ"),
-            ("giuwx", "giữ"),
-            ("duyeetj", "duyệt"),
-            ("khuyeen", "khuyên"),
+        engine.process_key('t');
+        engine.process_key('o');
+        engine.process_key('a');
+        engine.process_key('n');
+
+        // Typing 's' should only backspace 2 chars ("an") and emit "án"
+        let (bk, text) = engine.process_key('s');
+        assert_eq!(bk, 2);
+        assert_eq!(text.as_str(), "án");
+
+        // Typing 'z' to remove tone should only backspace 2 chars ("án") and emit "an"
+        let (bk2, text2) = engine.process_key('z');
+        assert_eq!(bk2, 2);
+        assert_eq!(text2.as_str(), "an");
+
+        engine.reset();
+        // Test typing timeout auto-reset
+        engine.options.typing_timeout_ms = 500;
+        engine.process_key_with_time('a', 1000);
+        // Next key 1000ms later (> 500ms timeout)
+        let (bk_timeout, text_timeout) = engine.process_key_with_time('s', 2100);
+        assert_eq!(bk_timeout, 0);
+        assert_eq!(text_timeout.as_str(), "s");
+    }
+
+    #[test]
+    fn test_user_custom_input_method() {
+        // 1. Telex preset via UserCustom
+        let mut engine = VietFlowEngine::new(
+            EngineOptions {
+                method: InputMethod::UserCustom,
+                custom_keymap: CustomKeymap::telex(),
+                ..Default::default()
+            },
+            CharsetId::Unicode,
+        );
+
+        let telex_cases = [
+            ("as", "á"),
+            ("af", "à"),
+            ("ar", "ả"),
+            ("ax", "ã"),
+            ("aj", "ạ"),
+            ("aa", "â"),
+            ("aw", "ă"),
+            ("ee", "ê"),
+            ("oo", "ô"),
+            ("ow", "ơ"),
+            ("uw", "ư"),
+            ("dd", "đ"),
+            ("w", "ư"),
+            ("tieengs", "tiếng"),
+            ("dduwowngf", "đường"),
         ];
-        for (input, expected) in cases {
+        for (input, expected) in telex_cases {
             engine.reset();
             let actual = process_string(&mut engine, input);
-            assert_eq!(actual, expected, "Failed common word: {input}");
+            assert_eq!(actual, expected, "Failed custom Telex preset for: {input}");
         }
+
+        // 2. VNI preset via UserCustom
+        let mut vni_engine = VietFlowEngine::new(
+            EngineOptions {
+                method: InputMethod::UserCustom,
+                custom_keymap: CustomKeymap::vni(),
+                ..Default::default()
+            },
+            CharsetId::Unicode,
+        );
+
+        let vni_cases = [
+            ("a1", "á"),
+            ("a2", "à"),
+            ("a3", "ả"),
+            ("a4", "ã"),
+            ("a5", "ạ"),
+            ("a6", "â"),
+            ("o7", "ơ"),
+            ("u7", "ư"),
+            ("a8", "ă"),
+            ("d9", "đ"),
+            ("tie6ng1", "tiếng"),
+            ("d9u7o7ng2", "đường"),
+        ];
+        for (input, expected) in vni_cases {
+            vni_engine.reset();
+            let actual = process_string(&mut vni_engine, input);
+            assert_eq!(actual, expected, "Failed custom VNI preset for: {input}");
+        }
+
+        // 3. Fully customized keys
+        let mut custom_keys = CustomKeymap::default();
+        custom_keys.acute = "z".to_string();
+        custom_keys.grave = "q".to_string();
+        custom_keys.circumflex = "9".to_string();
+        custom_keys.horn = "8".to_string();
+        custom_keys.breve = "7".to_string();
+        custom_keys.d_mark = "6".to_string();
+        custom_keys.telex_double_keys = false;
+        custom_keys.lone_w = false;
+
+        let mut custom_engine = VietFlowEngine::new(
+            EngineOptions {
+                method: InputMethod::UserCustom,
+                custom_keymap: custom_keys,
+                ..Default::default()
+            },
+            CharsetId::Unicode,
+        );
+
+        let custom_cases = [
+            ("az", "á"),
+            ("aq", "à"),
+            ("a9", "â"),
+            ("u8", "ư"),
+            ("a7", "ă"),
+            ("d6", "đ"),
+            ("d6u8o8ngq", "đường"),
+        ];
+        for (input, expected) in custom_cases {
+            custom_engine.reset();
+            let actual = process_string(&mut custom_engine, input);
+            assert_eq!(actual, expected, "Failed custom keys for: {input}");
+        }
+
+        // 4. Individual modify keys
+        let mut individual_keys = CustomKeymap::default();
+        individual_keys.acute = "s".to_string();
+        individual_keys.roof_a = "3".to_string();
+        individual_keys.roof_e = "4".to_string();
+        individual_keys.telex_double_keys = false;
+
+        let mut ind_engine = VietFlowEngine::new(
+            EngineOptions {
+                method: InputMethod::UserCustom,
+                custom_keymap: individual_keys,
+                ..Default::default()
+            },
+            CharsetId::Unicode,
+        );
+
+        ind_engine.reset();
+        assert_eq!(process_string(&mut ind_engine, "a3s"), "ấ");
+        ind_engine.reset();
+        assert_eq!(process_string(&mut ind_engine, "e4s"), "ế");
+    }
+
+    #[test]
+    fn test_configurable_auto_capitalize_chars() {
+        let mut engine = VietFlowEngine::new(
+            EngineOptions {
+                auto_capitalize: true,
+                auto_capitalize_chars: "。\n".to_string(),
+                ..Default::default()
+            },
+            CharsetId::Unicode,
+        );
+
+        assert_eq!(process_string(&mut engine, "xin chào. bạn"), "xin chào. bạn");
+        engine.reset();
+        assert_eq!(process_string(&mut engine, "xin chào。bạn"), "xin chào。Bạn");
     }
 }

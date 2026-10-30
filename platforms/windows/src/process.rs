@@ -1,6 +1,8 @@
 // VietFlow Windows - Foreground Process Detection & Exclusion
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
+use crate::config::AppProfile;
+use std::collections::HashMap;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::System::Threading::{
@@ -42,24 +44,33 @@ pub unsafe fn get_process_name_for_window(hwnd: HWND) -> Option<String> {
     file_name
 }
 
-pub fn is_app_excluded(current_process: Option<&str>, excluded_apps: &[String]) -> bool {
-    let proc = match current_process {
-        Some(p) => p.trim().to_lowercase(),
-        None => return false,
-    };
-    if proc.is_empty() {
+pub fn app_name_matches(current: &str, configured: &str) -> bool {
+    let proc = current.trim().to_lowercase();
+    let app = configured.trim().to_lowercase();
+    if proc.is_empty() || app.is_empty() {
         return false;
     }
     let proc_stem = proc.strip_suffix(".exe").unwrap_or(&proc);
+    let app_stem = app.strip_suffix(".exe").unwrap_or(&app);
+    app == proc || app_stem == proc_stem
+}
 
-    excluded_apps.iter().any(|app| {
-        let app_trim = app.trim().to_lowercase();
-        if app_trim.is_empty() {
-            return false;
-        }
-        let app_stem = app_trim.strip_suffix(".exe").unwrap_or(&app_trim);
-        app_trim == proc || app_stem == proc_stem
-    })
+pub fn is_app_excluded(current_process: Option<&str>, excluded_apps: &[String]) -> bool {
+    match current_process {
+        Some(proc) => excluded_apps.iter().any(|app| app_name_matches(proc, app)),
+        None => false,
+    }
+}
+
+pub fn profile_for_app<'a>(
+    current_process: Option<&str>,
+    profiles: &'a HashMap<String, AppProfile>,
+) -> Option<&'a AppProfile> {
+    let proc = current_process?;
+    profiles
+        .iter()
+        .find(|(app, _)| app_name_matches(proc, app))
+        .map(|(_, profile)| profile)
 }
 
 #[cfg(test)]
@@ -83,5 +94,35 @@ mod tests {
         assert!(!is_app_excluded(Some("notepad.exe"), &list));
         assert!(!is_app_excluded(None, &list));
         assert!(!is_app_excluded(Some(""), &list));
+    }
+
+    #[test]
+    fn test_profile_for_app_uses_same_matching_rules() {
+        let mut profiles = HashMap::new();
+        profiles.insert(
+            "Code.exe".to_string(),
+            AppProfile {
+                injection_mode: Some(3),
+                ..Default::default()
+            },
+        );
+        profiles.insert(
+            "cs2".to_string(),
+            AppProfile {
+                allow_macro: Some(true),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            profile_for_app(Some("code"), &profiles).and_then(|p| p.injection_mode),
+            Some(3)
+        );
+        assert_eq!(
+            profile_for_app(Some("CS2.EXE"), &profiles).and_then(|p| p.allow_macro),
+            Some(true)
+        );
+        assert!(profile_for_app(Some("notepad.exe"), &profiles).is_none());
+        assert!(profile_for_app(None, &profiles).is_none());
     }
 }

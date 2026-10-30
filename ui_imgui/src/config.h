@@ -6,9 +6,42 @@
 
 namespace vietflow {
 
+struct CustomKeymap {
+    std::string acute = "s";
+    std::string grave = "f";
+    std::string hook = "r";
+    std::string tilde = "x";
+    std::string dot = "j";
+    std::string remove_tone = "z";
+
+    std::string circumflex = "";
+    std::string horn = "";
+    std::string breve = "";
+    std::string d_mark = "";
+    std::string hook_all = "w";
+
+    std::string roof_a = "";
+    std::string roof_e = "";
+    std::string roof_o = "";
+    std::string horn_o = "";
+    std::string horn_u = "";
+    std::string breve_a = "";
+    std::string d_lower = "";
+
+    bool telex_double_keys = true;
+    bool lone_w = true;
+};
+
+struct AppProfile {
+    int method = -1;          // -1 = inherit, 0..6
+    int charset = -1;         // -1 = inherit, 0..3
+    int injection_mode = -1;  // -1 = inherit, 0..4
+    int allow_macro = -1;     // -1 = inherit, 0 = off, 1 = on
+};
+
 struct Config {
     bool enabled = true;
-    int method = 0;       // 0: Telex, 1: VNI, 2: VIQR, 3: Simple Telex, 4: Simple Telex 2, 5: Telex + VNI
+    int method = 0;       // 0: Telex, 1: VNI, 2: VIQR, 3: Simple Telex, 4: Simple Telex 2, 5: Telex + VNI, 6: User Custom
     int charset = 0;      // 0: Unicode, 1: Composite, 2: TCVN3, 3: VNI Windows
     bool modern_style = true;
     bool free_marking = true;
@@ -17,9 +50,11 @@ struct Config {
     bool fix_shift_lag = true;
     bool consonant_shortcuts = false;
     bool auto_capitalize = false;
+    std::string auto_capitalize_chars = ".!?\r\n";
     bool disable_on_non_us_layout = false;
     bool enable_macro = true;
     bool allow_macro_when_disabled = false;
+    int injection_mode = 0; // 0 Auto, 1 Unicode, 2 scan-code, 3 clipboard, 4 safe
     bool use_clipboard_for_unicode = false;
     bool start_with_windows = false;
     bool notification_sound = false;
@@ -29,6 +64,7 @@ struct Config {
     std::string hotkey_converter = "Ctrl + Shift + F9";
 
     std::vector<std::string> english_keywords;
+    std::vector<std::string> english_keywords_removed;
     std::string foreign_initials = "fjwz";
     std::string tray_icon_theme = "modern";
     std::string custom_icon_v;
@@ -45,7 +81,10 @@ struct Config {
     std::string tray_icon_e_border_color = "#0078D7";
 
     std::vector<std::string> excluded_apps;
+    bool lock_hotkeys_in_excluded_apps = true;
+    std::map<std::string, AppProfile> app_profiles;
     std::map<std::string, std::string> macros;
+    CustomKeymap custom_keymap;
 
     static std::string GetDefaultConfigPath();
     bool Load(const std::string& path = "");

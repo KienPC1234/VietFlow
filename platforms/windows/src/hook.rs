@@ -3,7 +3,6 @@
 
 use std::ptr::null_mut;
 use std::sync::Mutex;
-use std::time::Instant;
 use vietflow_core::models::{CharsetId, EngineOptions, InputMethod};
 use vietflow_core::VietFlowEngine;
 use windows_sys::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, WPARAM};
@@ -57,6 +56,7 @@ extern "system" {
 #[link(name = "kernel32")]
 extern "system" {
     fn Beep(dwFreq: u32, dwDuration: u32) -> i32;
+    fn GetTickCount64() -> u64;
 }
 
 /// Play the configured V/E toggle notification. PlaySoundW with a system alias
@@ -84,9 +84,9 @@ pub extern "C" fn vf_play_notification_sound() {
     play_notification_sound();
 }
 
-use crate::config::AppConfig;
-use crate::inject::{send_atomic_batch, VIETFLOW_MAGIC};
-use crate::process::{get_process_name_for_window, is_app_excluded};
+use crate::config::{AppConfig, AppProfile};
+use crate::inject::{send_atomic_batch_with_mode, VIETFLOW_MAGIC};
+use crate::process::{get_process_name_for_window, is_app_excluded, profile_for_app};
 use crate::startup::set_start_with_windows;
 use crate::tray::{to_wide, WM_CONVERT, WM_SETTINGS, WM_TRAYICON};
 
@@ -100,13 +100,20 @@ pub struct HookState {
     pub win_pressed: bool,
     pub last_foreground: HWND,
     pub is_foreground_excluded: bool,
+    /// True when the user manually toggled V/E from the tray while the
+    /// foreground app is excluded. Reset when the foreground app changes.
+    pub manual_override: bool,
     /// True when the foreground window's keyboard layout is not US-EN.
     pub non_us_layout: bool,
+    /// Per-app overrides resolved for the current foreground executable.
+    pub active_profile: Option<AppProfile>,
+    /// 0: Auto, 1: Unicode, 2: scan-code, 3: clipboard, 4: safe paced.
+    pub injection_mode: u8,
+    /// Raw characters typed while Vietnamese is disabled but macros are on.
+    pub macro_buffer: String,
     pub tray_hwnd: HWND,
     pub hook_handle: HHOOK,
     pub win_event_hook: HWINEVENTHOOK,
-    pub last_tick: Option<Instant>,
-    pub display_shadow: Vec<char>,
 }
 
 unsafe impl Send for HookState {}
@@ -116,105 +123,111 @@ impl HookState {
     #[inline]
     pub fn effective_enabled(&self) -> bool {
         self.user_enabled
-            && !self.is_foreground_excluded
+            && (!self.is_foreground_excluded || self.manual_override)
             && !(self.config.disable_on_non_us_layout && self.non_us_layout)
     }
 
-    pub fn track_display_char(&mut self, c: char) {
-        if !c.is_alphabetic() {
-            self.display_shadow.clear();
-            return;
+    /// Macros are allowed when they are globally enabled and either the app
+    /// profile explicitly allows them, the active mode is Vietnamese, or the
+    /// user opted into macros while typing is disabled.
+    #[inline]
+    pub fn macros_allowed(&self) -> bool {
+        if !self.config.enable_macro {
+            return false;
         }
-        if self.display_shadow.len() < 128 {
-            self.display_shadow.push(c);
+        if let Some(profile) = &self.active_profile {
+            if profile.allow_macro == Some(false) {
+                return false;
+            }
+            if profile.allow_macro == Some(true) {
+                return true;
+            }
+        }
+        self.effective_enabled() || self.config.allow_macro_when_disabled
+    }
+
+    /// True when only macro expansion should run: Vietnamese typing is off but
+    /// macros are explicitly available.
+    #[inline]
+    pub fn macro_only(&self) -> bool {
+        !self.effective_enabled() && self.macros_allowed()
+    }
+
+    /// Global hotkeys are normally locked in excluded apps so a game cannot
+    /// accidentally toggle Vietnamese. Users can opt out in the exclusions
+    /// page; the tray/menu override stays available either way.
+    #[inline]
+    pub fn hotkeys_locked(&self) -> bool {
+        self.is_foreground_excluded && self.config.lock_hotkeys_in_excluded_apps
+    }
+
+    /// Toggle V/E. In an excluded app this is a manual override, not a change
+    /// to the global mode: the first action enables typing, the second returns
+    /// to the normal excluded state.
+    pub fn toggle_language(&mut self) {
+        if self.is_foreground_excluded {
+            self.manual_override = !self.manual_override;
+            if self.manual_override {
+                self.user_enabled = true;
+            }
         } else {
-            self.display_shadow.clear();
+            self.user_enabled = !self.user_enabled;
         }
+        self.config.enabled = self.user_enabled;
+        self.engine.reset();
+        self.macro_buffer.clear();
     }
 
-    pub fn remove_last_display_char(&mut self) {
-        self.display_shadow.pop();
-    }
-
-    pub fn reset_display_shadow(&mut self) {
-        self.display_shadow.clear();
-    }
-
-    /// Minimizes caret movement and screen jitter by computing the longest common prefix
-    /// between the current on-screen buffer and the newly desired replacement string.
+    #[inline]
     pub fn send_engine_output(&mut self, backspaces: usize, text: &str) {
-        if backspaces == 0 && text.is_empty() {
-            return;
+        if backspaces > 0 || !text.is_empty() {
+            send_atomic_batch_with_mode(backspaces, text, self.injection_mode);
         }
+    }
 
-        let contains_break = text
-            .chars()
-            .any(|c| c.is_whitespace() || c.is_ascii_punctuation() || c.is_ascii_digit());
-
-        let text_chars = text.chars().count();
-        let can_diff = backspaces > 0
-            && backspaces <= self.display_shadow.len()
-            && self.display_shadow.len() <= 128
-            && text_chars <= 256
-            && !contains_break;
-
-        if !can_diff {
-            send_atomic_batch(backspaces, text);
-            if contains_break {
-                self.reset_display_shadow();
-            } else {
-                if backspaces > self.display_shadow.len() {
-                    self.reset_display_shadow();
-                } else {
-                    let new_len = self.display_shadow.len() - backspaces;
-                    self.display_shadow.truncate(new_len);
-                }
-                for c in text.chars() {
-                    if self.display_shadow.len() < 128 {
-                        self.display_shadow.push(c);
-                    } else {
-                        self.reset_display_shadow();
-                        break;
-                    }
-                }
-            }
-            return;
+    /// Recompute engine options and the output mode after a foreground,
+    /// profile, or config change.
+    pub fn apply_runtime_profile(&mut self) {
+        self.engine.options =
+            engine_options_from_config(&self.config, self.active_profile.as_ref());
+        self.engine.charset = charset_from_config(&self.config, self.active_profile.as_ref());
+        self.injection_mode = self
+            .active_profile
+            .as_ref()
+            .and_then(|profile| profile.injection_mode)
+            .unwrap_or(self.config.injection_mode);
+        // Legacy setting: clipboard mode for apps that cannot accept Unicode.
+        if self.config.use_clipboard_for_unicode && self.injection_mode == 0 {
+            self.injection_mode = 3;
         }
+        self.engine.reset();
+        self.macro_buffer.clear();
+    }
 
-        let prefix_len = self.display_shadow.len() - backspaces;
-        let shadow_len = self.display_shadow.len();
-        let mut common = prefix_len;
-        let mut suffix_offset = 0;
-
-        for (offset, c) in text.char_indices() {
-            if common < shadow_len && self.display_shadow[common] == c {
-                common += 1;
-                suffix_offset = offset + c.len_utf8();
-            } else {
-                suffix_offset = offset;
-                break;
-            }
-        }
-
-        send_atomic_batch(shadow_len - common, &text[suffix_offset..]);
-
-        self.display_shadow.truncate(prefix_len);
-        self.display_shadow.extend(text.chars());
-        if self.display_shadow.len() > 128 {
-            self.reset_display_shadow();
+    pub fn load_macros(&mut self) {
+        self.engine.macros.clear();
+        for (trigger, replacement) in &self.config.macros {
+            self.engine.macros.insert(trigger, replacement);
         }
     }
 }
 
 pub static STATE: Mutex<Option<HookState>> = Mutex::new(None);
 
-fn engine_options_from_config(config: &AppConfig) -> EngineOptions {
-    let method = match config.method {
+fn engine_options_from_config(
+    config: &AppConfig,
+    profile: Option<&AppProfile>,
+) -> EngineOptions {
+    let configured_method = profile
+        .and_then(|profile| profile.method)
+        .unwrap_or(config.method);
+    let method = match configured_method {
         1 => InputMethod::Vni,
         2 => InputMethod::Viqr,
         3 => InputMethod::SimpleTelex,
         4 => InputMethod::TelexSimple2,
         5 => InputMethod::TelexVni,
+        6 => InputMethod::UserCustom,
         _ => InputMethod::Telex,
     };
 
@@ -227,16 +240,24 @@ fn engine_options_from_config(config: &AppConfig) -> EngineOptions {
         fix_shift_lag: config.fix_shift_lag,
         consonant_shortcuts: config.consonant_shortcuts,
         auto_capitalize: config.auto_capitalize,
-        enable_macro: config.enable_macro,
+        auto_capitalize_chars: config.auto_capitalize_chars.clone(),
+        enable_macro: config.enable_macro
+            && profile.and_then(|profile| profile.allow_macro).unwrap_or(true),
         allow_macro_when_disabled: config.allow_macro_when_disabled,
         use_clipboard_for_unicode: config.use_clipboard_for_unicode,
+        typing_timeout_ms: config.typing_timeout_ms,
         foreign_initials: config.normalized_foreign_initials(),
         custom_english_keywords: config.normalized_english_keywords(),
+        removed_english_keywords: config.normalized_removed_english_keywords(),
+        custom_keymap: config.custom_keymap.to_core(),
     }
 }
 
-fn charset_from_config(config: &AppConfig) -> CharsetId {
-    match config.charset {
+fn charset_from_config(config: &AppConfig, profile: Option<&AppProfile>) -> CharsetId {
+    let configured_charset = profile
+        .and_then(|profile| profile.charset)
+        .unwrap_or(config.charset);
+    match configured_charset {
         1 => CharsetId::UnicodeComposite,
         2 => CharsetId::Tcvn3,
         3 => CharsetId::VniWindows,
@@ -284,6 +305,7 @@ pub unsafe fn check_foreground_change(foreground: HWND) {
             let non_us = is_non_us_layout(foreground);
             if non_us != state.non_us_layout {
                 state.non_us_layout = non_us;
+                state.apply_runtime_profile();
                 let tray_hwnd = state.tray_hwnd;
                 let effective = state.effective_enabled();
                 drop(lock);
@@ -293,21 +315,28 @@ pub unsafe fn check_foreground_change(foreground: HWND) {
         return;
     }
 
+    let old_excluded = state.is_foreground_excluded;
+    let old_non_us = state.non_us_layout;
+    let old_effective = state.effective_enabled();
+
     state.last_foreground = foreground;
-    state.engine.reset();
-    state.reset_display_shadow();
+    state.manual_override = false;
+    state.macro_buffer.clear();
 
     let proc_name = get_process_name_for_window(foreground);
-    let excluded = is_app_excluded(proc_name.as_deref(), &state.config.excluded_apps);
-    let non_us = state.config.disable_on_non_us_layout && is_non_us_layout(foreground);
+    state.is_foreground_excluded = is_app_excluded(proc_name.as_deref(), &state.config.excluded_apps);
+    state.non_us_layout = state.config.disable_on_non_us_layout && is_non_us_layout(foreground);
+    state.active_profile =
+        profile_for_app(proc_name.as_deref(), &state.config.app_profiles).cloned();
+    state.apply_runtime_profile();
 
-    if excluded != state.is_foreground_excluded || non_us != state.non_us_layout {
-        state.is_foreground_excluded = excluded;
-        state.non_us_layout = non_us;
+    let effective = state.effective_enabled();
+    if old_excluded != state.is_foreground_excluded
+        || old_non_us != state.non_us_layout
+        || old_effective != effective
+    {
         let tray_hwnd = state.tray_hwnd;
-        let effective = state.effective_enabled();
         drop(lock);
-
         PostMessageW(tray_hwnd, WM_TRAYICON, 0, if effective { 1 } else { 0 });
     }
 }
@@ -337,31 +366,27 @@ pub unsafe fn apply_config(config: AppConfig) {
         None => return,
     };
 
-    state.user_enabled = config.enabled;
-    state.engine.options = engine_options_from_config(&config);
-    state.engine.charset = charset_from_config(&config);
-    state.engine.macros.clear();
-    for (trigger, replacement) in &config.macros {
-        state.engine.macros.insert(trigger, replacement);
-    }
-
     let foreground = state.last_foreground;
+    let proc_name = if foreground.is_null() {
+        None
+    } else {
+        get_process_name_for_window(foreground)
+    };
+    let active_profile = profile_for_app(proc_name.as_deref(), &config.app_profiles).cloned();
     let non_us = config.disable_on_non_us_layout
         && !foreground.is_null()
         && is_non_us_layout(foreground);
+    let excluded = is_app_excluded(proc_name.as_deref(), &config.excluded_apps);
     let start_with_windows = config.start_with_windows;
     let startup_changed = state.config.start_with_windows != start_with_windows;
 
-    if !foreground.is_null() {
-        let proc_name = get_process_name_for_window(foreground);
-        state.is_foreground_excluded =
-            is_app_excluded(proc_name.as_deref(), &config.excluded_apps);
-    }
-
+    state.user_enabled = config.enabled;
+    state.is_foreground_excluded = excluded;
     state.non_us_layout = non_us;
+    state.active_profile = active_profile;
     state.config = config;
-    state.engine.reset();
-    state.reset_display_shadow();
+    state.apply_runtime_profile();
+    state.load_macros();
 
     let tray_hwnd = state.tray_hwnd;
     let effective = state.effective_enabled();
@@ -378,8 +403,21 @@ pub unsafe fn apply_config(config: AppConfig) {
 
 pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
     let user_enabled = config.enabled;
-    let options = engine_options_from_config(&config);
-    let charset = charset_from_config(&config);
+
+    let initial_foreground = GetForegroundWindow();
+    let initial_proc = get_process_name_for_window(initial_foreground);
+    let initial_excluded = is_app_excluded(initial_proc.as_deref(), &config.excluded_apps);
+    let initial_non_us = config.disable_on_non_us_layout && is_non_us_layout(initial_foreground);
+    let initial_profile = profile_for_app(initial_proc.as_deref(), &config.app_profiles).cloned();
+    let options = engine_options_from_config(&config, initial_profile.as_ref());
+    let charset = charset_from_config(&config, initial_profile.as_ref());
+    let mut injection_mode = initial_profile
+        .as_ref()
+        .and_then(|profile| profile.injection_mode)
+        .unwrap_or(config.injection_mode);
+    if config.use_clipboard_for_unicode && injection_mode == 0 {
+        injection_mode = 3;
+    }
 
     let mut engine = VietFlowEngine::new(options, charset);
     engine.macros.clear();
@@ -404,11 +442,6 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         WINEVENT_OUTOFCONTEXT,
     );
 
-    let initial_foreground = GetForegroundWindow();
-    let initial_proc = get_process_name_for_window(initial_foreground);
-    let initial_excluded = is_app_excluded(initial_proc.as_deref(), &config.excluded_apps);
-    let initial_non_us = config.disable_on_non_us_layout && is_non_us_layout(initial_foreground);
-
     // Keep the Run key in sync even when the daemon starts after the UI saved
     // the setting while it was not running.
     set_start_with_windows(config.start_with_windows);
@@ -424,12 +457,14 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         win_pressed: false,
         last_foreground: initial_foreground,
         is_foreground_excluded: initial_excluded,
+        manual_override: false,
         non_us_layout: initial_non_us,
+        active_profile: initial_profile,
+        injection_mode,
+        macro_buffer: String::new(),
         tray_hwnd,
         hook_handle,
         win_event_hook,
-        last_tick: None,
-        display_shadow: Vec::with_capacity(128),
     });
 }
 
@@ -502,7 +537,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         _ => {}
     }
 
-    if is_key_down {
+    if is_key_down && !state.hotkeys_locked() {
         let ctrl = state.ctrl_pressed || is_vk_down(VK_CONTROL);
         let alt = state.alt_pressed || is_vk_down(VK_MENU);
         let shift = state.shift_pressed || is_vk_down(VK_SHIFT);
@@ -531,9 +566,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         };
 
         if is_toggle {
-            state.user_enabled = !state.user_enabled;
-            state.config.enabled = state.user_enabled;
-            state.engine.reset();
+            state.toggle_language();
             state.config.save();
 
             if state.config.notification_sound {
@@ -562,26 +595,31 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         }
     }
 
-    // If active foreground app is in excluded list, completely bypass all typing processing
-    if state.is_foreground_excluded {
+    // When Vietnamese typing is off, never run the Vietnamese engine. If the
+    // user allowed macros while disabled, run only the small macro tracker;
+    // otherwise this is a true pass-through (games, terminals, remote apps).
+    if !state.effective_enabled() {
+        if is_key_down && state.macro_only() {
+            return handle_macro_only(state, vk, n_code, w_param, l_param);
+        }
+        state.macro_buffer.clear();
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
     // Reset keys: Esc, Enter, Tab, Arrow keys
     if is_key_down && matches!(vk, VK_ESCAPE | VK_RETURN | VK_TAB | 0x25..=0x28) {
         state.engine.reset();
-        state.reset_display_shadow();
+        state.macro_buffer.clear();
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
     // Backspace handling
-    if is_key_down && vk == VK_BACK && (state.effective_enabled() || state.config.allow_macro_when_disabled) {
+    if is_key_down && vk == VK_BACK {
         let (backspaces, text) = state.engine.process_key('\x08');
         if backspaces > 0 || !text.is_empty() {
             state.send_engine_output(backspaces, &text);
             return 1;
         }
-        state.remove_last_display_char();
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
@@ -592,12 +630,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     // If Ctrl, Alt or Win is pressed, pass key through without processing Vietnamese
     if ctrl_down || alt_down || win_down {
         state.engine.reset();
-        state.reset_display_shadow();
-        return CallNextHookEx(null_mut(), n_code, w_param, l_param);
-    }
-
-    // If effective typing is disabled and macro is not allowed when disabled, pass key through
-    if !state.effective_enabled() && !state.config.allow_macro_when_disabled {
+        state.macro_buffer.clear();
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
@@ -605,28 +638,82 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     if is_key_down {
         let input_char = vk_to_char(vk, state.shift_pressed);
         if input_char != '\0' {
-            let now = Instant::now();
-            let timeout_ms = state.config.typing_timeout_ms.clamp(300, 10000);
-            if let Some(prev) = state.last_tick {
-                if now.duration_since(prev).as_millis() as u64 > timeout_ms {
-                    state.engine.reset();
-                    state.reset_display_shadow();
-                }
-            }
-            state.last_tick = Some(now);
-
-            let (backspaces, text) = state.engine.process_key(input_char);
+            let now_ms = unsafe { GetTickCount64() };
+            let (backspaces, text) = state.engine.process_key_with_time(input_char, now_ms);
 
             if backspaces > 0 || !text.is_empty() {
                 state.send_engine_output(backspaces, &text);
                 return 1;
             }
-
-            state.track_display_char(input_char);
         }
     }
 
     CallNextHookEx(null_mut(), n_code, w_param, l_param)
+}
+
+/// Macro-only path used when Vietnamese typing is disabled but the user asked
+/// for macros to keep working (English mode or an excluded app). Printable
+/// keys are allowed to reach the target app; only the trigger is remembered and
+/// replaced when a word break arrives.
+unsafe fn handle_macro_only(
+    state: &mut HookState,
+    vk: u16,
+    n_code: i32,
+    w_param: WPARAM,
+    l_param: LPARAM,
+) -> LRESULT {
+    let pass = || CallNextHookEx(null_mut(), n_code, w_param, l_param);
+
+    if vk == VK_BACK {
+        state.macro_buffer.pop();
+        return pass();
+    }
+
+    if matches!(vk, VK_RETURN | VK_TAB | 0x25..=0x28) {
+        expand_macro_only(state);
+        return pass();
+    }
+    if vk == VK_ESCAPE {
+        state.macro_buffer.clear();
+        return pass();
+    }
+
+    let ctrl = state.ctrl_pressed || is_vk_down(VK_CONTROL);
+    let alt = state.alt_pressed || is_vk_down(VK_MENU);
+    let win = state.win_pressed || is_vk_down(VK_LWIN) || is_vk_down(VK_RWIN);
+    if ctrl || alt || win {
+        state.macro_buffer.clear();
+        return pass();
+    }
+
+    let c = vk_to_char(vk, state.shift_pressed);
+    if c == '\0' {
+        state.macro_buffer.clear();
+        return pass();
+    }
+
+    let is_word_break = c.is_whitespace() || (!c.is_alphanumeric() && c != '_');
+    if is_word_break {
+        expand_macro_only(state);
+    } else if state.macro_buffer.chars().count() < 64 {
+        state.macro_buffer.push(c);
+    } else {
+        state.macro_buffer.clear();
+    }
+
+    pass()
+}
+
+fn expand_macro_only(state: &mut HookState) {
+    if state.macro_buffer.is_empty() {
+        return;
+    }
+    let trigger = state.macro_buffer.to_lowercase();
+    if let Some(replacement) = state.config.macros.get(&trigger).cloned() {
+        let backspaces = state.macro_buffer.chars().count();
+        state.send_engine_output(backspaces, &replacement);
+    }
+    state.macro_buffer.clear();
 }
 
 fn vk_to_char(vk: u16, shift: bool) -> char {
@@ -772,6 +859,94 @@ unsafe fn check_custom_hotkey(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hook_state(excluded: bool, manual_override: bool, user_enabled: bool) -> HookState {
+        HookState {
+            engine: VietFlowEngine::default(),
+            config: AppConfig::default(),
+            user_enabled,
+            ctrl_pressed: false,
+            shift_pressed: false,
+            alt_pressed: false,
+            win_pressed: false,
+            last_foreground: std::ptr::null_mut(),
+            is_foreground_excluded: excluded,
+            manual_override,
+            non_us_layout: false,
+            active_profile: None,
+            injection_mode: 0,
+            macro_buffer: String::new(),
+            tray_hwnd: std::ptr::null_mut(),
+            hook_handle: std::ptr::null_mut(),
+            win_event_hook: std::ptr::null_mut(),
+        }
+    }
+
+    #[test]
+    fn manual_override_allows_typing_in_excluded_app() {
+        assert!(!hook_state(true, false, true).effective_enabled());
+        assert!(hook_state(true, true, true).effective_enabled());
+        assert!(!hook_state(true, true, false).effective_enabled());
+        assert!(hook_state(false, false, true).effective_enabled());
+        assert!(!hook_state(false, false, false).effective_enabled());
+    }
+
+    #[test]
+    fn toggle_language_uses_manual_override_in_excluded_apps() {
+        let mut state = hook_state(true, false, true);
+        state.toggle_language();
+        assert!(state.manual_override);
+        assert!(state.user_enabled);
+        assert!(state.effective_enabled());
+
+        state.toggle_language();
+        assert!(!state.manual_override);
+        assert!(!state.effective_enabled());
+
+        let mut normal = hook_state(false, false, true);
+        normal.toggle_language();
+        assert!(!normal.user_enabled);
+        normal.toggle_language();
+        assert!(normal.user_enabled);
+    }
+
+    #[test]
+    fn hotkey_lock_can_be_disabled_per_configuration() {
+        let mut state = hook_state(true, false, true);
+        assert!(state.hotkeys_locked());
+        state.config.lock_hotkeys_in_excluded_apps = false;
+        assert!(!state.hotkeys_locked());
+        assert!(!hook_state(false, false, true).hotkeys_locked());
+    }
+
+    #[test]
+    fn macros_are_macro_only_when_typing_is_disabled() {
+        let mut state = hook_state(true, false, true);
+        assert!(!state.macros_allowed());
+        assert!(!state.macro_only());
+
+        state.config.allow_macro_when_disabled = true;
+        assert!(state.macros_allowed());
+        assert!(state.macro_only());
+
+        state.active_profile = Some(AppProfile {
+            allow_macro: Some(false),
+            ..Default::default()
+        });
+        assert!(!state.macros_allowed());
+        assert!(!state.macro_only());
+    }
+
+    #[test]
+    fn profile_can_force_macros_on_outside_excluded_apps() {
+        let mut state = hook_state(false, false, true);
+        state.active_profile = Some(AppProfile {
+            allow_macro: Some(true),
+            ..Default::default()
+        });
+        assert!(state.macros_allowed());
+        assert!(!state.macro_only());
+    }
 
     #[test]
     fn matches_configurable_hotkeys() {

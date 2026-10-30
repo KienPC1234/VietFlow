@@ -1,7 +1,7 @@
 // VietFlow Core - Input Processor
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
-use crate::models::{CharType, InputMethod, ModifyKeyType, ToneKeyType, VnLexiTone};
+use crate::models::{CharType, CustomKeymap, InputMethod, ModifyKeyType, ToneKeyType, VnLexiTone};
 
 #[inline(always)]
 pub fn to_lower_ascii(c: char) -> char {
@@ -63,7 +63,38 @@ pub fn is_word_break_fast(c: char) -> bool {
     )
 }
 
-pub fn get_char_type(c: char, method: InputMethod) -> CharType {
+#[inline]
+fn key_matches(c: char, mapping: &str) -> bool {
+    if mapping.is_empty() {
+        return false;
+    }
+    let lower = to_lower_ascii(c);
+    mapping.chars().any(|m| to_lower_ascii(m) == lower)
+}
+
+pub fn get_char_type(c: char, method: InputMethod, custom: &CustomKeymap) -> CharType {
+    if method == InputMethod::UserCustom {
+        if custom.is_action_key(c) {
+            return CharType::ToneOrAction;
+        }
+        if c.is_ascii_alphabetic() {
+            return CharType::Letter;
+        }
+        if c.is_ascii_digit() {
+            return CharType::Digit;
+        }
+        if c == ' ' || c == '\t' {
+            return CharType::WordBreak;
+        }
+        if c == '\r' || c == '\n' {
+            return CharType::Reset;
+        }
+        if is_word_break_fast(c) {
+            return CharType::WordBreak;
+        }
+        return CharType::Reset;
+    }
+
     if c.is_ascii_alphabetic() {
         if matches!(
             method,
@@ -112,9 +143,26 @@ pub fn get_char_type(c: char, method: InputMethod) -> CharType {
 }
 
 #[inline]
-pub fn get_tone_key(c: char, method: InputMethod) -> ToneKeyType {
+pub fn get_tone_key(c: char, method: InputMethod, custom: &CustomKeymap) -> ToneKeyType {
     let lower = to_lower_ascii(c);
     match method {
+        InputMethod::UserCustom => {
+            if key_matches(c, &custom.acute) {
+                ToneKeyType::Acute
+            } else if key_matches(c, &custom.grave) {
+                ToneKeyType::Grave
+            } else if key_matches(c, &custom.hook) {
+                ToneKeyType::Hook
+            } else if key_matches(c, &custom.tilde) {
+                ToneKeyType::Tilde
+            } else if key_matches(c, &custom.dot) {
+                ToneKeyType::Dot
+            } else if key_matches(c, &custom.remove_tone) {
+                ToneKeyType::Remove
+            } else {
+                ToneKeyType::None
+            }
+        }
         InputMethod::Telex | InputMethod::SimpleTelex => match lower {
             's' => ToneKeyType::Acute,
             'f' => ToneKeyType::Grave,
@@ -167,14 +215,42 @@ pub fn get_tone_key(c: char, method: InputMethod) -> ToneKeyType {
             '0' => ToneKeyType::Remove,
             _ => ToneKeyType::None,
         },
-        _ => ToneKeyType::None,
     }
 }
 
 #[inline]
-pub fn get_modify_key(c: char, method: InputMethod) -> ModifyKeyType {
+pub fn get_modify_key(c: char, method: InputMethod, custom: &CustomKeymap) -> ModifyKeyType {
     let lower = to_lower_ascii(c);
     match method {
+        InputMethod::UserCustom => {
+            if key_matches(c, &custom.hook_all) {
+                ModifyKeyType::HookAll
+            } else if key_matches(c, &custom.circumflex) {
+                ModifyKeyType::Circumflex
+            } else if key_matches(c, &custom.horn) {
+                ModifyKeyType::Horn
+            } else if key_matches(c, &custom.breve) {
+                ModifyKeyType::Breve
+            } else if key_matches(c, &custom.d_mark) {
+                ModifyKeyType::DMark
+            } else if key_matches(c, &custom.roof_a) {
+                ModifyKeyType::RoofA
+            } else if key_matches(c, &custom.roof_e) {
+                ModifyKeyType::RoofE
+            } else if key_matches(c, &custom.roof_o) {
+                ModifyKeyType::RoofO
+            } else if key_matches(c, &custom.horn_o) {
+                ModifyKeyType::HornO
+            } else if key_matches(c, &custom.horn_u) {
+                ModifyKeyType::HornU
+            } else if key_matches(c, &custom.breve_a) {
+                ModifyKeyType::BreveA
+            } else if key_matches(c, &custom.d_lower) {
+                ModifyKeyType::DLower
+            } else {
+                ModifyKeyType::None
+            }
+        }
         InputMethod::Telex | InputMethod::SimpleTelex | InputMethod::TelexSimple2 => match lower {
             'w' => ModifyKeyType::HookAll,
             _ => ModifyKeyType::None,
@@ -205,7 +281,6 @@ pub fn get_modify_key(c: char, method: InputMethod) -> ModifyKeyType {
             '(' => ModifyKeyType::Breve,
             _ => ModifyKeyType::None,
         },
-        _ => ModifyKeyType::None,
     }
 }
 

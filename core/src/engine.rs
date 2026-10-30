@@ -63,6 +63,9 @@ pub struct VietFlowEngine {
     vowel_start: usize,
     vowel_count: usize,
     capitalize_next: bool,
+
+    display_shadow: Vec<char>,
+    last_key_time_ms: u64,
 }
 
 impl Default for VietFlowEngine {
@@ -86,12 +89,15 @@ impl VietFlowEngine {
             vowel_start: 0,
             vowel_count: 0,
             capitalize_next: false,
+            display_shadow: Vec::with_capacity(32),
+            last_key_time_ms: 0,
         }
     }
 
     pub fn reset(&mut self) {
         self.reset_word();
         self.capitalize_next = false;
+        self.display_shadow.clear();
     }
 
     fn reset_word(&mut self) {
@@ -103,9 +109,83 @@ impl VietFlowEngine {
         self.display_len = 0;
         self.vowel_start = 0;
         self.vowel_count = 0;
+        self.display_shadow.clear();
     }
 
     pub fn process_key(&mut self, c: char) -> (usize, KeyText) {
+        self.process_key_with_time(c, 0)
+    }
+
+    pub fn process_key_with_time(&mut self, c: char, now_ms: u64) -> (usize, KeyText) {
+        if now_ms > 0 && self.options.typing_timeout_ms > 0 {
+            if self.last_key_time_ms > 0
+                && now_ms.saturating_sub(self.last_key_time_ms) > self.options.typing_timeout_ms
+            {
+                self.reset();
+            }
+            self.last_key_time_ms = now_ms;
+        }
+
+        let (raw_bk, out) = self.process_key_raw(c);
+        self.diff_engine_output(raw_bk, out)
+    }
+
+    fn diff_engine_output(&mut self, raw_bk: usize, out: KeyText) -> (usize, KeyText) {
+        if raw_bk == 0 && out.is_empty() {
+            return (0, out);
+        }
+
+        let contains_break = out
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_ascii_punctuation() || c.is_ascii_digit());
+
+        let shadow_len = self.display_shadow.len();
+        if contains_break || raw_bk > shadow_len {
+            self.display_shadow.clear();
+            if !contains_break {
+                for c in out.chars() {
+                    if self.display_shadow.len() < 128 {
+                        self.display_shadow.push(c);
+                    } else {
+                        self.display_shadow.clear();
+                        break;
+                    }
+                }
+            }
+            return (raw_bk, out);
+        }
+
+        let prefix_len = shadow_len - raw_bk;
+        let mut common = prefix_len;
+        let mut suffix_offset = 0;
+
+        for (offset, c) in out.char_indices() {
+            if common < shadow_len && self.display_shadow[common] == c {
+                common += 1;
+                suffix_offset = offset + c.len_utf8();
+            } else {
+                suffix_offset = offset;
+                break;
+            }
+        }
+
+        let diff_bk = shadow_len - common;
+        let suffix = &out.as_str()[suffix_offset..];
+
+        self.display_shadow.truncate(prefix_len);
+        for c in out.chars() {
+            if self.display_shadow.len() < 128 {
+                self.display_shadow.push(c);
+            } else {
+                self.display_shadow.clear();
+                break;
+            }
+        }
+
+        (diff_bk, KeyText::from_str(suffix))
+    }
+
+    fn process_key_raw(&mut self, c: char) -> (usize, KeyText) {
         if c == '\x08' {
             return self.process_backspace();
         }
@@ -122,11 +202,16 @@ impl VietFlowEngine {
                 return self.process_first_letter(c);
             }
 
-            if matches!(
+            let is_lone_w = matches!(
                 self.options.method,
                 InputMethod::Telex | InputMethod::TelexVni
-            ) && matches!(c, 'w' | 'W')
-            {
+            ) && matches!(c, 'w' | 'W');
+            let is_custom_lone_w = self.options.method == InputMethod::UserCustom
+                && self.options.custom_keymap.lone_w
+                && !self.options.custom_keymap.hook_all.is_empty()
+                && self.options.custom_keymap.hook_all.chars().any(|m| to_lower_ascii(m) == to_lower_ascii(c));
+
+            if is_lone_w || is_custom_lone_w {
                 return self.process_lone_w(c);
             }
 
@@ -134,7 +219,7 @@ impl VietFlowEngine {
                 return self.process_first_letter(c);
             }
 
-            if self.options.auto_capitalize && matches!(c, '.' | '!' | '?' | '\r' | '\n') {
+            if self.options.auto_capitalize && self.options.auto_capitalize_chars.contains(c) {
                 self.capitalize_next = true;
             }
 
@@ -142,7 +227,7 @@ impl VietFlowEngine {
         }
 
         // Try tone key
-        let tone_key = get_tone_key(c, self.options.method);
+        let tone_key = get_tone_key(c, self.options.method, &self.options.custom_keymap);
         if tone_key != ToneKeyType::None {
             if let Some(res) = self.try_apply_tone(tone_key, c) {
                 self.raw_chars.push(c);
@@ -151,7 +236,7 @@ impl VietFlowEngine {
         }
 
         // Try modify key
-        let modify_key = get_modify_key(c, self.options.method);
+        let modify_key = get_modify_key(c, self.options.method, &self.options.custom_keymap);
         if modify_key != ModifyKeyType::None || self.is_double_key_modify(c) {
             if let Some(res) = self.try_apply_modify(modify_key, c) {
                 self.raw_chars.push(c);
@@ -165,7 +250,7 @@ impl VietFlowEngine {
         }
 
         // Word breaks
-        let char_type = get_char_type(c, self.options.method);
+        let char_type = get_char_type(c, self.options.method, &self.options.custom_keymap);
         if matches!(char_type, CharType::WordBreak | CharType::Reset) || is_word_break_fast(c) {
             return self.process_word_break(c);
         }
@@ -392,13 +477,15 @@ impl VietFlowEngine {
     }
 
     fn is_double_key_modify(&self, c: char) -> bool {
-        if !matches!(
+        let is_double_ok = matches!(
             self.options.method,
             InputMethod::Telex
                 | InputMethod::SimpleTelex
                 | InputMethod::TelexSimple2
                 | InputMethod::TelexVni
-        ) {
+        ) || (self.options.method == InputMethod::UserCustom
+            && self.options.custom_keymap.telex_double_keys);
+        if !is_double_ok {
             return false;
         }
         matches!(to_lower_ascii(c), 'a' | 'e' | 'o' | 'd')
@@ -507,13 +594,16 @@ impl VietFlowEngine {
         }
 
         // Double key handling in Telex
-        if matches!(
+        let is_double_ok = matches!(
             self.options.method,
             InputMethod::Telex
                 | InputMethod::SimpleTelex
                 | InputMethod::TelexSimple2
                 | InputMethod::TelexVni
-        ) && self.word_form != WordForm::NonVn
+        ) || (self.options.method == InputMethod::UserCustom
+            && self.options.custom_keymap.telex_double_keys);
+
+        if is_double_ok && self.word_form != WordForm::NonVn
         {
             if lower == 'd' {
                 let last_idx = self.buffer.len() - 1;
@@ -566,16 +656,16 @@ impl VietFlowEngine {
             }
         }
 
-        // 'w' key handling (Telex hook-all)
-        if modify_key == ModifyKeyType::HookAll
-            || (matches!(
-                self.options.method,
-                InputMethod::Telex
-                    | InputMethod::SimpleTelex
-                    | InputMethod::TelexSimple2
-                    | InputMethod::TelexVni
-            ) && lower == 'w')
-        {
+        // 'w' key handling (Telex hook-all or custom hook-all)
+        let is_telex_w = matches!(
+            self.options.method,
+            InputMethod::Telex
+                | InputMethod::SimpleTelex
+                | InputMethod::TelexSimple2
+                | InputMethod::TelexVni
+        ) && lower == 'w';
+
+        if modify_key == ModifyKeyType::HookAll || is_telex_w {
             if self.vowel_count > 0 && !self.options.free_marking && !self.last_vowel_is_current() {
                 return None;
             }
@@ -584,22 +674,24 @@ impl VietFlowEngine {
                 return Some(res);
             }
 
-            // Lone 'w' becomes 'ư' in Telex, SimpleTelex, and TelexVni, but NOT in TelexSimple2
-            // or if the word already has a non-vn form or literal 'w'
-            if matches!(
+            // Lone 'w' becomes 'ư' in Telex, SimpleTelex, TelexVni, or UserCustom when enabled
+            let is_lone_w_method = matches!(
                 self.options.method,
                 InputMethod::Telex | InputMethod::SimpleTelex | InputMethod::TelexVni
-            ) && self.word_form != WordForm::NonVn
+            ) || (self.options.method == InputMethod::UserCustom && self.options.custom_keymap.lone_w);
+
+            if is_lone_w_method
+                && self.word_form != WordForm::NonVn
                 && !self.buffer.iter().any(|s| to_lower_ascii(s.raw_char) == 'w')
             {
                 return Some(self.process_lone_w(raw_key));
             }
         }
 
-        // VNI & VIQR & TelexVni number/symbol modifications
+        // VNI & VIQR & TelexVni & UserCustom number/symbol modifications
         if matches!(
             self.options.method,
-            InputMethod::Vni | InputMethod::Viqr | InputMethod::TelexVni
+            InputMethod::Vni | InputMethod::Viqr | InputMethod::TelexVni | InputMethod::UserCustom
         ) {
             if modify_key == ModifyKeyType::Horn {
                 if self.vowel_count > 0 && !self.options.free_marking && !self.last_vowel_is_current() {
@@ -632,7 +724,7 @@ impl VietFlowEngine {
                         }
                     }
                 }
-                ModifyKeyType::Breve => {
+                ModifyKeyType::Breve | ModifyKeyType::BreveA => {
                     for i in (vowel_start..self.buffer.len()).rev() {
                         if !self.options.free_marking && i != last_idx {
                             return None;
@@ -646,7 +738,7 @@ impl VietFlowEngine {
                         }
                     }
                 }
-                ModifyKeyType::DMark => {
+                ModifyKeyType::DMark | ModifyKeyType::DLower => {
                     for i in (0..self.buffer.len()).rev() {
                         if !self.options.free_marking && i != last_idx {
                             return None;
@@ -655,6 +747,76 @@ impl VietFlowEngine {
                         if to_lower_ascii(slot.raw_char) == 'd' {
                             slot.lexi = if slot.is_upper { VnLexiName::DD } else { VnLexiName::dd };
                             slot.modified = true;
+                            return Some(self.rebuild_current_word());
+                        }
+                    }
+                }
+                ModifyKeyType::RoofA => {
+                    for i in (vowel_start..self.buffer.len()).rev() {
+                        if !self.options.free_marking && i != last_idx {
+                            return None;
+                        }
+                        let slot = &mut self.buffer[i];
+                        if to_lower_ascii(slot.raw_char) == 'a' {
+                            slot.lexi = if slot.is_upper { VnLexiName::Ar } else { VnLexiName::ar };
+                            slot.modified = true;
+                            self.refresh_tone_position();
+                            return Some(self.rebuild_current_word());
+                        }
+                    }
+                }
+                ModifyKeyType::RoofE => {
+                    for i in (vowel_start..self.buffer.len()).rev() {
+                        if !self.options.free_marking && i != last_idx {
+                            return None;
+                        }
+                        let slot = &mut self.buffer[i];
+                        if to_lower_ascii(slot.raw_char) == 'e' {
+                            slot.lexi = if slot.is_upper { VnLexiName::Er } else { VnLexiName::er };
+                            slot.modified = true;
+                            self.refresh_tone_position();
+                            return Some(self.rebuild_current_word());
+                        }
+                    }
+                }
+                ModifyKeyType::RoofO => {
+                    for i in (vowel_start..self.buffer.len()).rev() {
+                        if !self.options.free_marking && i != last_idx {
+                            return None;
+                        }
+                        let slot = &mut self.buffer[i];
+                        if to_lower_ascii(slot.raw_char) == 'o' {
+                            slot.lexi = if slot.is_upper { VnLexiName::Or } else { VnLexiName::or };
+                            slot.modified = true;
+                            self.refresh_tone_position();
+                            return Some(self.rebuild_current_word());
+                        }
+                    }
+                }
+                ModifyKeyType::HornO => {
+                    for i in (vowel_start..self.buffer.len()).rev() {
+                        if !self.options.free_marking && i != last_idx {
+                            return None;
+                        }
+                        let slot = &mut self.buffer[i];
+                        if to_lower_ascii(slot.raw_char) == 'o' {
+                            slot.lexi = if slot.is_upper { VnLexiName::Oh } else { VnLexiName::oh };
+                            slot.modified = true;
+                            self.refresh_tone_position();
+                            return Some(self.rebuild_current_word());
+                        }
+                    }
+                }
+                ModifyKeyType::HornU => {
+                    for i in (vowel_start..self.buffer.len()).rev() {
+                        if !self.options.free_marking && i != last_idx {
+                            return None;
+                        }
+                        let slot = &mut self.buffer[i];
+                        if to_lower_ascii(slot.raw_char) == 'u' {
+                            slot.lexi = if slot.is_upper { VnLexiName::Uh } else { VnLexiName::uh };
+                            slot.modified = true;
+                            self.refresh_tone_position();
                             return Some(self.rebuild_current_word());
                         }
                     }
@@ -792,7 +954,9 @@ impl VietFlowEngine {
                         | InputMethod::SimpleTelex
                         | InputMethod::TelexSimple2
                         | InputMethod::TelexVni
-                ) {
+                ) || (self.options.method == InputMethod::UserCustom
+                    && !self.options.custom_keymap.hook_all.is_empty())
+                {
                     slot.lexi = if slot.is_upper { VnLexiName::Ah } else { VnLexiName::ah };
                 } else {
                     continue;
@@ -814,7 +978,7 @@ impl VietFlowEngine {
     }
 
     fn process_word_break(&mut self, c: char) -> (usize, KeyText) {
-        if self.options.auto_capitalize && matches!(c, '.' | '!' | '?' | '\r' | '\n') {
+        if self.options.auto_capitalize && self.options.auto_capitalize_chars.contains(c) {
             self.capitalize_next = true;
         }
 
@@ -1172,7 +1336,12 @@ impl VietFlowEngine {
 
     #[inline]
     fn matches_english_keyword(&self, word: &str) -> bool {
-        is_english_keyword(word)
+        (is_english_keyword(word)
+            && !self
+                .options
+                .removed_english_keywords
+                .iter()
+                .any(|removed| removed == word))
             || self
                 .options
                 .custom_english_keywords
@@ -1197,9 +1366,32 @@ impl VietFlowEngine {
         // Only compare the raw key sequence. Comparing the buffer base would
         // treat Vietnamese words such as "mẹ" (raw "mej", base "me") as the
         // English word "me" and skip the tone restoration.
-        let raw_str: String = self.raw_chars.iter().map(|&c| to_lower_ascii(c)).collect();
-        if self.matches_english_keyword(&raw_str) {
-            return false;
+        // Use stack buffer to avoid heap allocation on the hot-path keystroke loop.
+        if !self.raw_chars.is_empty() {
+            if self.raw_chars.len() <= 32 {
+                let mut stack_buf = [0u8; 32];
+                let mut is_ascii = true;
+                for (i, &c) in self.raw_chars.iter().enumerate() {
+                    if c.is_ascii() {
+                        stack_buf[i] = to_lower_ascii(c) as u8;
+                    } else {
+                        is_ascii = false;
+                        break;
+                    }
+                }
+                if is_ascii {
+                    if let Ok(raw_slice) = std::str::from_utf8(&stack_buf[..self.raw_chars.len()]) {
+                        if self.matches_english_keyword(raw_slice) {
+                            return false;
+                        }
+                    }
+                }
+            } else {
+                let raw_str: String = self.raw_chars.iter().map(|&c| to_lower_ascii(c)).collect();
+                if self.matches_english_keyword(&raw_str) {
+                    return false;
+                }
+            }
         }
 
         if self.vowel_count == 0 {

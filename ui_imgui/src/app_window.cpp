@@ -1,4 +1,5 @@
 #include "app_window.h"
+#include "constants.h"
 #include "ui_manager.h"
 #include "theme.h"
 
@@ -163,7 +164,7 @@ int RunAppWindow(const std::string& config_path, bool convert_mode, void (*on_sa
     WNDCLASSEXW wc = {
         sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L,
         hInst, hIconBig, nullptr, nullptr, nullptr,
-        L"VietFlowImGuiWindow", hIconSmall
+        WINDOW_CLASS_UI, hIconSmall
     };
     RegisterClassExW(&wc);
 
@@ -199,8 +200,8 @@ int RunAppWindow(const std::string& config_path, bool convert_mode, void (*on_sa
     }
 
     const wchar_t* window_title = convert_mode
-        ? L"VietFlow - Chuy\u1EC3n m\u00E3 v\u0103n b\u1EA3n"
-        : L"VietFlow - B\u1EA3ng \u0111i\u1EC1u khi\u1EC3n b\u1ED9 g\u00F5 ti\u1EBFng Vi\u1EC7t";
+        ? WINDOW_TITLE_CONVERT
+        : WINDOW_TITLE_SETTINGS;
 
     HWND hwnd = CreateWindowW(wc.lpszClassName, window_title,
                               WS_OVERLAPPEDWINDOW, pos_x, pos_y, init_w, init_h,

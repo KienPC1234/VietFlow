@@ -1,19 +1,20 @@
 # VietFlow Release Build Script
 # Builds the static ImGui/DX11 UI library, tests the Rust workspace, then links
-# one or both VietFlow executables (x64 / x86) with embedded font and icon.
+# one or more VietFlow executables (x64 / x86 / ARM64) with embedded font and icon.
 #
 # Default CRT is static (/MT + Rust +crt-static), so the exe does not need the
 # VC++ Redistributable. Use -DynamicCrt for the smaller /MD build.
 #
 # Version/changelog are single-sourced from VERSION and CHANGELOG.md.
 param(
-    [ValidateSet('x64', 'x86', 'All')]
+    [ValidateSet('x64', 'x86', 'arm64', 'All')]
     [string]$Arch = 'x64',
     [string]$DistDir = "",
     [switch]$Velopack,
     [string]$VelopackVersion = "",
     [switch]$StaticCrt,
-    [switch]$DynamicCrt
+    [switch]$DynamicCrt,
+    [switch]$SkipTests
 )
 
 $ErrorActionPreference = "Stop"
@@ -74,7 +75,7 @@ if (Test-Path $cargoToml) {
     }
 }
 
-$archs = if ($Arch -eq 'All') { @('x64', 'x86') } else { @($Arch) }
+$archs = if ($Arch -eq 'All') { @('x64', 'x86', 'arm64') } else { @($Arch) }
 $releaseBase = "https://github.com/KienPC1234/VietFlow/releases"
 $releaseTagUrl = "$releaseBase/tag/v$version"
 $releaseDownloadBase = "$releaseBase/download/v$version"
@@ -111,10 +112,10 @@ $staticCrtValue = if ($useStatic) { "ON" } else { "OFF" }
 # ---------------------------------------------------------------------------
 $imguiSourceDir = Join-Path $root "ui_imgui"
 foreach ($a in $archs) {
-    $buildDir = if ($a -eq 'x86') {
-        Join-Path $imguiSourceDir "build-x86"
-    } else {
-        Join-Path $imguiSourceDir "build"
+    $buildDir = switch ($a) {
+        'x86' { Join-Path $imguiSourceDir "build-x86" }
+        'arm64' { Join-Path $imguiSourceDir "build-arm64" }
+        default { Join-Path $imguiSourceDir "build" }
     }
 
     Write-Host "`n[1/5] Building C++ ImGui library ($a)..." -ForegroundColor Yellow
@@ -126,6 +127,8 @@ foreach ($a in $archs) {
     )
     if ($a -eq 'x86') {
         $cmakeArgs += @("-A", "Win32")
+    } elseif ($a -eq 'arm64') {
+        $cmakeArgs += @("-A", "ARM64")
     }
     & cmake @cmakeArgs
     if ($LASTEXITCODE -ne 0) {
@@ -143,14 +146,22 @@ foreach ($a in $archs) {
 # 2. Tests (host x64 when x64 is selected, otherwise the x86 target)
 # ---------------------------------------------------------------------------
 Write-Host "`n[2/5] Running workspace unit tests..." -ForegroundColor Yellow
-if ($archs -contains 'x64') {
+if ($SkipTests) {
+    Write-Host "  Tests skipped (-SkipTests)." -ForegroundColor DarkGray
+} elseif ($archs -contains 'x64') {
     & cargo test --manifest-path (Join-Path $root "Cargo.toml") --workspace
-} else {
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Unit tests failed!"
+        exit $LASTEXITCODE
+    }
+} elseif ($archs -contains 'x86') {
     & cargo test --manifest-path (Join-Path $root "Cargo.toml") --workspace --target i686-pc-windows-msvc
-}
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Unit tests failed!"
-    exit $LASTEXITCODE
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Unit tests failed!"
+        exit $LASTEXITCODE
+    }
+} else {
+    Write-Host "  ARM64-only build: tests run in the x64 CI job instead." -ForegroundColor DarkGray
 }
 
 # ---------------------------------------------------------------------------
@@ -171,6 +182,15 @@ foreach ($a in $archs) {
         }
         $src = Join-Path $root "target\i686-pc-windows-msvc\release\VietFlow.exe"
         $distName = "VietFlow-x86.exe"
+    } elseif ($a -eq 'arm64') {
+        Write-Host "  Compiling ARM64 (aarch64-pc-windows-msvc)..." -ForegroundColor DarkGray
+        & cargo build --manifest-path $cargoManifest --release --target aarch64-pc-windows-msvc -p vietflow-windows
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "ARM64 release build failed!"
+            exit $LASTEXITCODE
+        }
+        $src = Join-Path $root "target\aarch64-pc-windows-msvc\release\VietFlow.exe"
+        $distName = "VietFlow-arm64.exe"
     } else {
         Write-Host "  Compiling x64 (host target)..." -ForegroundColor DarkGray
         & cargo build --manifest-path $cargoManifest --release -p vietflow-windows
@@ -232,6 +252,9 @@ if ($willPackage) {
     if ($archs -contains 'x86') {
         $downloads['x86'] = "$releaseDownloadBase/VietFlow-win-x86-Setup.exe"
     }
+    if ($archs -contains 'arm64') {
+        $downloads['arm64'] = "$releaseDownloadBase/VietFlow-win-arm64-Setup.exe"
+    }
 }
 
 $notes = Get-ChangelogSection $changelogText $version
@@ -260,8 +283,12 @@ if ($willPackage) {
     New-Item -ItemType Directory -Force -Path $releasesDir | Out-Null
 
     foreach ($a in $archs) {
-        $channel = if ($a -eq 'x86') { "win-x86" } else { "win-x64" }
-        $runtime = if ($a -eq 'x86') { "win-x86" } else { "win-x64" }
+        $channel = switch ($a) {
+            'x86' { "win-x86" }
+            'arm64' { "win-arm64" }
+            default { "win-x64" }
+        }
+        $runtime = $channel
         $packDir = Join-Path $root "target\release\pack_staging-$a"
         Remove-Item -Recurse -Force $packDir -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Force -Path $packDir | Out-Null
@@ -286,8 +313,8 @@ if ($willPackage) {
 
     Write-Host "Velopack releases ready in: $releasesDir" -ForegroundColor Green
     Write-Host "Upload these assets to the GitHub release:" -ForegroundColor Green
-    Write-Host "  VietFlow-x64.exe, VietFlow-x86.exe" -ForegroundColor Green
-    Write-Host "  VietFlow-win-x64-Setup.exe, VietFlow-win-x86-Setup.exe" -ForegroundColor Green
+    Write-Host "  VietFlow-x64.exe, VietFlow-x86.exe, VietFlow-arm64.exe" -ForegroundColor Green
+    Write-Host "  VietFlow-win-x64-Setup.exe, VietFlow-win-x86-Setup.exe, VietFlow-win-arm64-Setup.exe" -ForegroundColor Green
     Write-Host "  latest.json, version.txt, CHANGELOG.md" -ForegroundColor Green
 } elseif ($Velopack) {
     Write-Warning "'vpk' tool was not found in PATH. Skipping Velopack packaging."

@@ -33,15 +33,25 @@ $release = Invoke-RestMethod -Method Post `
 Write-Host "Created release $($release.tag_name) (id $($release.id))"
 Write-Host $release.html_url
 
-$assets = @(
+$requiredAssets = @(
     'dist\VietFlow-x64.exe',
     'dist\VietFlow-x86.exe',
-    'releases\VietFlow-win-x64-Setup.exe',
-    'releases\VietFlow-win-x86-Setup.exe',
     'dist\latest.json',
     'dist\version.txt',
     'dist\CHANGELOG.md'
 )
+$optionalAssets = @(
+    'dist\VietFlow-arm64.exe',
+    'releases\VietFlow-win-x64-Setup.exe',
+    'releases\VietFlow-win-x86-Setup.exe',
+    'releases\VietFlow-win-arm64-Setup.exe'
+)
+
+$assets = @($requiredAssets)
+foreach ($asset in $optionalAssets) {
+    $path = Join-Path (Split-Path -Parent $PSScriptRoot) $asset
+    if (Test-Path $path) { $assets += $asset }
+}
 
 foreach ($asset in $assets) {
     $path = Join-Path (Split-Path -Parent $PSScriptRoot) $asset

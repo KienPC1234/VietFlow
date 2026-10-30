@@ -23,7 +23,8 @@ enum VfInputMethod {
     VF_METHOD_TELEX = 0,
     VF_METHOD_SIMPLE_TELEX = 1,
     VF_METHOD_VNI = 2,
-    VF_METHOD_VIQR = 3
+    VF_METHOD_VIQR = 3,
+    VF_METHOD_USER_CUSTOM = 6
 };
 
 /* Charsets (matches vietflow_core::CharsetId). */
@@ -69,6 +70,21 @@ size_t vf_convert_charset(const uint8_t *input, size_t input_len,
 
 size_t vf_strip_accents(const uint8_t *input, size_t input_len,
                         uint8_t *out, size_t out_cap);
+
+/*
+ * Raw-byte charset conversion. Use this for TCVN3/VNI Windows clipboard or file
+ * content, where the input/output is not UTF-8. Same size-query contract.
+ */
+size_t vf_convert_charset_bytes(const uint8_t *input, size_t input_len,
+                                uint8_t source, uint8_t target,
+                                uint8_t *out, size_t out_cap);
+
+/*
+ * Default English keyword list, newline-separated UTF-8. Same size-query
+ * contract as vf_convert_charset: call with out = NULL to get the size, then
+ * call again with a buffer.
+ */
+size_t vf_english_keywords(uint8_t *out, size_t out_cap);
 
 #ifdef __cplusplus
 }

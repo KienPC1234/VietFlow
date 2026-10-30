@@ -1,88 +1,121 @@
-# VietFlow CMake Build & Packaging Guide
+# VietFlow Build & Packaging Guide
 
-> **Lưu ý:** Tài liệu này mô tả pipeline CMake/Qt cũ. Bản hiện tại dùng
-> `ui_imgui/` (Dear ImGui + DirectX 11) và `scripts/build.ps1`; xem `README.md`.
-> Velopack chỉ còn dùng để đóng gói installer (`-Velopack`), không còn là
-> runtime updater — app kiểm tra GitHub Releases bằng WinINet.
-
-Tài liệu hướng dẫn biên dịch, kiểm thử và đóng gói phân phối VietFlow bằng CMake trên đa nền tảng.
+VietFlow uses a Rust workspace plus a C++20 Dear ImGui/DirectX 11 UI. The UI is
+built as a static library and linked into the single `VietFlow.exe`; it is not a
+Qt application and there is no runtime extraction step.
 
 ---
 
-## I. Yêu cầu hệ thống
+## I. Requirements
 
-| Thành phần | Phiên bản tối thiểu | Ghi chú |
+| Component | Minimum | Notes |
 | :--- | :--- | :--- |
-| **CMake** | 3.21+ | Hệ thống build chính |
-| **Rust Toolchain** | 1.75+ (MSVC trên Windows) | Dùng để biên dịch `core` và `platforms/windows` |
-| **Qt 6** | 6.5+ (Quick, QuickControls2, Gui) | Tùy chọn, dùng để biên dịch giao diện cấu hình UI |
-| **Velopack CLI** | 1.2+ (`vpk`) | Tùy chọn, dùng để đóng gói installer và MSI |
-| **PowerShell** | 7.0+ (`pwsh`) hoặc Windows PowerShell | Dùng để chạy pipeline đóng gói tự động trên Windows |
+| **Rust** | 1.75+ (MSVC) | `x86_64-pc-windows-msvc`; add `i686-pc-windows-msvc` and `aarch64-pc-windows-msvc` for the other targets |
+| **CMake** | 3.20+ | Visual Studio generator |
+| **Visual Studio** | 2022+ with Desktop C++ | ARM64 builds need the ARM64 MSVC component |
+| **Git** | Any recent | Submodules: `imgui`, `nlohmann_json` |
+| **Velopack CLI** | Optional | `dotnet tool install -g vpk`; only for installers |
 
----
+Fetch submodules after cloning:
 
-## II. Các tùy chọn cấu hình CMake
-
-Khi chạy `cmake -B build`, có thể truyền các cờ cấu hình sau:
-
-| Cờ CMake | Giá trị mặc định | Mô tả |
-| :--- | :--- | :--- |
-| `-DVIETFLOW_DIST_DIR=<PATH>` | `${CMAKE_SOURCE_DIR}/dist` | Thư mục xuất bản phẩm phát hành |
-| `-DVIETFLOW_BUILD_UI=ON\|OFF` | `ON` | Bật/tắt biên dịch giao diện Qt 6 UI |
-| `-DVIETFLOW_SEPARATE_RUNTIME=ON\|OFF` | `OFF` | Xuất bản Qt DLLs tách rời thay vì nhúng vào exe |
-| `-DVIETFLOW_PACK_VELOPACK=ON\|OFF` | `OFF` | Bật đóng gói tự động bộ cài Velopack |
-| `-DVIETFLOW_PACK_MSI=ON\|OFF` | `OFF` | Bật tạo file cài đặt `.msi` toàn máy khi đóng gói |
-| `-DCMAKE_PREFIX_PATH=<PATH>` | None | Đường dẫn đến thư mục cài đặt Qt 6 (ví dụ: `C:\Qt\6.8.3\msvc2022_64`) |
-
----
-
-## III. Hướng dẫn thực thi
-
-### 1. Cấu hình môi trường build
 ```powershell
-cmake -B build -S . -DCMAKE_PREFIX_PATH="C:\Qt\6.8.3\msvc2022_64"
-```
-
-### 2. Biên dịch và kiểm thử tự động
-```powershell
-# Chạy toàn bộ 23 unit tests (Core, C ABI, KeyText, Charset codecs, Tone rules)
-cmake --build build --target vietflow_test
-
-# Chỉ biên dịch Rust Core engine (xuất vietflow_core.dll / staticlib)
-cmake --build build --target vietflow_core
-
-# Biên dịch giao diện Qt 6 UI
-cmake --build build --target vietflow-ui --config Release
-```
-
-### 3. Đóng gói phân phối (Distribution)
-
-#### A. Xuất bản phẩm portable thông thường vào `dist/`
-```powershell
-cmake --build build --target dist
-```
-
-#### B. Đóng gói bộ cài tự động cập nhật Velopack (`VietFlow-Setup.exe` & `releases/*.nupkg`)
-```powershell
-cmake --build build --target package_velopack
-```
-
-#### C. Đóng gói bộ cài mở rộng toàn máy MSI (`.msi`)
-```powershell
-cmake --build build --target package_msi
+git submodule update --init --recursive
 ```
 
 ---
 
-## IV. Kiến trúc đa nền tảng (Cross-Platform Architecture)
+## II. Standard Build
 
-1. **`core/` (vietflow-core)**:
-   - Thuần Rust `std`, không phụ thuộc vào bất kỳ thư viện hệ điều hành nào.
-   - Xuất khẩu C ABI ổn định qua [`ffi/vietflow_core.h`](file:///c:/Users/kienp/source/repos/x-unikey-1.0.4/vietflow/ffi/vietflow_core.h).
-2. **`ui/` (Qt 6 / QML)**:
-   - Viết bằng Qt Quick / C++, giao tiếp với lõi xử lý hoàn toàn thông qua C ABI.
-   - Chạy trên tiến trình riêng biệt, có thể chạy trên Windows, Linux (Wayland/X11) và macOS.
-3. **`platforms/` (Native Host Daemons)**:
-   - `platforms/windows`: Host native hook Win32 (`WH_KEYBOARD_LL`), tray icon native, bộ tự động cập nhật Velopack.
-   - Tương lai bổ sung `platforms/linux` (Fcitx5 / IBus addon) và `platforms/macos` (InputMethodKit) mà không cần thay đổi `core/` hay `ui/`.
+```powershell
+# One architecture
+.\scripts\build.ps1 -Arch x64
+.\scripts\build.ps1 -Arch x86
+.\scripts\build.ps1 -Arch arm64
 
+# All three
+.\scripts\build.ps1 -Arch All
+
+# With Velopack installers
+.\scripts\build.ps1 -Arch All -Velopack
+
+# Dynamic CRT (needs VC++ 2015-2022 Redistributable, smaller exe)
+.\scripts\build.ps1 -DynamicCrt
+
+# Skip tests when the target cannot run on this host (ARM64 cross-build)
+.\scripts\build.ps1 -Arch arm64 -SkipTests
+```
+
+The default is static CRT: C++ `/MT` and Rust `+crt-static`. The portable exe does
+not import `VCRUNTIME140` or `MSVCP140`.
+
+Output:
+
+- `dist\VietFlow.exe` / `dist\VietFlow-x64.exe` (x64)
+- `dist\VietFlow-x86.exe` (x86)
+- `dist\VietFlow-arm64.exe` (ARM64)
+- `dist\latest.json`, `dist\version.txt`, `dist\CHANGELOG.md`
+- `releases\VietFlow-win-<arch>-Setup.exe` with `-Velopack`
+
+---
+
+## III. Manual CMake Commands
+
+The build script is the supported path. For a quick UI-only iteration:
+
+```powershell
+cmake -B ui_imgui/build -S ui_imgui -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=ON
+cmake --build ui_imgui/build --config Release
+
+# x86
+cmake -B ui_imgui/build-x86 -S ui_imgui -A Win32 -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=ON
+cmake --build ui_imgui/build-x86 --config Release
+
+# ARM64
+cmake -B ui_imgui/build-arm64 -S ui_imgui -A ARM64 -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=ON
+cmake --build ui_imgui/build-arm64 --config Release
+```
+
+Then:
+
+```powershell
+cargo test --workspace
+cargo build --release -p vietflow-windows
+```
+
+`platforms/windows/build.rs` resolves `ui_imgui/build/`, `build-x86/` or
+`build-arm64/` from the Rust target architecture.
+
+---
+
+## IV. Tests and CI
+
+```powershell
+cargo test --workspace
+```
+
+The GitHub Actions workflow `.github/workflows/build.yml`:
+
+1. runs workspace tests on x64 with the UI library built;
+2. builds x64 and x86 on `windows-latest`;
+3. builds ARM64 on `windows-11-vs2026-arm`;
+4. uploads the portable executables as workflow artifacts.
+
+ARM64 cannot be tested on an x64 host; the ARM64 job is the runtime validation
+for that target.
+
+---
+
+## V. Architecture
+
+1. **`core/` (`vietflow-core`)**:
+   - Pure Rust `std`, no OS dependencies.
+   - Stable C ABI in [`ffi/vietflow_core.h`](../ffi/vietflow_core.h).
+2. **`ui_imgui/`**:
+   - Dear ImGui + DirectX 11, C++20, statically linked into the host.
+   - Configuration client only; it never handles keystrokes.
+3. **`platforms/windows/`**:
+   - Native `WH_KEYBOARD_LL` hook, tray host, config watcher, updater.
+   - Spawns `VietFlow.exe --settings` / `--convert` for the UI, so the hook
+     process never loads DX11/ImGui.
+   - Future Linux/macOS hosts can reuse the core and C ABI without changing the
+     engine.

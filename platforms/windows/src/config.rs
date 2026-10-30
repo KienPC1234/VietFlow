@@ -6,6 +6,20 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+/// Per-application overrides. All fields are optional: `None` means "inherit
+/// the global setting". The map is keyed by executable name.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppProfile {
+    #[serde(default)]
+    pub method: Option<u8>,
+    #[serde(default)]
+    pub charset: Option<u8>,
+    #[serde(default)]
+    pub injection_mode: Option<u8>,
+    #[serde(default)]
+    pub allow_macro: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default = "default_true")]
@@ -28,6 +42,8 @@ pub struct AppConfig {
     pub consonant_shortcuts: bool,
     #[serde(default)]
     pub auto_capitalize: bool,
+    #[serde(default = "default_auto_capitalize_chars")]
+    pub auto_capitalize_chars: String,
     /// Disable Vietnamese input when the foreground window's keyboard layout
     /// is not US (EVKey: "Tắt TV khi Layout bàn phím khác US").
     #[serde(default)]
@@ -36,6 +52,9 @@ pub struct AppConfig {
     pub enable_macro: bool,
     #[serde(default)]
     pub allow_macro_when_disabled: bool,
+    /// 0: Auto, 1: Unicode SendInput, 2: scan-code, 3: clipboard, 4: safe paced.
+    #[serde(default)]
+    pub injection_mode: u8,
     #[serde(default)]
     pub use_clipboard_for_unicode: bool,
     #[serde(default)]
@@ -53,6 +72,8 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub english_keywords: Vec<String>,
+    #[serde(default)]
+    pub english_keywords_removed: Vec<String>,
     #[serde(default = "default_foreign_initials")]
     pub foreign_initials: String,
     #[serde(default = "default_tray_theme")]
@@ -82,12 +103,23 @@ pub struct AppConfig {
 
     #[serde(default = "default_excluded_apps")]
     pub excluded_apps: Vec<String>,
+    /// Lock V/E, settings and converter hotkeys while an excluded app is in
+    /// front. The tray/menu override remains available.
+    #[serde(default = "default_true")]
+    pub lock_hotkeys_in_excluded_apps: bool,
+    #[serde(default)]
+    pub app_profiles: HashMap<String, AppProfile>,
     #[serde(default = "default_macros")]
     pub macros: HashMap<String, String>,
+    #[serde(default)]
+    pub custom_keymap: CustomKeymapConfig,
 }
 
 fn default_true() -> bool {
     true
+}
+fn default_auto_capitalize_chars() -> String {
+    ".!?\r\n".to_string()
 }
 fn default_timeout() -> u64 {
     1500
@@ -115,6 +147,116 @@ fn default_pink() -> String {
 }
 fn default_blue() -> String {
     "#0078D7".to_string()
+}
+
+fn default_acute() -> String { "s".to_string() }
+fn default_grave() -> String { "f".to_string() }
+fn default_hook() -> String { "r".to_string() }
+fn default_tilde() -> String { "x".to_string() }
+fn default_dot() -> String { "j".to_string() }
+fn default_remove_tone() -> String { "z".to_string() }
+fn default_hook_all() -> String { "w".to_string() }
+fn default_empty() -> String { String::new() }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CustomKeymapConfig {
+    #[serde(default = "default_acute")]
+    pub acute: String,
+    #[serde(default = "default_grave")]
+    pub grave: String,
+    #[serde(default = "default_hook")]
+    pub hook: String,
+    #[serde(default = "default_tilde")]
+    pub tilde: String,
+    #[serde(default = "default_dot")]
+    pub dot: String,
+    #[serde(default = "default_remove_tone")]
+    pub remove_tone: String,
+
+    #[serde(default = "default_empty")]
+    pub circumflex: String,
+    #[serde(default = "default_empty")]
+    pub horn: String,
+    #[serde(default = "default_empty")]
+    pub breve: String,
+    #[serde(default = "default_empty")]
+    pub d_mark: String,
+    #[serde(default = "default_hook_all")]
+    pub hook_all: String,
+
+    #[serde(default)]
+    pub roof_a: String,
+    #[serde(default)]
+    pub roof_e: String,
+    #[serde(default)]
+    pub roof_o: String,
+    #[serde(default)]
+    pub horn_o: String,
+    #[serde(default)]
+    pub horn_u: String,
+    #[serde(default)]
+    pub breve_a: String,
+    #[serde(default)]
+    pub d_lower: String,
+
+    #[serde(default = "default_true")]
+    pub telex_double_keys: bool,
+    #[serde(default = "default_true")]
+    pub lone_w: bool,
+}
+
+impl Default for CustomKeymapConfig {
+    fn default() -> Self {
+        Self {
+            acute: default_acute(),
+            grave: default_grave(),
+            hook: default_hook(),
+            tilde: default_tilde(),
+            dot: default_dot(),
+            remove_tone: default_remove_tone(),
+            circumflex: String::new(),
+            horn: String::new(),
+            breve: String::new(),
+            d_mark: String::new(),
+            hook_all: default_hook_all(),
+            roof_a: String::new(),
+            roof_e: String::new(),
+            roof_o: String::new(),
+            horn_o: String::new(),
+            horn_u: String::new(),
+            breve_a: String::new(),
+            d_lower: String::new(),
+            telex_double_keys: true,
+            lone_w: true,
+        }
+    }
+}
+
+impl CustomKeymapConfig {
+    pub fn to_core(&self) -> vietflow_core::CustomKeymap {
+        vietflow_core::CustomKeymap {
+            acute: self.acute.clone(),
+            grave: self.grave.clone(),
+            hook: self.hook.clone(),
+            tilde: self.tilde.clone(),
+            dot: self.dot.clone(),
+            remove_tone: self.remove_tone.clone(),
+            circumflex: self.circumflex.clone(),
+            horn: self.horn.clone(),
+            breve: self.breve.clone(),
+            d_mark: self.d_mark.clone(),
+            hook_all: self.hook_all.clone(),
+            roof_a: self.roof_a.clone(),
+            roof_e: self.roof_e.clone(),
+            roof_o: self.roof_o.clone(),
+            horn_o: self.horn_o.clone(),
+            horn_u: self.horn_u.clone(),
+            breve_a: self.breve_a.clone(),
+            d_lower: self.d_lower.clone(),
+            telex_double_keys: self.telex_double_keys,
+            lone_w: self.lone_w,
+        }
+    }
 }
 
 fn default_excluded_apps() -> Vec<String> {
@@ -151,9 +293,11 @@ impl Default for AppConfig {
             fix_shift_lag: true,
             consonant_shortcuts: false,
             auto_capitalize: false,
+            auto_capitalize_chars: default_auto_capitalize_chars(),
             disable_on_non_us_layout: false,
             enable_macro: true,
             allow_macro_when_disabled: false,
+            injection_mode: 0,
             use_clipboard_for_unicode: false,
             start_with_windows: false,
             notification_sound: false,
@@ -162,6 +306,7 @@ impl Default for AppConfig {
             hotkey_settings: default_hotkey_settings(),
             hotkey_converter: default_hotkey_converter(),
             english_keywords: Vec::new(),
+            english_keywords_removed: Vec::new(),
             foreign_initials: default_foreign_initials(),
             tray_icon_theme: default_tray_theme(),
             custom_icon_v: String::new(),
@@ -175,7 +320,10 @@ impl Default for AppConfig {
             tray_icon_e_border: true,
             tray_icon_e_border_color: default_blue(),
             excluded_apps: default_excluded_apps(),
+            lock_hotkeys_in_excluded_apps: true,
+            app_profiles: HashMap::new(),
             macros: default_macros(),
+            custom_keymap: CustomKeymapConfig::default(),
         }
     }
 }
@@ -184,12 +332,12 @@ impl AppConfig {
     pub fn config_path() -> PathBuf {
         if let Ok(appdata) = std::env::var("APPDATA") {
             let mut p = PathBuf::from(appdata);
-            p.push("VietFlow");
+            p.push(crate::constants::APP_DIR_NAME);
             let _ = fs::create_dir_all(&p);
-            p.push("vietflow_config.json");
+            p.push(crate::constants::CONFIG_FILE_NAME);
             return p;
         }
-        PathBuf::from("vietflow_config.json")
+        PathBuf::from(crate::constants::CONFIG_FILE_NAME)
     }
 
     pub fn load() -> Self {
@@ -223,6 +371,18 @@ impl AppConfig {
         words
     }
 
+    pub fn normalized_removed_english_keywords(&self) -> Vec<String> {
+        let mut words: Vec<String> = self
+            .english_keywords_removed
+            .iter()
+            .map(|word| word.trim().to_ascii_lowercase())
+            .filter(|word| !word.is_empty())
+            .collect();
+        words.sort();
+        words.dedup();
+        words
+    }
+
     pub fn normalized_foreign_initials(&self) -> Vec<char> {
         let mut initials = Vec::new();
         for c in self.foreign_initials.chars().filter(|c| c.is_alphabetic()) {
@@ -239,5 +399,37 @@ impl AppConfig {
         } else {
             initials
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_profile_overrides_and_hotkey_lock() {
+        let config: AppConfig = serde_json::from_str(
+            r#"{
+                "lock_hotkeys_in_excluded_apps": false,
+                "injection_mode": 3,
+                "auto_capitalize_chars": "。\n",
+                "app_profiles": {
+                    "Code.exe": { "injection_mode": 3, "allow_macro": true },
+                    "cs2": { "method": 1, "charset": 2 }
+                }
+            }"#,
+        )
+        .expect("config must parse");
+
+        assert!(!config.lock_hotkeys_in_excluded_apps);
+        assert_eq!(config.injection_mode, 3);
+        assert_eq!(config.auto_capitalize_chars, "。\n");
+        let code = config.app_profiles.get("Code.exe").unwrap();
+        assert_eq!(code.injection_mode, Some(3));
+        assert_eq!(code.allow_macro, Some(true));
+        assert_eq!(code.method, None);
+        let cs2 = config.app_profiles.get("cs2").unwrap();
+        assert_eq!(cs2.method, Some(1));
+        assert_eq!(cs2.charset, Some(2));
     }
 }

@@ -2,7 +2,8 @@
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
 use std::ffi::c_void;
-use crate::converter::{convert_charset, strip_accents};
+use crate::converter::{convert_charset, convert_charset_bytes, strip_accents};
+use crate::english::default_english_keywords;
 use crate::engine::VietFlowEngine;
 use crate::models::{CharsetId, InputMethod};
 
@@ -50,6 +51,32 @@ pub unsafe extern "C" fn vf_convert_charset(
     converted.len()
 }
 
+/// Convert raw bytes between Unicode, TCVN3 and VNI Windows. Unlike
+/// `vf_convert_charset`, this function does not require UTF-8 input and returns
+/// the raw bytes expected by legacy applications. Same size-query contract.
+#[no_mangle]
+pub unsafe extern "C" fn vf_convert_charset_bytes(
+    input: *const u8,
+    input_len: usize,
+    source: u8,
+    target: u8,
+    out: *mut u8,
+    out_cap: usize,
+) -> usize {
+    if input.is_null() {
+        return 0;
+    }
+    let bytes = std::slice::from_raw_parts(input, input_len);
+    let converted = convert_charset_bytes(bytes, charset_from_id(source), charset_from_id(target));
+
+    if !out.is_null() && out_cap > 0 {
+        let to_write = converted.len().min(out_cap);
+        std::ptr::copy_nonoverlapping(converted.as_ptr(), out, to_write);
+    }
+
+    converted.len()
+}
+
 /// Strip Vietnamese diacritics from a UTF-8 string (same size-query contract as
 /// `vf_convert_charset`).
 #[no_mangle]
@@ -77,6 +104,23 @@ pub unsafe extern "C" fn vf_strip_accents(
     }
 
     stripped.len()
+}
+
+/// Newline-separated default English keyword list (UTF-8). Same size-query
+/// contract as `vf_convert_charset`, so the settings UI can fetch it for the
+/// keyword editor without duplicating the list in C++.
+#[no_mangle]
+pub unsafe extern "C" fn vf_english_keywords(out: *mut u8, out_cap: usize) -> usize {
+    let mut text = default_english_keywords().join("\n");
+    text.push('\n');
+    let bytes = text.as_bytes();
+
+    if !out.is_null() && out_cap > 0 {
+        let to_write = bytes.len().min(out_cap);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, to_write);
+    }
+
+    bytes.len()
 }
 
 #[no_mangle]
@@ -109,6 +153,7 @@ pub unsafe extern "C" fn vf_engine_set_method(engine: *mut c_void, method: u8) {
             3 => InputMethod::SimpleTelex,
             4 => InputMethod::TelexSimple2,
             5 => InputMethod::TelexVni,
+            6 => InputMethod::UserCustom,
             _ => InputMethod::Telex,
         };
         engine.reset();
@@ -234,6 +279,49 @@ mod tests {
             let roundtrip = convert_via_abi(&via_abi, 2, 0);
             assert_eq!(roundtrip, text);
         }
+    }
+
+    #[test]
+    fn raw_charset_conversion_roundtrip() {
+        let text = "tiếng việt";
+        let tcvn3 = convert_charset_bytes(text.as_bytes(), CharsetId::Unicode, CharsetId::Tcvn3);
+        assert!(tcvn3.iter().any(|byte| *byte > 0x7F));
+        let back = convert_charset_bytes(&tcvn3, CharsetId::Tcvn3, CharsetId::Unicode);
+        assert_eq!(String::from_utf8(back).unwrap(), text);
+
+        let vni = convert_charset_bytes(text.as_bytes(), CharsetId::Unicode, CharsetId::VniWindows);
+        assert!(vni.iter().any(|byte| *byte > 0x7F));
+        let back = convert_charset_bytes(&vni, CharsetId::VniWindows, CharsetId::Unicode);
+        assert_eq!(String::from_utf8(back).unwrap(), text);
+    }
+
+    #[test]
+    fn raw_charset_abi_size_query() {
+        let text = "Việt";
+        let input = text.as_bytes();
+        let needed = unsafe {
+            vf_convert_charset_bytes(
+                input.as_ptr(),
+                input.len(),
+                0,
+                2,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        assert!(needed > 0);
+        let mut output = vec![0u8; needed];
+        let written = unsafe {
+            vf_convert_charset_bytes(
+                input.as_ptr(),
+                input.len(),
+                0,
+                2,
+                output.as_mut_ptr(),
+                output.len(),
+            )
+        };
+        assert_eq!(written, needed);
     }
 
     #[test]

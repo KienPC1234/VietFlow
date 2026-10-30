@@ -1,5 +1,8 @@
 #include "config.h"
+#include "constants.h"
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <filesystem>
 #include <windows.h>
@@ -9,18 +12,32 @@ namespace vietflow {
 
 using json = nlohmann::json;
 
+static void NormalizeWordList(std::vector<std::string>& words) {
+    for (auto& word : words) {
+        std::string normalized;
+        normalized.reserve(word.size());
+        for (unsigned char c : word) {
+            if (!std::isspace(c)) normalized.push_back((char)std::tolower(c));
+        }
+        word = std::move(normalized);
+    }
+    words.erase(std::remove(words.begin(), words.end(), std::string()), words.end());
+    std::sort(words.begin(), words.end());
+    words.erase(std::unique(words.begin(), words.end()), words.end());
+}
+
 std::string Config::GetDefaultConfigPath() {
     wchar_t path[MAX_PATH];
     if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, path))) {
         std::wstring ws(path);
         std::filesystem::path p(ws);
-        p /= "VietFlow";
+        p /= APP_DIR_NAME;
         std::filesystem::create_directories(p);
         // Must match platforms/windows/src/config.rs::AppConfig::config_path().
-        p /= "vietflow_config.json";
+        p /= CONFIG_FILE_NAME;
         return p.string();
     }
-    return "vietflow_config.json";
+    return CONFIG_FILE_NAME;
 }
 
 bool Config::Load(const std::string& custom_path) {
@@ -42,9 +59,11 @@ bool Config::Load(const std::string& custom_path) {
         fix_shift_lag = j.value("fix_shift_lag", fix_shift_lag);
         consonant_shortcuts = j.value("consonant_shortcuts", consonant_shortcuts);
         auto_capitalize = j.value("auto_capitalize", auto_capitalize);
+        auto_capitalize_chars = j.value("auto_capitalize_chars", auto_capitalize_chars);
         disable_on_non_us_layout = j.value("disable_on_non_us_layout", disable_on_non_us_layout);
         enable_macro = j.value("enable_macro", enable_macro);
         allow_macro_when_disabled = j.value("allow_macro_when_disabled", allow_macro_when_disabled);
+        injection_mode = j.value("injection_mode", injection_mode);
         use_clipboard_for_unicode = j.value("use_clipboard_for_unicode", use_clipboard_for_unicode);
         start_with_windows = j.value("start_with_windows", start_with_windows);
         notification_sound = j.value("notification_sound", notification_sound);
@@ -56,6 +75,11 @@ bool Config::Load(const std::string& custom_path) {
         if (j.contains("english_keywords") && j["english_keywords"].is_array()) {
             english_keywords = j["english_keywords"].get<std::vector<std::string>>();
         }
+        if (j.contains("english_keywords_removed") && j["english_keywords_removed"].is_array()) {
+            english_keywords_removed = j["english_keywords_removed"].get<std::vector<std::string>>();
+        }
+        NormalizeWordList(english_keywords);
+        NormalizeWordList(english_keywords_removed);
         foreign_initials = j.value("foreign_initials", foreign_initials);
         tray_icon_theme = j.value("tray_icon_theme", tray_icon_theme);
         custom_icon_v = j.value("custom_icon_v", custom_icon_v);
@@ -74,8 +98,47 @@ bool Config::Load(const std::string& custom_path) {
         if (j.contains("excluded_apps") && j["excluded_apps"].is_array()) {
             excluded_apps = j["excluded_apps"].get<std::vector<std::string>>();
         }
+        lock_hotkeys_in_excluded_apps = j.value("lock_hotkeys_in_excluded_apps", lock_hotkeys_in_excluded_apps);
+        if (j.contains("app_profiles") && j["app_profiles"].is_object()) {
+            app_profiles.clear();
+            for (const auto& [name, value] : j["app_profiles"].items()) {
+                if (!value.is_object()) continue;
+                AppProfile profile;
+                if (value.contains("method") && !value["method"].is_null()) profile.method = value["method"];
+                if (value.contains("charset") && !value["charset"].is_null()) profile.charset = value["charset"];
+                if (value.contains("injection_mode") && !value["injection_mode"].is_null()) profile.injection_mode = value["injection_mode"];
+                if (value.contains("allow_macro") && !value["allow_macro"].is_null()) profile.allow_macro = value["allow_macro"].get<bool>() ? 1 : 0;
+                app_profiles[name] = profile;
+            }
+        }
         if (j.contains("macros") && j["macros"].is_object()) {
             macros = j["macros"].get<std::map<std::string, std::string>>();
+        }
+        if (j.contains("custom_keymap") && j["custom_keymap"].is_object()) {
+            const auto& ck = j["custom_keymap"];
+            custom_keymap.acute = ck.value("acute", custom_keymap.acute);
+            custom_keymap.grave = ck.value("grave", custom_keymap.grave);
+            custom_keymap.hook = ck.value("hook", custom_keymap.hook);
+            custom_keymap.tilde = ck.value("tilde", custom_keymap.tilde);
+            custom_keymap.dot = ck.value("dot", custom_keymap.dot);
+            custom_keymap.remove_tone = ck.value("remove_tone", custom_keymap.remove_tone);
+
+            custom_keymap.circumflex = ck.value("circumflex", custom_keymap.circumflex);
+            custom_keymap.horn = ck.value("horn", custom_keymap.horn);
+            custom_keymap.breve = ck.value("breve", custom_keymap.breve);
+            custom_keymap.d_mark = ck.value("d_mark", custom_keymap.d_mark);
+            custom_keymap.hook_all = ck.value("hook_all", custom_keymap.hook_all);
+
+            custom_keymap.roof_a = ck.value("roof_a", custom_keymap.roof_a);
+            custom_keymap.roof_e = ck.value("roof_e", custom_keymap.roof_e);
+            custom_keymap.roof_o = ck.value("roof_o", custom_keymap.roof_o);
+            custom_keymap.horn_o = ck.value("horn_o", custom_keymap.horn_o);
+            custom_keymap.horn_u = ck.value("horn_u", custom_keymap.horn_u);
+            custom_keymap.breve_a = ck.value("breve_a", custom_keymap.breve_a);
+            custom_keymap.d_lower = ck.value("d_lower", custom_keymap.d_lower);
+
+            custom_keymap.telex_double_keys = ck.value("telex_double_keys", custom_keymap.telex_double_keys);
+            custom_keymap.lone_w = ck.value("lone_w", custom_keymap.lone_w);
         }
         return true;
     } catch (...) {
@@ -102,9 +165,11 @@ bool Config::Save(const std::string& custom_path) const {
         j["fix_shift_lag"] = fix_shift_lag;
         j["consonant_shortcuts"] = consonant_shortcuts;
         j["auto_capitalize"] = auto_capitalize;
+        j["auto_capitalize_chars"] = auto_capitalize_chars;
         j["disable_on_non_us_layout"] = disable_on_non_us_layout;
         j["enable_macro"] = enable_macro;
         j["allow_macro_when_disabled"] = allow_macro_when_disabled;
+        j["injection_mode"] = injection_mode;
         j["use_clipboard_for_unicode"] = use_clipboard_for_unicode;
         j["start_with_windows"] = start_with_windows;
         j["notification_sound"] = notification_sound;
@@ -114,6 +179,7 @@ bool Config::Save(const std::string& custom_path) const {
         j["hotkey_converter"] = hotkey_converter;
 
         j["english_keywords"] = english_keywords;
+        j["english_keywords_removed"] = english_keywords_removed;
         j["foreign_initials"] = foreign_initials;
         j["tray_icon_theme"] = tray_icon_theme;
         j["custom_icon_v"] = custom_icon_v;
@@ -130,7 +196,45 @@ bool Config::Save(const std::string& custom_path) const {
         j["tray_icon_e_border_color"] = tray_icon_e_border_color;
 
         j["excluded_apps"] = excluded_apps;
+        j["lock_hotkeys_in_excluded_apps"] = lock_hotkeys_in_excluded_apps;
+
+        json profiles = json::object();
+        for (const auto& [name, profile] : app_profiles) {
+            json p = json::object();
+            if (profile.method >= 0) p["method"] = profile.method;
+            if (profile.charset >= 0) p["charset"] = profile.charset;
+            if (profile.injection_mode >= 0) p["injection_mode"] = profile.injection_mode;
+            if (profile.allow_macro >= 0) p["allow_macro"] = profile.allow_macro != 0;
+            profiles[name] = p;
+        }
+        j["app_profiles"] = profiles;
         j["macros"] = macros;
+
+        json ck;
+        ck["acute"] = custom_keymap.acute;
+        ck["grave"] = custom_keymap.grave;
+        ck["hook"] = custom_keymap.hook;
+        ck["tilde"] = custom_keymap.tilde;
+        ck["dot"] = custom_keymap.dot;
+        ck["remove_tone"] = custom_keymap.remove_tone;
+
+        ck["circumflex"] = custom_keymap.circumflex;
+        ck["horn"] = custom_keymap.horn;
+        ck["breve"] = custom_keymap.breve;
+        ck["d_mark"] = custom_keymap.d_mark;
+        ck["hook_all"] = custom_keymap.hook_all;
+
+        ck["roof_a"] = custom_keymap.roof_a;
+        ck["roof_e"] = custom_keymap.roof_e;
+        ck["roof_o"] = custom_keymap.roof_o;
+        ck["horn_o"] = custom_keymap.horn_o;
+        ck["horn_u"] = custom_keymap.horn_u;
+        ck["breve_a"] = custom_keymap.breve_a;
+        ck["d_lower"] = custom_keymap.d_lower;
+
+        ck["telex_double_keys"] = custom_keymap.telex_double_keys;
+        ck["lone_w"] = custom_keymap.lone_w;
+        j["custom_keymap"] = ck;
 
         std::ofstream file(path);
         if (!file.is_open()) return false;

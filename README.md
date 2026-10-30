@@ -1,16 +1,22 @@
 # VietFlow
 
-A fast Vietnamese input method for Windows. The engine and keyboard hook are written in Rust; the settings UI is a separate Dear ImGui + DirectX 11 process.
+A native Windows Vietnamese input method. The engine and keyboard hook are Rust; the settings UI is a separate Dear ImGui + DirectX 11 process.
 
 Repository: [https://github.com/KienPC1234/VietFlow](https://github.com/KienPC1234/VietFlow)
 
-## Features
+## Why VietFlow
 
-- Native `WH_KEYBOARD_LL` hook. The UI runs in a separate process and is never loaded into the hook.
-- Per-app exclusion list: switches to English `[E]` for games, IDEs and graphics tools, then restores `[V]` when focus leaves.
-- High-DPI tray icons with optional custom `.ico` / `.png` files.
-- English word detection (226 keywords) to avoid unwanted Vietnamese marks.
-- On-demand update check: reads `latest.json` from GitHub Releases, shows the changelog and opens the download page. No background polling.
+These are the parts that address common complaints about classic UniKey: accidental hotkeys in games, a fixed English list, 32-bit installs and low-DPI settings.
+
+- VietFlow disables the global shortcuts in apps on the exclusion list, so Ctrl+Shift in a game cannot switch V/E. The tray icon and its menu still change the language by hand. The lock is a checkbox if you want shortcuts back.
+- Each app can override the typing method, charset, key-injection mode and macro permission. Available modes are Unicode, scan-code, clipboard and a slower safe mode for games, Chromium apps and remote sessions.
+- The default English list leaves out short words that are also Vietnamese keystrokes (`test`, `reset`, `me`). A searchable popup adds or removes any keyword, including the defaults.
+- The converter uses the Rust engine for Unicode, TCVN3 and VNI text, including raw-byte clipboard input and output. Macros can be imported and exported as TSV, CSV or `trigger=value` lines.
+- Builds for x64, x86 and ARM64 use the static MSVC runtime, so the target machine does not need the VC++ Redistributable.
+- The UI scales per monitor from 100% to 200%; tabs, preset buttons, popups and dialogs fit at the minimum window width.
+- Press a shortcut to record the settings or converter hotkey. You can also type it by hand.
+- The update check runs only when you ask. It reads a release manifest with the changelog and separate x64/x86 installers.
+- The engine supports Telex, VNI and VIQR, modern tone placement, free marking, macros with `@date`, `@time` and `@clipboard`, and custom tray icons.
 
 ## Layout
 
@@ -28,7 +34,7 @@ Cargo.toml             Rust workspace
 
 Requirements:
 
-- Rust 1.75+ (`x86_64-pc-windows-msvc`)
+- Rust 1.75+ (`x86_64-pc-windows-msvc`; add `i686-pc-windows-msvc` and `aarch64-pc-windows-msvc` for the other architectures)
 - CMake 3.20+ and Visual Studio Build Tools (Desktop development with C++)
 - Git
 - Optional: .NET SDK and Velopack CLI (`dotnet tool install -g vpk`) only for installer packaging
@@ -48,11 +54,14 @@ Build commands:
 ```powershell
 cargo test --manifest-path Cargo.toml
 
-# Default: x64, static MSVC runtime (~1.51 MB)
+# Default: x64, static MSVC runtime (~1.6 MB)
 .\scripts\build.ps1
 
-# Both x64 and x86, with Velopack installers
+# x64, x86 and ARM64, with Velopack installers
 .\scripts\build.ps1 -Arch All -Velopack
+
+# One architecture
+.\scripts\build.ps1 -Arch arm64
 
 # Also create installers for the current architecture
 .\scripts\build.ps1 -Velopack
@@ -61,24 +70,15 @@ cargo test --manifest-path Cargo.toml
 .\scripts\build.ps1 -DynamicCrt
 ```
 
-Output: `dist\VietFlow.exe` (x64), `dist\VietFlow-x86.exe` (x86), plus `dist\latest.json`, `dist\version.txt` and `dist\CHANGELOG.md`. With `-Velopack`, installers are written to `releases\` as `VietFlow-win-x64-Setup.exe` and `VietFlow-win-x86-Setup.exe`. The default static build imports neither `VCRUNTIME140` nor `MSVCP140`.
+Output: `dist\VietFlow.exe` (x64), `dist\VietFlow-x86.exe` (x86), `dist\VietFlow-arm64.exe` (ARM64), plus `dist\latest.json`, `dist\version.txt` and `dist\CHANGELOG.md`. With `-Velopack`, installers are written to `releases\` as `VietFlow-win-x64-Setup.exe`, `VietFlow-win-x86-Setup.exe` and `VietFlow-win-arm64-Setup.exe`. The default static build imports neither `VCRUNTIME140` nor `MSVCP140`.
 
 ## Release
 
-Releases are published only for a feature milestone, a breaking change or a critical security fix. Small bug fixes are batched for the next milestone.
+Releases are published only for a feature milestone, a breaking change or a critical security fix. Small fixes wait for the next milestone.
 
-`VERSION` and `CHANGELOG.md` are the single source of truth. `build.ps1` syncs the `Cargo.toml` version and generates `dist\version.txt`, `dist\latest.json`, and a copy of `CHANGELOG.md`.
-
-1. Bump `VERSION` and add a section for that version to `CHANGELOG.md`.
-2. Run `.\scripts\build.ps1 -Arch All -Velopack`.
-3. Create and publish a GitHub release tagged `v<VERSION>`.
-4. Upload the x64/x86 executables and installers, plus `latest.json`, `version.txt` and `CHANGELOG.md`.
-
-The updater tries `releases/latest/download/latest.json`, then `version.txt`, then the GitHub API. `latest.json.downloads.x64` / `downloads.x86` point at the matching installer, and `latest.json.notes` is the changelog shown in the update dialog.
-
-`scripts/publish-release.ps1` creates the GitHub release and uploads the executables, installers and metadata using the stored Git credential.
+`VERSION` and `CHANGELOG.md` are the single source of truth. Run `.\scripts\build.ps1 -Arch All -Velopack` to build the executables and installers. See [docs/RELEASING.md](docs/RELEASING.md) for the asset and updater checklist.
 
 ## License
 
-Released under the **GNU General Public License v3.0 (GPLv3)**.
+Released under the GNU General Public License v3.0 (GPLv3).
 The Vietnamese input algorithm is derived from UniKey (Pham Kim Long).

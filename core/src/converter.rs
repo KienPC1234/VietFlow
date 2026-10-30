@@ -34,6 +34,107 @@ pub fn strip_accents(text: &str) -> String {
     result
 }
 
+/// Decode raw bytes in a legacy charset into Unicode text. This is the inverse
+/// of the byte-oriented encoder below and is used by the clipboard converter,
+/// where TCVN3/VNI content is not valid UTF-8.
+fn decode_source_bytes(input: &[u8], source: CharsetId) -> String {
+    match source {
+        CharsetId::Tcvn3 => {
+            let mut out = String::with_capacity(input.len());
+            for &byte in input {
+                if let Some(mut idx) = TCVN3_TABLE.iter().position(|&x| x == byte) {
+                    if idx & 1 == 0
+                        && idx + 1 < TOTAL_VN_CHARS
+                        && TCVN3_TABLE[idx + 1] == byte
+                    {
+                        idx += 1;
+                    }
+                    out.push(UNICODE_TABLE[idx]);
+                } else {
+                    out.push(char::from(byte));
+                }
+            }
+            out
+        }
+        CharsetId::VniWindows => {
+            let mut out = String::with_capacity(input.len());
+            let mut i = 0;
+            while i < input.len() {
+                let byte = input[i];
+                if i + 1 < input.len() {
+                    let pair = ((input[i + 1] as u16) << 8) | (byte as u16);
+                    if let Some(idx) = VNI_WIN_TABLE.iter().position(|&x| x == pair) {
+                        out.push(UNICODE_TABLE[idx]);
+                        i += 2;
+                        continue;
+                    }
+                }
+                if let Some(idx) = VNI_WIN_TABLE
+                    .iter()
+                    .position(|&x| (x & 0xFF) == byte as u16 && (x >> 8) == 0 && byte > 127)
+                {
+                    out.push(UNICODE_TABLE[idx]);
+                } else {
+                    out.push(char::from(byte));
+                }
+                i += 1;
+            }
+            out
+        }
+        _ => String::from_utf8_lossy(input).into_owned(),
+    }
+}
+
+/// Encode Unicode text as raw bytes for legacy charsets. Unicode and Unicode
+/// Composite remain UTF-8; TCVN3 and VNI Windows return the bytes applications
+/// using those charsets actually expect.
+pub fn convert_charset_bytes(input: &[u8], source: CharsetId, target: CharsetId) -> Vec<u8> {
+    let unicode = decode_source_bytes(input, source);
+    match target {
+        CharsetId::Tcvn3 => {
+            let mut out = Vec::with_capacity(unicode.len());
+            for c in unicode.chars() {
+                if let Some(idx) = UNICODE_TABLE.iter().position(|&x| x == c) {
+                    if idx < TOTAL_VN_CHARS {
+                        out.push(TCVN3_TABLE[idx]);
+                        continue;
+                    }
+                }
+                if (c as u32) <= 0x7F {
+                    out.push(c as u8);
+                } else {
+                    let mut buf = [0u8; 4];
+                    out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                }
+            }
+            out
+        }
+        CharsetId::VniWindows => {
+            let mut out = Vec::with_capacity(unicode.len() * 2);
+            for c in unicode.chars() {
+                if let Some(idx) = UNICODE_TABLE.iter().position(|&x| x == c) {
+                    if idx < TOTAL_VN_CHARS {
+                        let word = VNI_WIN_TABLE[idx];
+                        out.push((word & 0xFF) as u8);
+                        if (word >> 8) != 0 {
+                            out.push((word >> 8) as u8);
+                        }
+                        continue;
+                    }
+                }
+                if (c as u32) <= 0x7F {
+                    out.push(c as u8);
+                } else {
+                    let mut buf = [0u8; 4];
+                    out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                }
+            }
+            out
+        }
+        _ => convert_charset(&unicode, CharsetId::Unicode, target).into_bytes(),
+    }
+}
+
 pub fn convert_charset(text: &str, source: CharsetId, target: CharsetId) -> String {
     if text.is_empty() || source == target {
         return text.to_string();
