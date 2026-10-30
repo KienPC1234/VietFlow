@@ -20,7 +20,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -60,7 +60,7 @@ jobs:
             runner: windows-11-vs2026-arm
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -79,7 +79,7 @@ jobs:
         run: ./scripts/build.ps1 -Arch ${{ matrix.arch }} -SkipTests
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: VietFlow-${{ matrix.arch }}
           path: |
