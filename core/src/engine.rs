@@ -1194,13 +1194,11 @@ impl VietFlowEngine {
             return false;
         }
 
+        // Only compare the raw key sequence. Comparing the buffer base would
+        // treat Vietnamese words such as "mẹ" (raw "mej", base "me") as the
+        // English word "me" and skip the tone restoration.
         let raw_str: String = self.raw_chars.iter().map(|&c| to_lower_ascii(c)).collect();
         if self.matches_english_keyword(&raw_str) {
-            return false;
-        }
-
-        let buf_str: String = self.buffer.iter().map(|s| to_lower_ascii(s.raw_char)).collect();
-        if self.matches_english_keyword(&buf_str) {
             return false;
         }
 

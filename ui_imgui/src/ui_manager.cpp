@@ -44,7 +44,7 @@ static std::vector<RunningApp> GetRunningApps() {
                 std::string exe = fp.filename().string();
                 std::transform(exe.begin(), exe.end(), exe.begin(), ::tolower);
 
-                if (exe != "explorer.exe" && exe != "vietflow.exe" && exe != "taskmgr.exe") {
+                if (exe != "explorer.exe" && exe != "taskmgr.exe") {
                     auto* map_ptr = reinterpret_cast<std::map<std::string, std::string>*>(lParam);
                     if (map_ptr->find(exe) == map_ptr->end()) {
                         int u8len = WideCharToMultiByte(CP_UTF8, 0, title, -1, nullptr, 0, nullptr, nullptr);

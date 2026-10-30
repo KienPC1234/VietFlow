@@ -86,7 +86,7 @@ pub extern "C" fn vf_play_notification_sound() {
 
 use crate::config::AppConfig;
 use crate::inject::{send_atomic_batch, VIETFLOW_MAGIC};
-use crate::process::{get_process_name_for_window, is_app_excluded, is_self_process};
+use crate::process::{get_process_name_for_window, is_app_excluded};
 use crate::startup::set_start_with_windows;
 use crate::tray::{to_wide, WM_CONVERT, WM_SETTINGS, WM_TRAYICON};
 
@@ -298,8 +298,7 @@ pub unsafe fn check_foreground_change(foreground: HWND) {
     state.reset_display_shadow();
 
     let proc_name = get_process_name_for_window(foreground);
-    let excluded = is_app_excluded(proc_name.as_deref(), &state.config.excluded_apps)
-        || is_self_process(proc_name.as_deref());
+    let excluded = is_app_excluded(proc_name.as_deref(), &state.config.excluded_apps);
     let non_us = state.config.disable_on_non_us_layout && is_non_us_layout(foreground);
 
     if excluded != state.is_foreground_excluded || non_us != state.non_us_layout {
@@ -356,8 +355,7 @@ pub unsafe fn apply_config(config: AppConfig) {
     if !foreground.is_null() {
         let proc_name = get_process_name_for_window(foreground);
         state.is_foreground_excluded =
-            is_app_excluded(proc_name.as_deref(), &config.excluded_apps)
-                || is_self_process(proc_name.as_deref());
+            is_app_excluded(proc_name.as_deref(), &config.excluded_apps);
     }
 
     state.non_us_layout = non_us;
@@ -408,8 +406,7 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
 
     let initial_foreground = GetForegroundWindow();
     let initial_proc = get_process_name_for_window(initial_foreground);
-    let initial_excluded = is_app_excluded(initial_proc.as_deref(), &config.excluded_apps)
-        || is_self_process(initial_proc.as_deref());
+    let initial_excluded = is_app_excluded(initial_proc.as_deref(), &config.excluded_apps);
     let initial_non_us = config.disable_on_non_us_layout && is_non_us_layout(initial_foreground);
 
     // Keep the Run key in sync even when the daemon starts after the UI saved

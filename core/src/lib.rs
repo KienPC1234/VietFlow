@@ -488,6 +488,72 @@ mod tests {
         assert!(is_english_keyword("reddit"));
         assert!(is_english_keyword("custom"));
         assert!(is_english_keyword("requires"));
+        assert!(is_english_keyword("test"));
+        assert!(is_english_keyword("reset"));
+        assert!(is_english_keyword("work"));
+        assert!(is_english_keyword("the"));
         assert!(!is_english_keyword("tieng"));
+    }
+
+    #[test]
+    fn test_common_english_habit_words() {
+        let mut engine = VietFlowEngine::default();
+        let cases = [
+            ("test ", "test "),
+            ("reset ", "reset "),
+            ("work ", "work "),
+            ("the ", "the "),
+            ("was ", "was "),
+            ("hello ", "hello "),
+            ("server ", "server "),
+            ("ko ", "ko "),
+            ("dc ", "dc "),
+        ];
+        for (input, expected) in cases {
+            engine.reset();
+            let actual = process_string(&mut engine, input);
+            assert_eq!(actual, expected, "Failed English habit word: {input}");
+        }
+    }
+
+    #[test]
+    fn test_mixed_english_sentences() {
+        let mut engine = VietFlowEngine::default();
+        let cases = [
+            ("this is a test ", "this is a test "),
+            ("the server is reset ", "the server is reset "),
+            ("file nayf ", "file này "),
+            ("code bij looix ", "code bị lỗi "),
+            ("push leen ", "push lên "),
+            ("pull veef ", "pull về "),
+        ];
+        for (input, expected) in cases {
+            engine.reset();
+            let actual = process_string(&mut engine, input);
+            assert_eq!(actual, expected, "Failed mixed sentence: {input}");
+        }
+    }
+
+    #[test]
+    fn test_common_vietnamese_words() {
+        let mut engine = VietFlowEngine::default();
+        let cases = [
+            ("thuoocs", "thuốc"),
+            ("ruowuj", "rượu"),
+            ("khuyur", "khuỷu"),
+            ("thuyeefn", "thuyền"),
+            ("quyeenf", "quyền"),
+            ("ngoaif", "ngoài"),
+            ("thoair", "thoải"),
+            ("quyr", "quỷ"),
+            ("giuwx", "giữ"),
+            ("duyeetj", "duyệt"),
+            ("khuyeen", "khuyên"),
+        ];
+        for (input, expected) in cases {
+            engine.reset();
+            let actual = process_string(&mut engine, input);
+            assert_eq!(actual, expected, "Failed common word: {input}");
+        }
     }
 }

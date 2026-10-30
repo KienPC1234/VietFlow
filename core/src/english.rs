@@ -27,8 +27,28 @@ pub static ENGLISH_KEYWORDS: &[&str] = &[
     "witness", "wood", "wool", "worst", "yield", "zoom",
 ];
 
+/// Everyday English words that are also valid unmarked Vietnamese syllables.
+/// Kept as a separate linear list because adding them to the sorted technical
+/// list would be error-prone; this is only queried at word boundaries.
+pub static COMMON_ENGLISH: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "best", "box", "bring", "but", "by",
+    "can", "cast", "cost", "dark", "desk", "disk", "do", "end", "fast", "fix", "for",
+    "game", "get", "go", "he", "help", "hen", "her", "here", "hi", "his", "home",
+    "host", "how", "i", "if", "in", "is", "it", "its", "just", "king", "last", "let",
+    "life", "like", "line", "link", "list", "live", "long", "lost", "love", "mark",
+    "mask", "max", "me", "men", "mix", "more", "most", "move", "must", "my", "name",
+    "nest", "net", "next", "no", "not", "now", "of", "on", "one", "or", "our", "out",
+    "park", "pen", "pet", "ping", "post", "rank", "red", "reset", "rest", "ring",
+    "risk", "same", "say", "see", "send", "set", "she", "sing", "six", "so", "some",
+    "song", "strong", "task", "tax", "ten", "test", "than", "thank", "that", "the",
+    "their", "them", "then", "there", "these", "they", "thing", "think", "this",
+    "time", "to", "up", "us", "want", "was", "we", "went", "were", "west", "what",
+    "when", "where", "which", "who", "why", "will", "wing", "with", "word", "work",
+    "world", "yes", "yet", "you", "your",
+];
+
 pub fn is_english_keyword(s: &str) -> bool {
-    ENGLISH_KEYWORDS.binary_search(&s).is_ok()
+    ENGLISH_KEYWORDS.binary_search(&s).is_ok() || COMMON_ENGLISH.contains(&s)
 }
 
 use crate::models::VnLexiName;

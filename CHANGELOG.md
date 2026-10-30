@@ -10,14 +10,17 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
 - Phím tắt riêng cho mở bảng điều khiển và mở công cụ chuyển mã (mặc định `Ctrl + Shift + F5` / `Ctrl + Shift + F9`).
 - Hướng dẫn ngắn ở trang Gõ tắt và Chuyển mã.
-- Tự loại trừ chính VietFlow để không gõ tiếng Việt trong cửa sổ cài đặt.
+- Không tự loại trừ cửa sổ VietFlow, để người dùng soạn macro/nguồn chuyển mã ngay trong app.
 
 ### Fixed
 
 - Undo bằng cách bấm đúp `[`, `]`, `{`, `}` (trước đây thành `ơơ`, `ưư`, `ƠƠ`, `ƯƯ`).
+- Tone undo khôi phục đúng chuỗi gốc (`owss` → `ows`, `[ss` → `[s`), không còn `ơs`/`ưs`.
+- Mở rộng từ tiếng Anh thông dụng (`test`, `reset`, `work`, `the`...) và chỉ đối chiếu chuỗi phím gốc, tránh nhầm `mẹ` thành `me`.
 - Nút "Phát âm thanh" phát thử khi bật và dùng PlaySoundW/MessageBeep ổn định hơn; mặc định tắt.
 - "Khởi động cùng Windows" được áp dụng ngay cả khi daemon khởi động sau khi UI đã lưu.
 - Bố cục cửa sổ hẹp: tab không bị rút ngắn/ellipsis, nút phím tắt tự xuống dòng, bỏ thanh cuộn ngang ngoài, gợi ý dài xuống dòng.
+- Không tự loại trừ cửa sổ VietFlow, để soạn macro/nguồn chuyển mã ngay trong app.
 
 ## [0.1.1] - 2026-10-30
 
