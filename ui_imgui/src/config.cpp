@@ -50,6 +50,8 @@ bool Config::Load(const std::string& custom_path) {
         notification_sound = j.value("notification_sound", notification_sound);
         typing_timeout_ms = j.value("typing_timeout_ms", typing_timeout_ms);
         hotkey_mode = j.value("hotkey_mode", hotkey_mode);
+        hotkey_settings = j.value("hotkey_settings", hotkey_settings);
+        hotkey_converter = j.value("hotkey_converter", hotkey_converter);
 
         if (j.contains("english_keywords") && j["english_keywords"].is_array()) {
             english_keywords = j["english_keywords"].get<std::vector<std::string>>();
@@ -108,6 +110,8 @@ bool Config::Save(const std::string& custom_path) const {
         j["notification_sound"] = notification_sound;
         j["typing_timeout_ms"] = typing_timeout_ms;
         j["hotkey_mode"] = hotkey_mode;
+        j["hotkey_settings"] = hotkey_settings;
+        j["hotkey_converter"] = hotkey_converter;
 
         j["english_keywords"] = english_keywords;
         j["foreign_initials"] = foreign_initials;

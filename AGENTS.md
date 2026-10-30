@@ -82,12 +82,17 @@ vietflow/
 
 ## IV. Versioning & Commit Conventions
 
-- Current milestone: `0.1.0-alpha`.
+- Current milestone: `0.1.x`.
 - Conventional Commits: `feat:`, `fix:`, `refactor:`, `perf:`, `docs:`, `test:`, `chore:`.
+- **Release policy**: publish a GitHub release only for a major/minor feature
+  milestone, a breaking change, or a critical security fix. Batch small bug
+  fixes, copy changes and refactors into the next milestone; do not cut patch
+  releases for them.
 - Release validation:
   1. `cargo test --workspace` passes 100%.
   2. `cargo build --workspace --release` compiles with zero warnings.
-  3. `cmake --build ui/build --config Release` compiles with zero warnings.
+  3. `cmake --build ui_imgui/build --config Release` and
+     `cmake --build ui_imgui/build-x86 --config Release` compile with zero warnings.
 
 ## V. Multi-Agent File Coordination
 

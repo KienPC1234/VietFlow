@@ -46,6 +46,10 @@ pub struct AppConfig {
     pub typing_timeout_ms: u64,
     #[serde(default = "default_hotkey_mode")]
     pub hotkey_mode: String,
+    #[serde(default = "default_hotkey_settings")]
+    pub hotkey_settings: String,
+    #[serde(default = "default_hotkey_converter")]
+    pub hotkey_converter: String,
 
     #[serde(default)]
     pub english_keywords: Vec<String>,
@@ -90,6 +94,12 @@ fn default_timeout() -> u64 {
 }
 fn default_hotkey_mode() -> String {
     "CtrlShift".to_string()
+}
+fn default_hotkey_settings() -> String {
+    "Ctrl + Shift + F5".to_string()
+}
+fn default_hotkey_converter() -> String {
+    "Ctrl + Shift + F9".to_string()
 }
 fn default_foreign_initials() -> String {
     "fjwz".to_string()
@@ -149,6 +159,8 @@ impl Default for AppConfig {
             notification_sound: false,
             typing_timeout_ms: 1500,
             hotkey_mode: default_hotkey_mode(),
+            hotkey_settings: default_hotkey_settings(),
+            hotkey_converter: default_hotkey_converter(),
             english_keywords: Vec::new(),
             foreign_initials: default_foreign_initials(),
             tray_icon_theme: default_tray_theme(),

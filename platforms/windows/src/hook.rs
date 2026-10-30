@@ -9,7 +9,7 @@ use vietflow_core::VietFlowEngine;
 use windows_sys::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetKeyState, GetKeyboardLayout, VK_BACK, VK_CAPITAL, VK_CONTROL, VK_ESCAPE,
-    VK_F1, VK_F5, VK_F9, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RETURN,
+    VK_F1, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RETURN,
     VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_TAB,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -49,11 +49,46 @@ extern "system" {
     fn UnhookWinEvent(hWinEventHook: HWINEVENTHOOK) -> i32;
 }
 
+#[link(name = "winmm")]
+extern "system" {
+    fn PlaySoundW(pszSound: *const u16, hmod: HMODULE, fdwSound: u32) -> i32;
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn Beep(dwFreq: u32, dwDuration: u32) -> i32;
+}
+
+/// Play the configured V/E toggle notification. PlaySoundW with a system alias
+/// respects the user's sound scheme; MessageBeep/Beep are fallbacks for systems
+/// where the alias is unavailable or muted.
+pub fn play_notification_sound() {
+    const SND_ASYNC: u32 = 0x0001;
+    const SND_ALIAS: u32 = 0x0001_0000;
+    let alias = to_wide("SystemNotification");
+    let played = unsafe { PlaySoundW(alias.as_ptr(), null_mut(), SND_ASYNC | SND_ALIAS) };
+    if played == 0 {
+        let beeped = unsafe { MessageBeep(MB_ICONASTERISK) };
+        if beeped == 0 {
+            unsafe {
+                Beep(880, 80);
+            }
+        }
+    }
+}
+
+/// C ABI used by the ImGui UI so the settings preview uses the same sound path
+/// as the actual V/E toggle.
+#[no_mangle]
+pub extern "C" fn vf_play_notification_sound() {
+    play_notification_sound();
+}
+
 use crate::config::AppConfig;
 use crate::inject::{send_atomic_batch, VIETFLOW_MAGIC};
-use crate::process::{get_process_name_for_window, is_app_excluded};
+use crate::process::{get_process_name_for_window, is_app_excluded, is_self_process};
 use crate::startup::set_start_with_windows;
-use crate::tray::{WM_CONVERT, WM_SETTINGS, WM_TRAYICON};
+use crate::tray::{to_wide, WM_CONVERT, WM_SETTINGS, WM_TRAYICON};
 
 pub struct HookState {
     pub engine: VietFlowEngine,
@@ -263,7 +298,8 @@ pub unsafe fn check_foreground_change(foreground: HWND) {
     state.reset_display_shadow();
 
     let proc_name = get_process_name_for_window(foreground);
-    let excluded = is_app_excluded(proc_name.as_deref(), &state.config.excluded_apps);
+    let excluded = is_app_excluded(proc_name.as_deref(), &state.config.excluded_apps)
+        || is_self_process(proc_name.as_deref());
     let non_us = state.config.disable_on_non_us_layout && is_non_us_layout(foreground);
 
     if excluded != state.is_foreground_excluded || non_us != state.non_us_layout {
@@ -320,7 +356,8 @@ pub unsafe fn apply_config(config: AppConfig) {
     if !foreground.is_null() {
         let proc_name = get_process_name_for_window(foreground);
         state.is_foreground_excluded =
-            is_app_excluded(proc_name.as_deref(), &config.excluded_apps);
+            is_app_excluded(proc_name.as_deref(), &config.excluded_apps)
+                || is_self_process(proc_name.as_deref());
     }
 
     state.non_us_layout = non_us;
@@ -371,8 +408,13 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
 
     let initial_foreground = GetForegroundWindow();
     let initial_proc = get_process_name_for_window(initial_foreground);
-    let initial_excluded = is_app_excluded(initial_proc.as_deref(), &config.excluded_apps);
+    let initial_excluded = is_app_excluded(initial_proc.as_deref(), &config.excluded_apps)
+        || is_self_process(initial_proc.as_deref());
     let initial_non_us = config.disable_on_non_us_layout && is_non_us_layout(initial_foreground);
+
+    // Keep the Run key in sync even when the daemon starts after the UI saved
+    // the setting while it was not running.
+    set_start_with_windows(config.start_with_windows);
 
     let mut lock = STATE.lock().unwrap();
     *lock = Some(HookState {
@@ -464,35 +506,31 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     }
 
     if is_key_down {
-        // Global Hotkey: Ctrl + Shift + F5 (Open Settings)
-        if state.ctrl_pressed && state.shift_pressed && vk == VK_F5 {
+        let ctrl = state.ctrl_pressed || is_vk_down(VK_CONTROL);
+        let alt = state.alt_pressed || is_vk_down(VK_MENU);
+        let shift = state.shift_pressed || is_vk_down(VK_SHIFT);
+        let win = state.win_pressed || is_vk_down(VK_LWIN) || is_vk_down(VK_RWIN);
+
+        // Configurable global hotkeys (defaults: Ctrl+Shift+F5 / Ctrl+Shift+F9).
+        if check_custom_hotkey(&state.config.hotkey_settings, ctrl, alt, shift, win, vk) {
             PostMessageW(state.tray_hwnd, WM_SETTINGS, 0, 0);
             return 1;
         }
-
-        // Global Hotkey: Ctrl + Shift + F9 (Open Converter Toolkit)
-        if state.ctrl_pressed && state.shift_pressed && vk == VK_F9 {
+        if check_custom_hotkey(&state.config.hotkey_converter, ctrl, alt, shift, win, vk) {
             PostMessageW(state.tray_hwnd, WM_CONVERT, 0, 0);
             return 1;
         }
 
         // Language toggle check
         let is_toggle = match state.config.hotkey_mode.as_str() {
-            "CtrlShift" => (state.ctrl_pressed || is_vk_down(VK_CONTROL)) && (vk == VK_LSHIFT || vk == VK_RSHIFT),
-            "AltZ" => (state.alt_pressed || is_vk_down(VK_MENU)) && (vk == b'Z' as u16),
-            "CtrlSpace" => (state.ctrl_pressed || is_vk_down(VK_CONTROL)) && vk == VK_SPACE,
-            "ShiftSpace" => (state.shift_pressed || is_vk_down(VK_SHIFT)) && vk == VK_SPACE,
-            "AltShift" => (state.alt_pressed || is_vk_down(VK_MENU)) && (vk == VK_LSHIFT || vk == VK_RSHIFT),
+            "CtrlShift" => ctrl && (vk == VK_LSHIFT || vk == VK_RSHIFT),
+            "AltZ" => alt && (vk == b'Z' as u16),
+            "CtrlSpace" => ctrl && vk == VK_SPACE,
+            "ShiftSpace" => shift && vk == VK_SPACE,
+            "AltShift" => alt && (vk == VK_LSHIFT || vk == VK_RSHIFT),
             "CapsLock" => vk == VK_CAPITAL,
-            "WinSpace" => (state.win_pressed || is_vk_down(VK_LWIN) || is_vk_down(VK_RWIN)) && vk == VK_SPACE,
-            other => check_custom_hotkey(
-                other,
-                state.ctrl_pressed || is_vk_down(VK_CONTROL),
-                state.alt_pressed || is_vk_down(VK_MENU),
-                state.shift_pressed || is_vk_down(VK_SHIFT),
-                state.win_pressed || is_vk_down(VK_LWIN) || is_vk_down(VK_RWIN),
-                vk,
-            ),
+            "WinSpace" => win && vk == VK_SPACE,
+            other => check_custom_hotkey(other, ctrl, alt, shift, win, vk),
         };
 
         if is_toggle {
@@ -502,7 +540,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             state.config.save();
 
             if state.config.notification_sound {
-                MessageBeep(MB_ICONASTERISK);
+                play_notification_sound();
             }
 
             let tray_hwnd = state.tray_hwnd;
@@ -731,5 +769,48 @@ unsafe fn check_custom_hotkey(
             }
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matches_configurable_hotkeys() {
+        unsafe {
+            assert!(check_custom_hotkey(
+                "Ctrl + Shift + F5",
+                true,
+                false,
+                true,
+                false,
+                0x74
+            ));
+            assert!(!check_custom_hotkey(
+                "Ctrl + Shift + F5",
+                true,
+                false,
+                false,
+                false,
+                0x74
+            ));
+            assert!(check_custom_hotkey(
+                "Ctrl + Shift + F9",
+                true,
+                false,
+                true,
+                false,
+                0x78
+            ));
+            assert!(check_custom_hotkey(
+                "Alt + Z",
+                false,
+                true,
+                false,
+                false,
+                0x5A
+            ));
+        }
     }
 }

@@ -62,6 +62,22 @@ pub fn is_app_excluded(current_process: Option<&str>, excluded_apps: &[String]) 
     })
 }
 
+/// True when the foreground process is VietFlow itself. The settings UI is a
+/// child process, so the hook must never transform text typed into it.
+pub fn is_self_process(current_process: Option<&str>) -> bool {
+    let name = match current_process {
+        Some(name) => name.trim().to_lowercase(),
+        None => return false,
+    };
+    if name.is_empty() {
+        return false;
+    }
+    let current = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.file_name().map(|file| file.to_string_lossy().to_lowercase()));
+    current.map(|current| current == name).unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,5 +99,20 @@ mod tests {
         assert!(!is_app_excluded(Some("notepad.exe"), &list));
         assert!(!is_app_excluded(None, &list));
         assert!(!is_app_excluded(Some(""), &list));
+    }
+
+    #[test]
+    fn test_is_self_process() {
+        let current = std::env::current_exe()
+            .expect("current executable")
+            .file_name()
+            .expect("file name")
+            .to_string_lossy()
+            .to_string();
+        assert!(is_self_process(Some(&current)));
+        assert!(is_self_process(Some(&current.to_uppercase())));
+        assert!(!is_self_process(Some("notepad.exe")));
+        assert!(!is_self_process(None));
+        assert!(!is_self_process(Some("")));
     }
 }

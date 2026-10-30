@@ -60,6 +60,10 @@ private:
     char new_english_kw_[128] = {0};
     char foreign_initials_buf_[64] = {0};
 
+    // Other global hotkeys (settings / converter)
+    char hotkey_settings_buf_[64] = {0};
+    char hotkey_converter_buf_[64] = {0};
+
     // Converter page state
     int conv_src_cs_ = 2; // TCVN3
     int conv_dst_cs_ = 0; // Unicode

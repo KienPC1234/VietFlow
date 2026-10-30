@@ -102,6 +102,13 @@ mod tests {
             ("aww", "aw"),
             ("oww", "ow"),
             ("uww", "uw"),
+            ("owss", "ows"),
+            ("uwss", "uws"),
+            ("[ss", "[s"),
+            ("]ss", "]s"),
+            ("{ss", "{s"),
+            ("}ss", "}s"),
+            ("a[ss", "a[s"),
             ("ww", "w"),
             ("www", "ww"),
             ("wwww", "www"),
@@ -127,6 +134,21 @@ mod tests {
         assert_eq!(process_string(&mut engine, "{"), "Ơ");
         engine.reset();
         assert_eq!(process_string(&mut engine, "}"), "Ư");
+        engine.reset();
+        assert_eq!(process_string(&mut engine, "[["), "[");
+        engine.reset();
+        assert_eq!(process_string(&mut engine, "]]"), "]");
+        engine.reset();
+        assert_eq!(process_string(&mut engine, "{{"), "{");
+        engine.reset();
+        assert_eq!(process_string(&mut engine, "}}"), "}");
+        engine.reset();
+        assert_eq!(process_string(&mut engine, "a[["), "a[");
+        engine.reset();
+        assert_eq!(process_string(&mut engine, "[s"), "ớ");
+        engine.reset();
+        assert_eq!(process_string(&mut engine, "[sz"), "ơ");
+        engine.reset();
     }
 
     #[test]

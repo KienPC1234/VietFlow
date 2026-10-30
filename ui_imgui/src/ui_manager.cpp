@@ -12,6 +12,8 @@
 #define VIETFLOW_VERSION "0.1.0"
 #endif
 
+extern "C" void vf_play_notification_sound();
+
 namespace vietflow {
 
 static std::vector<RunningApp> GetRunningApps() {
@@ -77,10 +79,14 @@ UiManager::UiManager(const std::string& config_path, bool convert_mode, void* hw
         initial_page_ = Page::Converter;
     }
     strncpy_s(foreign_initials_buf_, config_.foreign_initials.c_str(), sizeof(foreign_initials_buf_) - 1);
+    strncpy_s(hotkey_settings_buf_, config_.hotkey_settings.c_str(), sizeof(hotkey_settings_buf_) - 1);
+    strncpy_s(hotkey_converter_buf_, config_.hotkey_converter.c_str(), sizeof(hotkey_converter_buf_) - 1);
 }
 
 void UiManager::SaveConfig() {
     config_.foreign_initials = foreign_initials_buf_;
+    config_.hotkey_settings = hotkey_settings_buf_;
+    config_.hotkey_converter = hotkey_converter_buf_;
     config_.Save(config_path_);
     dirty_ = false;
     saved_toast_timer_ = 2.0f;
@@ -116,7 +122,8 @@ void UiManager::Render() {
     ImGui::SetNextWindowSize(viewport->WorkSize);
 
     ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                                   ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings;
+                                   ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
+                                   ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Px(16.0f), Px(12.0f)));
     ImGui::Begin("VietFlowMainWindow", nullptr, window_flags);
@@ -153,7 +160,7 @@ void UiManager::Render() {
 
     // Native ImGui TabBar Navigation (No forced sidebar)
     static bool first_run = true;
-    ImGuiTabBarFlags tab_bar_flags = ImGuiTabBarFlags_None;
+    ImGuiTabBarFlags tab_bar_flags = ImGuiTabBarFlags_FittingPolicyScroll;
     if (ImGui::BeginTabBar("MainTabs", tab_bar_flags)) {
         if (ImGui::BeginTabItem(NF_COG " Tổng quan")) {
             BeginPageScroll();
@@ -162,14 +169,14 @@ void UiManager::Render() {
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem(NF_KEYBOARD " Gõ & Chính tả")) {
+        if (ImGui::BeginTabItem(NF_KEYBOARD " Gõ")) {
             BeginPageScroll();
             PageTyping();
             EndPageScroll();
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem(NF_BOLT " Gõ tắt (Macro)")) {
+        if (ImGui::BeginTabItem(NF_BOLT " Gõ tắt")) {
             BeginPageScroll();
             PageMacros();
             EndPageScroll();
@@ -247,6 +254,9 @@ void UiManager::PageOverview() {
     if (ImGui::Button(status_text, ImVec2(0.0f, Px(28.0f)))) {
         config_.enabled = !config_.enabled;
         SaveConfig();
+        if (config_.notification_sound) {
+            vf_play_notification_sound();
+        }
     }
     ImGui::PopStyleColor();
 
@@ -303,7 +313,6 @@ void UiManager::PageOverview() {
         {"WinSpace", "Win + Space"}
     };
 
-    float avail_width = ImGui::GetContentRegionAvail().x;
     for (int i = 0; i < IM_ARRAYSIZE(presets); ++i) {
         bool is_active = (config_.hotkey_mode == presets[i].mode || FormatHotkeyLabel(config_.hotkey_mode) == presets[i].label);
         if (is_active) {
@@ -324,7 +333,9 @@ void UiManager::PageOverview() {
 
         if (i < IM_ARRAYSIZE(presets) - 1) {
             float next_btn_w = ImGui::CalcTextSize(presets[i + 1].label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(16.0f);
-            if (ImGui::GetCursorPosX() + next_btn_w + Px(8.0f) < avail_width) {
+            float next_right = (ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x)
+                             + Px(8.0f) + next_btn_w;
+            if (next_right <= ImGui::GetWindowContentRegionMax().x) {
                 ImGui::SameLine(0.0f, Px(8.0f));
             }
         }
@@ -462,10 +473,36 @@ void UiManager::PageOverview() {
         SaveConfig();
     }
 
+    SectionHeader("Phím tắt khác");
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Mở bảng điều khiển:");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(Px(240.0f));
+    if (ImGui::InputText("##HotkeySettings", hotkey_settings_buf_, sizeof(hotkey_settings_buf_))) {
+        SaveConfig();
+    }
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Mở công cụ chuyển mã:");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(Px(240.0f));
+    if (ImGui::InputText("##HotkeyConverter", hotkey_converter_buf_, sizeof(hotkey_converter_buf_))) {
+        SaveConfig();
+    }
+    ImGui::TextDisabled("Dùng dấu + giữa các phím, ví dụ: Ctrl + Shift + F5");
+
     SectionHeader("Hệ thống & Khởi động");
     if (ImGui::Checkbox("Khởi động cùng Windows khi bật máy", &config_.start_with_windows)) SaveConfig();
     ImGui::Spacing();
-    if (ImGui::Checkbox("Phát âm thanh thông báo nhẹ khi chuyển chế độ V/E", &config_.notification_sound)) SaveConfig();
+    if (ImGui::Checkbox("Phát âm thanh thông báo nhẹ khi chuyển chế độ V/E", &config_.notification_sound)) {
+        SaveConfig();
+        if (config_.notification_sound) {
+            vf_play_notification_sound();
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Phát âm thanh khi chuyển V/E bằng phím tắt hoặc biểu tượng khay. Mặc định tắt.");
+    }
 }
 
 void UiManager::PageTyping() {
@@ -492,10 +529,7 @@ void UiManager::PageTyping() {
     if (ImGui::InputText("##ForeignInitials", foreign_initials_buf_, sizeof(foreign_initials_buf_))) {
         SaveConfig();
     }
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.58f, 0.67f, 1.00f));
-    ImGui::TextUnformatted("(Mặc định: fjwz. Bỏ qua dấu khi gặp các chữ cái này ở đầu từ)");
-    ImGui::PopStyleColor();
+    ImGui::TextDisabled("(Mặc định: fjwz. Bỏ qua dấu khi gặp các chữ cái này ở đầu từ)");
 
     ImGui::Spacing();
     ImGui::TextUnformatted("Danh sách từ khóa tiếng Anh không bỏ dấu:");
@@ -534,14 +568,15 @@ void UiManager::PageMacros() {
     if (ImGui::Checkbox("Cho phép gõ tắt ngay cả khi ở chế độ [E]", &config_.allow_macro_when_disabled)) SaveConfig();
 
     SectionHeader("Thêm từ gõ tắt mới");
+    ImGui::TextDisabled("Ví dụ: thêm 'vn' -> 'Việt Nam'. Gõ 'vn' rồi nhấn Space hoặc Enter để thay thế.");
+    ImGui::Spacing();
 
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Từ tắt:");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(Px(100.0f));
+    ImGui::SetNextItemWidth(Px(120.0f));
     ImGui::InputTextWithHint("##MacroKey", "vn", new_macro_key_, sizeof(new_macro_key_));
 
-    ImGui::SameLine();
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Thay thế:");
     ImGui::SameLine();
@@ -733,6 +768,8 @@ void UiManager::PageExclusions() {
 
 void UiManager::PageConverter() {
     SectionHeader("Bảng mã nguồn và đích");
+    ImGui::TextDisabled("Dán văn bản vào ô nguồn, chọn bảng mã rồi bấm Chuyển mã. Kết quả có thể sao chép.");
+    ImGui::Spacing();
 
     const char* charsets[] = {
         "Unicode (Dựng sẵn)", "Unicode Tổ hợp", "TCVN3 (ABC)", "VNI Windows"
@@ -775,7 +812,7 @@ void UiManager::PageConverter() {
     ImGui::SameLine();
     ImGui::Checkbox("Bỏ dấu tiếng Việt", &conv_strip_accents_);
 
-    ImGui::SameLine(0.0f, Px(20.0f));
+    ImGui::Spacing();
     if (ImGui::Button(NF_CONVERT "  Chuyển mã Clipboard", ImVec2(0.0f, Px(26.0f)))) {
         conv_status_msg_ = "Đã chuyển mã và lưu vào Clipboard thành công!";
         conv_status_ok_ = true;

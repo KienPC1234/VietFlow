@@ -65,6 +65,8 @@ Output: `dist\VietFlow.exe` (x64), `dist\VietFlow-x86.exe` (x86), plus `dist\lat
 
 ## Release
 
+Releases are published only for a feature milestone, a breaking change or a critical security fix. Small bug fixes are batched for the next milestone.
+
 `VERSION` and `CHANGELOG.md` are the single source of truth. `build.ps1` syncs the `Cargo.toml` version and generates `dist\version.txt`, `dist\latest.json`, and a copy of `CHANGELOG.md`.
 
 1. Bump `VERSION` and add a section for that version to `CHANGELOG.md`.

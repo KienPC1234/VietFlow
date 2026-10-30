@@ -25,6 +25,8 @@ struct Config {
     bool notification_sound = false;
     uint64_t typing_timeout_ms = 1500;
     std::string hotkey_mode = "CtrlShift";
+    std::string hotkey_settings = "Ctrl + Shift + F5";
+    std::string hotkey_converter = "Ctrl + Shift + F9";
 
     std::vector<std::string> english_keywords;
     std::string foreign_initials = "fjwz";

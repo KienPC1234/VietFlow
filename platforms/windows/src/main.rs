@@ -459,6 +459,9 @@ unsafe fn toggle_mode(_hwnd: HWND) {
             state.config.enabled = state.user_enabled;
             state.engine.reset();
             state.config.save();
+            if state.config.notification_sound {
+                crate::hook::play_notification_sound();
+            }
             let effective = state.effective_enabled();
             if !TRAY_PTR.is_null() {
                 (*TRAY_PTR).update_status(effective);

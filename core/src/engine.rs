@@ -174,6 +174,22 @@ impl VietFlowEngine {
     }
 
     fn try_bracket_shortcut(&mut self, c: char) -> Option<(usize, KeyText)> {
+        if !matches!(c, '[' | ']' | '{' | '}') {
+            return None;
+        }
+
+        // Double bracket to undo: [ -> ơ, [[ -> [, etc.
+        let last_raw = self.raw_chars.last().copied();
+        let last_is_bracket = self
+            .buffer
+            .last()
+            .map(|slot| slot.raw_char == c && slot.modified)
+            .unwrap_or(false);
+        if last_raw == Some(c) && last_is_bracket {
+            self.reset_word();
+            return Some((1, KeyText::from_char(c)));
+        }
+
         match c {
             '[' => Some(self.append_mapped_letter(c, VnLexiName::oh, false)),
             '{' => Some(self.append_mapped_letter(c, VnLexiName::Oh, true)),
@@ -388,7 +404,7 @@ impl VietFlowEngine {
         matches!(to_lower_ascii(c), 'a' | 'e' | 'o' | 'd')
     }
 
-    fn try_apply_tone(&mut self, tone_key: ToneKeyType, raw_key: char) -> Option<(usize, KeyText)> {
+    fn try_apply_tone(&mut self, tone_key: ToneKeyType, _raw_key: char) -> Option<(usize, KeyText)> {
         let vowel_count = self.vowel_count;
         if vowel_count == 0 || self.word_form == WordForm::NonVn {
             return None;
@@ -442,19 +458,23 @@ impl VietFlowEngine {
             }
         }
 
-        // Check for tone undo
+        // Check for tone undo: restore the raw keystroke sequence up to (but
+        // not including) the repeated tone key. This keeps the original `ow`,
+        // `uw`, `[`, `]`, `{`, `}` forms instead of leaving `ơs`/`ưs`.
         if self.current_tone == new_tone {
             self.current_tone = VnLexiTone::None;
-            for i in 0..vowel_count {
-                self.buffer[first_vowel + i].tone = VnLexiTone::None;
+            let backspaces = self.display_len;
+            let mut out = KeyText::new();
+            for &raw in &self.raw_chars {
+                out.push_char(raw);
             }
-
-            // Append raw key as literal char into buffer
-            let literal_slot = Slot::new(raw_key);
-            self.buffer.push(literal_slot);
-
-            let res = self.rebuild_from_index(first_vowel);
-            return Some(res);
+            self.buffer.clear();
+            for &raw in &self.raw_chars {
+                self.buffer.push(Slot::new(raw));
+            }
+            self.recalculate_word_form();
+            self.display_len = out.chars().count();
+            return Some((backspaces, out));
         }
 
         self.current_tone = new_tone;
