@@ -4,6 +4,17 @@ This is the manual test pass required before the next public release. Unit tests
 cover the engine and config parsing; they do not prove that Windows apps accept
 the injected keys.
 
+## Automated pre-checks (2026-10-30)
+
+- [x] `cargo test --workspace`: 31 core tests + 15 host tests pass, 1 network test ignored.
+- [x] x64 and x86 Release builds pass locally.
+- [x] GitHub Actions x64, x86 and ARM64 jobs pass.
+- [x] ARM64 artifact downloaded; PE header reports `Arm64` / PE32+.
+- [x] `dumpbin /dependents` shows no `VCRUNTIME140` or `MSVCP140`.
+- [x] `VietFlow.exe --settings` and `VietFlow.exe --convert` start and stay alive.
+- [x] Daemon starts with a temporary config containing `lock_hotkeys_in_excluded_apps=false` and an app profile.
+- [ ] Interactive typing and game/app matrix below.
+
 ## Environment
 
 - [ ] Windows 10 22H2 or Windows 11 current.
