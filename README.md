@@ -74,6 +74,8 @@ Output: `dist\VietFlow.exe` (x64), `dist\VietFlow-x86.exe` (x86), plus `dist\lat
 
 The updater tries `releases/latest/download/latest.json`, then `version.txt`, then the GitHub API. `latest.json.downloads.x64` / `downloads.x86` point at the matching installer, and `latest.json.notes` is the changelog shown in the update dialog.
 
+`scripts/publish-release.ps1` creates the GitHub release and uploads the executables, installers and metadata using the stored Git credential.
+
 ## License
 
 Released under the **GNU General Public License v3.0 (GPLv3)**.

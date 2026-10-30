@@ -1,0 +1,55 @@
+$ErrorActionPreference = "Stop"
+$env:GIT_TERMINAL_PROMPT = '0'
+$env:GCM_INTERACTIVE = 'never'
+
+$cred = "protocol=https`nhost=github.com`n`n" | git credential fill 2>$null
+$token = ($cred | Select-String '^password=').Line.Substring(9)
+if (-not $token) { throw "No GitHub credential available" }
+
+$headers = @{
+    Authorization = "token $token"
+    'User-Agent'  = 'VietFlow'
+    Accept        = 'application/vnd.github+json'
+}
+
+$manifest = Get-Content (Join-Path $PSScriptRoot '..\dist\latest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$tag = "v$($manifest.version)"
+
+$releaseBody = [ordered]@{
+    tag_name         = $tag
+    target_commitish = 'main'
+    name             = "VietFlow $($manifest.version)"
+    body             = $manifest.notes
+    draft            = $false
+    prerelease       = $false
+} | ConvertTo-Json -Depth 4
+
+$release = Invoke-RestMethod -Method Post `
+    -Uri "https://api.github.com/repos/KienPC1234/VietFlow/releases" `
+    -Headers $headers `
+    -Body ([System.Text.Encoding]::UTF8.GetBytes($releaseBody)) `
+    -ContentType 'application/json; charset=utf-8'
+
+Write-Host "Created release $($release.tag_name) (id $($release.id))"
+Write-Host $release.html_url
+
+$assets = @(
+    'dist\VietFlow-x64.exe',
+    'dist\VietFlow-x86.exe',
+    'releases\VietFlow-win-x64-Setup.exe',
+    'releases\VietFlow-win-x86-Setup.exe',
+    'dist\latest.json',
+    'dist\version.txt',
+    'dist\CHANGELOG.md'
+)
+
+foreach ($asset in $assets) {
+    $path = Join-Path (Split-Path -Parent $PSScriptRoot) $asset
+    if (-not (Test-Path $path)) { throw "Missing asset: $path" }
+    $name = Split-Path $path -Leaf
+    $uri = "https://uploads.github.com/repos/KienPC1234/VietFlow/releases/$($release.id)/assets?name=$([uri]::EscapeDataString($name))"
+    $uploaded = Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -InFile $path -ContentType 'application/octet-stream'
+    Write-Host ("Uploaded {0} ({1:N2} MB)" -f $uploaded.name, ($uploaded.size / 1MB))
+}
+
+Write-Host "DONE"

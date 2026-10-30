@@ -575,4 +575,20 @@ mod tests {
         assert_eq!(result.chars().count(), NOTES_LIMIT + 1);
         assert!(result.ends_with('…'));
     }
+
+    #[test]
+    #[ignore = "network: requires a published GitHub release"]
+    fn live_release_manifest() {
+        let info = fetch_release_info().expect("live release manifest");
+        assert!(!info.version.is_empty());
+        let expected = if cfg!(target_arch = "x86") {
+            "win-x86"
+        } else {
+            "win-x64"
+        };
+        assert!(
+            info.download.as_deref().unwrap_or("").contains(expected),
+            "manifest did not provide the {expected} download"
+        );
+    }
 }
