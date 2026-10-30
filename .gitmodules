@@ -1,0 +1,6 @@
+[submodule "ui_imgui/third_party/imgui"]
+	path = ui_imgui/third_party/imgui
+	url = https://github.com/ocornut/imgui.git
+[submodule "ui_imgui/third_party/nlohmann_json"]
+	path = ui_imgui/third_party/nlohmann_json
+	url = https://github.com/nlohmann/json.git

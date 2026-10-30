@@ -6,10 +6,12 @@
 #[repr(u8)]
 pub enum InputMethod {
     Telex = 0,
-    SimpleTelex = 1,
-    Vni = 2,
-    Viqr = 3,
-    UserCustom = 4,
+    Vni = 1,
+    Viqr = 2,
+    SimpleTelex = 3,
+    TelexSimple2 = 4,
+    TelexVni = 5,
+    UserCustom = 6,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

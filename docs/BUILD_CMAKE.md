@@ -1,5 +1,10 @@
 # VietFlow CMake Build & Packaging Guide
 
+> **Lưu ý:** Tài liệu này mô tả pipeline CMake/Qt cũ. Bản hiện tại dùng
+> `ui_imgui/` (Dear ImGui + DirectX 11) và `scripts/build.ps1`; xem `README.md`.
+> Velopack chỉ còn dùng để đóng gói installer (`-Velopack`), không còn là
+> runtime updater — app kiểm tra GitHub Releases bằng WinINet.
+
 Tài liệu hướng dẫn biên dịch, kiểm thử và đóng gói phân phối VietFlow bằng CMake trên đa nền tảng.
 
 ---

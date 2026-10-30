@@ -1,74 +1,80 @@
 # VietFlow
 
-Bộ gõ tiếng Việt hiệu năng cao với kiến trúc Rust Core kết hợp Qt 6 Configuration UI và Windows Low-Level Keyboard Hook.
+A fast Vietnamese input method for Windows. The engine and keyboard hook are written in Rust; the settings UI is a separate Dear ImGui + DirectX 11 process.
 
-Mã nguồn: [https://github.com/KienPC1234/VietFlow](https://github.com/KienPC1234/VietFlow)
+Repository: [https://github.com/KienPC1234/VietFlow](https://github.com/KienPC1234/VietFlow)
 
----
+## Features
 
-## Kiến trúc & Cấu trúc mã nguồn
+- Native `WH_KEYBOARD_LL` hook. The UI runs in a separate process and is never loaded into the hook.
+- Per-app exclusion list: switches to English `[E]` for games, IDEs and graphics tools, then restores `[V]` when focus leaves.
+- High-DPI tray icons with optional custom `.ico` / `.png` files.
+- English word detection (226 keywords) to avoid unwanted Vietnamese marks.
+- On-demand update check: reads `latest.json` from GitHub Releases, shows the changelog and opens the download page. No background polling.
+
+## Layout
 
 ```
-vietflow/
-├── core/                  Rust input engine (std-only, C ABI ffi/vietflow_core.h)
-├── platforms/windows/     Native Windows hook daemon (WH_KEYBOARD_LL, tray icon, Velopack updater)
-├── ui/                    Qt 6 / QML configuration UI (C++ backend, chạy tiến trình riêng biệt)
-├── assets/                Logo, icon PNG/ICO chuẩn High-DPI
-├── docs/                  Tài liệu kiến trúc và hướng dẫn build (BUILD_CMAKE.md)
-├── scripts/build.ps1      Script tự động build và đóng gói release
-├── CMakeLists.txt         Unified multi-platform build orchestrator
-└── Cargo.toml             Rust workspace configuration
+core/                  Vietnamese engine (Rust std, C ABI in ffi/vietflow_core.h)
+platforms/windows/     Win32 hook daemon, tray host, config watcher, updater
+ui_imgui/              Dear ImGui + DirectX 11 settings UI
+ui_imgui/third_party/  Git submodules: imgui, nlohmann_json
+assets/                Application icon and brand assets
+scripts/build.ps1      Release build and packaging script
+Cargo.toml             Rust workspace
 ```
 
-- **Tiến trình Hook độc lập**: Qt UI chạy tiến trình riêng biệt khi mở cài đặt. Hook bàn phím chạy native Win32 thuần, không tải Qt runtime vào hook thread.
-- **Nhận diện tiếng Anh tự động**: Danh mục 226 từ khóa lập trình và tiếng Anh phổ biến chống dính dấu tiếng Việt ngoài ý muốn.
-- **Cập nhật Velopack**: Kích hoạt theo nhu cầu người dùng qua menu khay hệ thống, không chạy polling ngầm hay ép buộc cập nhật.
+## Build
 
----
+Requirements:
 
-## Hướng dẫn biên dịch & Đóng gói
+- Rust 1.75+ (`x86_64-pc-windows-msvc`)
+- CMake 3.20+ and Visual Studio Build Tools (Desktop development with C++)
+- Git
+- Optional: .NET SDK and Velopack CLI (`dotnet tool install -g vpk`) only for installer packaging
 
-### 1. Yêu cầu môi trường
-- Rust 1.75+ (MSVC toolchain x64)
-- Qt 6.5+ (tùy chọn, để biên dịch giao diện Qt UI)
-- .NET SDK & Velopack CLI (`dotnet tool install -g vpk`, tùy chọn cho đóng gói)
+Fetch the submodules:
 
-### 2. Lệnh thực thi
-
-#### Cách 1: Qua CMake (Khuyên dùng cho CI/CD và đa nền tảng)
 ```powershell
-# Cấu hình dự án
-cmake -B build -S . -DCMAKE_PREFIX_PATH="C:\Qt\6.8.3\msvc2022_64"
-
-# Chạy kiểm thử tự động
-cmake --build build --target vietflow_test
-
-# Đóng gói bản cài đặt Velopack và MSI
-cmake --build build --target package_msi
+git clone --recurse-submodules https://github.com/KienPC1234/VietFlow.git
+# or, in an existing clone:
+git submodule update --init --recursive
 ```
-Chi tiết các target và tùy chọn xem tại [`docs/BUILD_CMAKE.md`](file:///c:/Users/kienp/source/repos/x-unikey-1.0.4/vietflow/docs/BUILD_CMAKE.md).
 
-#### Cách 2: Qua Script PowerShell trực tiếp
+`third_party/imgui` is pinned to `2fb554b` (1.93.1 WIP); `third_party/nlohmann_json` is pinned to `v3.11.3`.
+
+Build commands:
+
 ```powershell
-# Kiểm thử toàn bộ workspace
-cargo test --workspace
+cargo test --manifest-path Cargo.toml
 
-# Biên dịch Release
-cargo build --workspace --release
+# Default: x64, static MSVC runtime (~1.51 MB)
+.\scripts\build.ps1
 
-# Đóng gói bộ cài đặt Velopack (Setup.exe và delta nupkg)
+# Both x64 and x86, with Velopack installers
+.\scripts\build.ps1 -Arch All -Velopack
+
+# Also create installers for the current architecture
 .\scripts\build.ps1 -Velopack
 
-# Đóng gói bộ cài đặt kèm MSI
-.\scripts\build.ps1 -Velopack -Msi
-
-# Đóng gói bản tách rời Qt DLLs phục vụ phát triển
-.\scripts\build.ps1 -Separate
+# Smaller x64 build that requires the VC++ 2015-2022 Redistributable (~1.23 MB)
+.\scripts\build.ps1 -DynamicCrt
 ```
 
----
+Output: `dist\VietFlow.exe` (x64), `dist\VietFlow-x86.exe` (x86), plus `dist\latest.json`, `dist\version.txt` and `dist\CHANGELOG.md`. With `-Velopack`, installers are written to `releases\` as `VietFlow-win-x64-Setup.exe` and `VietFlow-win-x86-Setup.exe`. The default static build imports neither `VCRUNTIME140` nor `MSVCP140`.
 
-## Giấy phép
+## Release
 
-Phát hành theo giấy phép **GNU General Public License v3.0 (GPLv3)**.
-Thuật toán xử lý tiếng Việt kế thừa và tối ưu hóa từ nền tảng UniKey (tác giả Phạm Kim Long).
+`VERSION` and `CHANGELOG.md` are the single source of truth. `build.ps1` syncs the `Cargo.toml` version and generates `dist\version.txt`, `dist\latest.json`, and a copy of `CHANGELOG.md`.
+
+1. Bump `VERSION` and add a section for that version to `CHANGELOG.md`.
+2. Run `.\scripts\build.ps1 -Arch All -Velopack`.
+3. Create and publish a GitHub release tagged `v<VERSION>`.
+4. Upload the x64/x86 executables and installers, plus `latest.json`, `version.txt` and `CHANGELOG.md`.
+
+The updater tries `releases/latest/download/latest.json`, then `version.txt`, then the GitHub API. `latest.json.downloads.x64` / `downloads.x86` point at the matching installer, and `latest.json.notes` is the changelog shown in the update dialog.
+
+## License
+
+Released under the **GNU General Public License v3.0 (GPLv3)**.
+The Vietnamese input algorithm is derived from UniKey (Pham Kim Long).

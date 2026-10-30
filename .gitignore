@@ -4,8 +4,13 @@
 /releases
 /ui/build
 /ui/build/**
+/ui_imgui/build
+/ui_imgui/build/**
+/ui_imgui/build-x86
+/ui_imgui/build-x86/**
 /ui/runtime
 /ui-runtime.zip
+imgui.ini
 *.user
 *.pdb
 *.log

@@ -104,9 +104,11 @@ pub unsafe extern "C" fn vf_engine_set_method(engine: *mut c_void, method: u8) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
         engine.options.method = match method {
             0 => InputMethod::Telex,
-            1 => InputMethod::SimpleTelex,
-            2 => InputMethod::Vni,
-            3 => InputMethod::Viqr,
+            1 => InputMethod::Vni,
+            2 => InputMethod::Viqr,
+            3 => InputMethod::SimpleTelex,
+            4 => InputMethod::TelexSimple2,
+            5 => InputMethod::TelexVni,
             _ => InputMethod::Telex,
         };
         engine.reset();

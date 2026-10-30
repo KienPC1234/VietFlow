@@ -102,6 +102,9 @@ mod tests {
             ("aww", "aw"),
             ("oww", "ow"),
             ("uww", "uw"),
+            ("ww", "w"),
+            ("www", "ww"),
+            ("wwww", "www"),
             ("ddd", "dd"),
             ("asz", "a"),
             ("vieetjz", "viêt"),
@@ -191,6 +194,80 @@ mod tests {
         engine.reset();
         let actual2 = process_string(&mut engine, "vieetj\x08\x08");
         assert_eq!(actual2, "vi");
+    }
+
+    #[test]
+    fn test_telex_simple_2() {
+        let mut engine = VietFlowEngine::new(
+            EngineOptions {
+                method: InputMethod::TelexSimple2,
+                ..Default::default()
+            },
+            CharsetId::Unicode,
+        );
+
+        let cases = [
+            ("w", "w"),
+            ("web", "web"),
+            ("win", "win"),
+            ("zero", "zero"),
+            ("aw", "ă"),
+            ("ow", "ơ"),
+            ("uw", "ư"),
+            ("aws", "ắ"),
+            ("dduowngf", "đường"),
+            ("nguowif", "người"),
+            ("aa", "â"),
+            ("ee", "ê"),
+            ("oo", "ô"),
+            ("dd", "đ"),
+            ("vieetj", "việt"),
+            ("toans", "toán"),
+        ];
+
+        for (input, expected) in cases {
+            engine.reset();
+            let actual = process_string(&mut engine, input);
+            assert_eq!(actual, expected, "Failed Telex Simple 2 for: {input}");
+        }
+    }
+
+    #[test]
+    fn test_telex_vni_hybrid() {
+        let mut engine = VietFlowEngine::new(
+            EngineOptions {
+                method: InputMethod::TelexVni,
+                ..Default::default()
+            },
+            CharsetId::Unicode,
+        );
+
+        let cases = [
+            // Pure Telex input
+            ("toans", "toán"),
+            ("vieetj", "việt"),
+            ("dduowngf", "đường"),
+            ("nguowif", "người"),
+            // Pure VNI input
+            ("toan1", "toán"),
+            ("viet65", "việt"),
+            ("d9u7o7ng2", "đường"),
+            ("ngu7o7i2", "người"),
+            ("d9a6u2", "đầu"),
+            // Hybrid mixing
+            ("vieet5", "việt"),
+            ("dda6u2", "đầu"),
+            ("dduowng2", "đường"),
+            ("d9u7o7ngf", "đường"),
+            ("toan1z", "toan"),
+            ("toans0", "toan"),
+        ];
+
+        for (input, expected) in cases {
+            engine.reset();
+            let actual = process_string(&mut engine, input);
+            assert_eq!(actual, expected, "Failed Telex + VNI hybrid for: {input}");
+        }
     }
 
     #[test]

@@ -110,8 +110,8 @@ impl VietFlowEngine {
             return self.process_backspace();
         }
 
-        // Telex bracket shortcuts: [ = ơ, ] = ư, { = Ơ, } = Ư
-        if matches!(self.options.method, InputMethod::Telex | InputMethod::SimpleTelex) {
+        // Telex bracket shortcuts: [ = ơ, ] = ư, { = Ơ, } = Ư (Telex only)
+        if self.options.method == InputMethod::Telex {
             if let Some(res) = self.try_bracket_shortcut(c) {
                 return res;
             }
@@ -122,7 +122,11 @@ impl VietFlowEngine {
                 return self.process_first_letter(c);
             }
 
-            if self.options.method == InputMethod::Telex && matches!(c, 'w' | 'W') {
+            if matches!(
+                self.options.method,
+                InputMethod::Telex | InputMethod::TelexVni
+            ) && matches!(c, 'w' | 'W')
+            {
                 return self.process_lone_w(c);
             }
 
@@ -372,7 +376,13 @@ impl VietFlowEngine {
     }
 
     fn is_double_key_modify(&self, c: char) -> bool {
-        if !matches!(self.options.method, InputMethod::Telex | InputMethod::SimpleTelex) {
+        if !matches!(
+            self.options.method,
+            InputMethod::Telex
+                | InputMethod::SimpleTelex
+                | InputMethod::TelexSimple2
+                | InputMethod::TelexVni
+        ) {
             return false;
         }
         matches!(to_lower_ascii(c), 'a' | 'e' | 'o' | 'd')
@@ -384,7 +394,7 @@ impl VietFlowEngine {
             return None;
         }
 
-        if self.options.method == InputMethod::SimpleTelex
+        if matches!(self.options.method, InputMethod::SimpleTelex | InputMethod::TelexSimple2)
             && to_lower_ascii(self.buffer[0].raw_char) == 'w'
         {
             return None;
@@ -477,8 +487,13 @@ impl VietFlowEngine {
         }
 
         // Double key handling in Telex
-        if matches!(self.options.method, InputMethod::Telex | InputMethod::SimpleTelex)
-            && self.word_form != WordForm::NonVn
+        if matches!(
+            self.options.method,
+            InputMethod::Telex
+                | InputMethod::SimpleTelex
+                | InputMethod::TelexSimple2
+                | InputMethod::TelexVni
+        ) && self.word_form != WordForm::NonVn
         {
             if lower == 'd' {
                 let last_idx = self.buffer.len() - 1;
@@ -533,8 +548,13 @@ impl VietFlowEngine {
 
         // 'w' key handling (Telex hook-all)
         if modify_key == ModifyKeyType::HookAll
-            || (matches!(self.options.method, InputMethod::Telex | InputMethod::SimpleTelex)
-                && lower == 'w')
+            || (matches!(
+                self.options.method,
+                InputMethod::Telex
+                    | InputMethod::SimpleTelex
+                    | InputMethod::TelexSimple2
+                    | InputMethod::TelexVni
+            ) && lower == 'w')
         {
             if self.vowel_count > 0 && !self.options.free_marking && !self.last_vowel_is_current() {
                 return None;
@@ -544,14 +564,23 @@ impl VietFlowEngine {
                 return Some(res);
             }
 
-            // Lone 'w'
-            if self.options.method == InputMethod::Telex {
+            // Lone 'w' becomes 'ư' in Telex, SimpleTelex, and TelexVni, but NOT in TelexSimple2
+            // or if the word already has a non-vn form or literal 'w'
+            if matches!(
+                self.options.method,
+                InputMethod::Telex | InputMethod::SimpleTelex | InputMethod::TelexVni
+            ) && self.word_form != WordForm::NonVn
+                && !self.buffer.iter().any(|s| to_lower_ascii(s.raw_char) == 'w')
+            {
                 return Some(self.process_lone_w(raw_key));
             }
         }
 
-        // VNI & VIQR number/symbol modifications
-        if matches!(self.options.method, InputMethod::Vni | InputMethod::Viqr) {
+        // VNI & VIQR & TelexVni number/symbol modifications
+        if matches!(
+            self.options.method,
+            InputMethod::Vni | InputMethod::Viqr | InputMethod::TelexVni
+        ) {
             if modify_key == ModifyKeyType::Horn {
                 if self.vowel_count > 0 && !self.options.free_marking && !self.last_vowel_is_current() {
                     return None;
@@ -704,6 +733,19 @@ impl VietFlowEngine {
                     | VnLexiName::Uh
             )
         {
+            if to_lower_ascii(last_slot.raw_char) == 'w' {
+                last_slot.lexi = if is_ascii_upper(last_slot.raw_char) {
+                    VnLexiName::W
+                } else {
+                    VnLexiName::w
+                };
+                last_slot.modified = false;
+                self.word_form = WordForm::NonVn;
+                self.recalculate_vowel_state();
+                self.refresh_tone_position();
+                return Some(self.rebuild_current_word());
+            }
+
             let plain = iso_to_vn_lexi(to_lower_ascii(last_slot.raw_char));
             last_slot.lexi = if is_ascii_upper(last_slot.raw_char) {
                 plain.to_upper()
@@ -724,7 +766,13 @@ impl VietFlowEngine {
             let c = to_lower_ascii(slot.raw_char);
 
             if c == 'a' {
-                if matches!(self.options.method, InputMethod::Telex | InputMethod::SimpleTelex) {
+                if matches!(
+                    self.options.method,
+                    InputMethod::Telex
+                        | InputMethod::SimpleTelex
+                        | InputMethod::TelexSimple2
+                        | InputMethod::TelexVni
+                ) {
                     slot.lexi = if slot.is_upper { VnLexiName::Ah } else { VnLexiName::ah };
                 } else {
                     continue;

@@ -47,9 +47,9 @@ All active and completed work items across the VietFlow codebase.
   - [x] Trimmed embedded runtime (unused Qt plugins/libraries): ~19 MB single file.
   - [ ] Signed installer / Microsoft Store package (optional).
 
-- [ ] **Updater integration (concurrent session)**:
-  - [ ] Wire the velopack updater or remove the `test_api` stub; currently emits a
-        `dead_code` warning. Coordinate through `docs/ACTIVE_WORK.md` before editing.
+- [x] **Updater**: on-demand GitHub Releases check via WinINet; opens the release
+      page when a newer tag exists. Velopack runtime removed to keep the binary
+      small (installer packaging via `vpk` still available).
 
 - [ ] **Elevated / Administrator Privileges**:
   - [ ] Optional elevated scheduled task so VietFlow can type into games or tools

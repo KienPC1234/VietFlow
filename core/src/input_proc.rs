@@ -65,9 +65,19 @@ pub fn is_word_break_fast(c: char) -> bool {
 
 pub fn get_char_type(c: char, method: InputMethod) -> CharType {
     if c.is_ascii_alphabetic() {
-        if matches!(method, InputMethod::Telex | InputMethod::SimpleTelex) {
+        if matches!(
+            method,
+            InputMethod::Telex
+                | InputMethod::SimpleTelex
+                | InputMethod::TelexSimple2
+                | InputMethod::TelexVni
+        ) {
             let lower = to_lower_ascii(c);
-            if matches!(lower, 's' | 'f' | 'r' | 'x' | 'j' | 'z' | 'w') {
+            let is_action = match method {
+                InputMethod::TelexSimple2 => matches!(lower, 's' | 'f' | 'r' | 'x' | 'j' | 'w'),
+                _ => matches!(lower, 's' | 'f' | 'r' | 'x' | 'j' | 'z' | 'w'),
+            };
+            if is_action {
                 return CharType::ToneOrAction;
             }
         }
@@ -75,7 +85,7 @@ pub fn get_char_type(c: char, method: InputMethod) -> CharType {
     }
 
     if c.is_ascii_digit() {
-        if matches!(method, InputMethod::Vni) {
+        if matches!(method, InputMethod::Vni | InputMethod::TelexVni) {
             return CharType::ToneOrAction;
         }
         return CharType::Digit;
@@ -114,6 +124,14 @@ pub fn get_tone_key(c: char, method: InputMethod) -> ToneKeyType {
             'z' => ToneKeyType::Remove,
             _ => ToneKeyType::None,
         },
+        InputMethod::TelexSimple2 => match lower {
+            's' => ToneKeyType::Acute,
+            'f' => ToneKeyType::Grave,
+            'r' => ToneKeyType::Hook,
+            'x' => ToneKeyType::Tilde,
+            'j' => ToneKeyType::Dot,
+            _ => ToneKeyType::None,
+        },
         InputMethod::Vni => match c {
             '1' => ToneKeyType::Acute,
             '2' => ToneKeyType::Grave,
@@ -122,6 +140,23 @@ pub fn get_tone_key(c: char, method: InputMethod) -> ToneKeyType {
             '5' => ToneKeyType::Dot,
             '0' => ToneKeyType::Remove,
             _ => ToneKeyType::None,
+        },
+        InputMethod::TelexVni => match lower {
+            's' => ToneKeyType::Acute,
+            'f' => ToneKeyType::Grave,
+            'r' => ToneKeyType::Hook,
+            'x' => ToneKeyType::Tilde,
+            'j' => ToneKeyType::Dot,
+            'z' => ToneKeyType::Remove,
+            _ => match c {
+                '1' => ToneKeyType::Acute,
+                '2' => ToneKeyType::Grave,
+                '3' => ToneKeyType::Hook,
+                '4' => ToneKeyType::Tilde,
+                '5' => ToneKeyType::Dot,
+                '0' => ToneKeyType::Remove,
+                _ => ToneKeyType::None,
+            },
         },
         InputMethod::Viqr => match c {
             '\'' => ToneKeyType::Acute,
@@ -140,7 +175,7 @@ pub fn get_tone_key(c: char, method: InputMethod) -> ToneKeyType {
 pub fn get_modify_key(c: char, method: InputMethod) -> ModifyKeyType {
     let lower = to_lower_ascii(c);
     match method {
-        InputMethod::Telex | InputMethod::SimpleTelex => match lower {
+        InputMethod::Telex | InputMethod::SimpleTelex | InputMethod::TelexSimple2 => match lower {
             'w' => ModifyKeyType::HookAll,
             _ => ModifyKeyType::None,
         },
@@ -151,6 +186,19 @@ pub fn get_modify_key(c: char, method: InputMethod) -> ModifyKeyType {
             '9' => ModifyKeyType::DMark,
             _ => ModifyKeyType::None,
         },
+        InputMethod::TelexVni => {
+            if lower == 'w' {
+                ModifyKeyType::HookAll
+            } else {
+                match c {
+                    '6' => ModifyKeyType::Circumflex,
+                    '7' => ModifyKeyType::Horn,
+                    '8' => ModifyKeyType::Breve,
+                    '9' => ModifyKeyType::DMark,
+                    _ => ModifyKeyType::None,
+                }
+            }
+        }
         InputMethod::Viqr => match c {
             '^' => ModifyKeyType::Circumflex,
             '+' | '*' => ModifyKeyType::Horn,

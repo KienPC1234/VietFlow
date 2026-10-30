@@ -5,10 +5,16 @@ members = [
     "platforms/windows",
 ]
 
+[workspace.package]
+version = "0.1.1"
+edition = "2021"
+authors = ["VietFlow Team"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/KienPC1234/VietFlow"
+
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
-

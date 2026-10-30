@@ -18,12 +18,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 pub const WM_TRAYICON: u32 = WM_USER + 101;
 pub const WM_SETTINGS: u32 = WM_USER + 102;
 pub const WM_CONVERT: u32 = WM_USER + 103;
+pub const WM_RELOAD_CONFIG: u32 = WM_USER + 104;
 
 pub const IDM_TOGGLE: usize = 1001;
 pub const IDM_METHOD_TELEX: usize = 1010;
-pub const IDM_METHOD_SIMPLE_TELEX: usize = 1011;
-pub const IDM_METHOD_VNI: usize = 1012;
-pub const IDM_METHOD_VIQR: usize = 1013;
+pub const IDM_METHOD_VNI: usize = 1011;
+pub const IDM_METHOD_VIQR: usize = 1012;
+pub const IDM_METHOD_SIMPLE_TELEX: usize = 1013;
+pub const IDM_METHOD_SIMPLE_TELEX2: usize = 1014;
+pub const IDM_METHOD_TELEX_VNI: usize = 1015;
 
 pub const IDM_CHARSET_UNICODE: usize = 1020;
 pub const IDM_CHARSET_COMPOSITE: usize = 1021;
@@ -58,11 +61,15 @@ impl TrayIcon {
         nid.hIcon = icon_v;
 
         let tip = "VietFlow - Bộ gõ tiếng Việt\0";
-        for (i, c) in tip.encode_utf16().enumerate() {
-            if i < nid.szTip.len() {
-                nid.szTip[i] = c;
-            }
+        let mut tip_buf = [0u16; 128];
+        for (i, c) in tip.encode_utf16().take(127).enumerate() {
+            tip_buf[i] = c;
         }
+        std::ptr::copy_nonoverlapping(
+            tip_buf.as_ptr(),
+            std::ptr::addr_of_mut!(nid.szTip) as *mut u16,
+            128,
+        );
 
         Shell_NotifyIconW(NIM_ADD, &nid);
 
@@ -74,6 +81,11 @@ impl TrayIcon {
         }
     }
 
+    pub unsafe fn set_icons(&mut self, icon_v: HICON, icon_e: HICON) {
+        self.icon_v = icon_v;
+        self.icon_e = icon_e;
+    }
+
     pub unsafe fn update_status(&mut self, is_vietnamese: bool) {
         self.nid.hIcon = if is_vietnamese { self.icon_v } else { self.icon_e };
         let tip_str = if is_vietnamese {
@@ -81,11 +93,15 @@ impl TrayIcon {
         } else {
             "VietFlow - English [E]\0"
         };
-        for (i, c) in tip_str.encode_utf16().enumerate() {
-            if i < self.nid.szTip.len() {
-                self.nid.szTip[i] = c;
-            }
+        let mut tip_buf = [0u16; 128];
+        for (i, c) in tip_str.encode_utf16().take(127).enumerate() {
+            tip_buf[i] = c;
         }
+        std::ptr::copy_nonoverlapping(
+            tip_buf.as_ptr(),
+            std::ptr::addr_of_mut!(self.nid.szTip) as *mut u16,
+            128,
+        );
         Shell_NotifyIconW(NIM_MODIFY, &self.nid);
     }
 
@@ -123,20 +139,32 @@ impl TrayIcon {
         AppendMenuW(
             hmenu_method,
             MF_STRING | check_flag(method == 1),
-            IDM_METHOD_SIMPLE_TELEX,
-            to_wide("Simple Telex").as_ptr(),
-        );
-        AppendMenuW(
-            hmenu_method,
-            MF_STRING | check_flag(method == 2),
             IDM_METHOD_VNI,
             to_wide("VNI").as_ptr(),
         );
         AppendMenuW(
             hmenu_method,
-            MF_STRING | check_flag(method == 3),
+            MF_STRING | check_flag(method == 2),
             IDM_METHOD_VIQR,
             to_wide("VIQR").as_ptr(),
+        );
+        AppendMenuW(
+            hmenu_method,
+            MF_STRING | check_flag(method == 3),
+            IDM_METHOD_SIMPLE_TELEX,
+            to_wide("Telex đơn giản").as_ptr(),
+        );
+        AppendMenuW(
+            hmenu_method,
+            MF_STRING | check_flag(method == 4),
+            IDM_METHOD_SIMPLE_TELEX2,
+            to_wide("Telex đơn giản 2").as_ptr(),
+        );
+        AppendMenuW(
+            hmenu_method,
+            MF_STRING | check_flag(method == 5),
+            IDM_METHOD_TELEX_VNI,
+            to_wide("Telex + VNI").as_ptr(),
         );
         AppendMenuW(
             hmenu,

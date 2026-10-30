@@ -1,207 +1,306 @@
-# VietFlow Release Build & Package Script
-# Produces a single portable VietFlow.exe with the Qt UI runtime embedded.
+# VietFlow Release Build Script
+# Builds the static ImGui/DX11 UI library, tests the Rust workspace, then links
+# one or both VietFlow executables (x64 / x86) with embedded font and icon.
+#
+# Default CRT is static (/MT + Rust +crt-static), so the exe does not need the
+# VC++ Redistributable. Use -DynamicCrt for the smaller /MD build.
+#
+# Version/changelog are single-sourced from VERSION and CHANGELOG.md.
 param(
+    [ValidateSet('x64', 'x86', 'All')]
+    [string]$Arch = 'x64',
     [string]$DistDir = "",
-    [switch]$Separate,
     [switch]$Velopack,
-    [switch]$Msi,
-    [string]$VelopackVersion = ""
+    [string]$VelopackVersion = "",
+    [switch]$StaticCrt,
+    [switch]$DynamicCrt
 )
 
 $ErrorActionPreference = "Stop"
-
 $root = Split-Path -Parent $PSScriptRoot
+
 if ([string]::IsNullOrWhiteSpace($DistDir)) {
     $DistDir = Join-Path $root "dist"
 } elseif (-not [System.IO.Path]::IsPathRooted($DistDir)) {
     $DistDir = Join-Path $root $DistDir
 }
-$dist = $DistDir
-$payload = Join-Path $root "ui-runtime.zip"
 
-New-Item -ItemType Directory -Force -Path $dist | Out-Null
+New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
-function Remove-Path([string]$Path) {
-    if (Test-Path $Path) {
-        Remove-Item $Path -Recurse -Force -ErrorAction SilentlyContinue
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+function Write-Utf8NoBom([string]$Path, [string]$Content) {
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+
+function Get-ChangelogSection([string]$Text, [string]$Version) {
+    if ([string]::IsNullOrWhiteSpace($Text)) { return "" }
+    $escaped = [regex]::Escape($Version)
+    $pattern = "(?ms)^##\s+\[?v?$escaped\]?[^\r\n]*\r?\n(.*?)(?=^##\s+|\z)"
+    $match = [regex]::Match($Text, $pattern)
+    if ($match.Success) {
+        return $match.Groups[1].Value.Trim()
+    }
+    return ""
+}
+
+# ---------------------------------------------------------------------------
+# Version (VERSION is the only place to bump)
+# ---------------------------------------------------------------------------
+$versionPath = Join-Path $root "VERSION"
+if (-not (Test-Path $versionPath)) {
+    throw "Missing VERSION file at $versionPath"
+}
+$version = (Get-Content $versionPath -Raw -Encoding UTF8).Trim()
+if ([string]::IsNullOrWhiteSpace($version)) {
+    throw "VERSION file is empty"
+}
+if ($VelopackVersion -and $VelopackVersion.Trim() -ne $version) {
+    throw "VelopackVersion '$VelopackVersion' does not match VERSION '$version'."
+}
+
+# Keep Cargo.toml's [workspace.package] version in sync. VERSION stays the only
+# file a maintainer edits; build.rs still fails loudly if the two ever diverge.
+$cargoToml = Join-Path $root "Cargo.toml"
+if (Test-Path $cargoToml) {
+    $cargoText = Get-Content $cargoToml -Raw -Encoding UTF8
+    $versionPattern = '(?ms)(\[workspace\.package\][^\[]*?version\s*=\s*")[^"]+(")'
+    $syncedCargo = [regex]::Replace($cargoText, $versionPattern, "`${1}$version`${2}")
+    if ($syncedCargo -ne $cargoText) {
+        Write-Utf8NoBom $cargoToml $syncedCargo
+        Write-Host "Synced Cargo.toml to version $version" -ForegroundColor Yellow
     }
 }
 
-# A running daemon locks its own exe; keep packaging the rest and warn instead
-# of failing the whole build.
-function Copy-Artifact([string]$Source) {
-    $target = Join-Path $dist (Split-Path $Source -Leaf)
-    if ((Test-Path $target) -and ($Source -notlike "*VietFlow.exe")) {
-        Remove-Path $target
-    }
-    try {
-        Copy-Item $Source $target -Force
-    } catch {
-        $name = [System.IO.Path]::GetFileNameWithoutExtension($Source)
-        $ext = [System.IO.Path]::GetExtension($Source)
-        $fallback = Join-Path $dist "$name.new$ext"
-        Copy-Item $Source $fallback -Force
-        Write-Warning "Could not overwrite '$target' (app is running). Saved '$fallback' instead."
-    }
+$archs = if ($Arch -eq 'All') { @('x64', 'x86') } else { @($Arch) }
+$releaseBase = "https://github.com/KienPC1234/VietFlow/releases"
+$releaseTagUrl = "$releaseBase/tag/v$version"
+$releaseDownloadBase = "$releaseBase/download/v$version"
+
+Write-Host "=================================================" -ForegroundColor Cyan
+Write-Host "  VietFlow - Release Build v$version ($Arch)  " -ForegroundColor Cyan
+Write-Host "=================================================" -ForegroundColor Cyan
+
+# ---------------------------------------------------------------------------
+# CRT selection
+# ---------------------------------------------------------------------------
+$previousRustFlags = $env:RUSTFLAGS
+$useStatic = -not $DynamicCrt
+if ($DynamicCrt -and $StaticCrt) {
+    throw "Use either -DynamicCrt or -StaticCrt (static is the default)."
 }
-
-if ($Separate) {
-    Remove-Path $payload
-}
-
-Write-Host "Building Rust core..." -ForegroundColor Cyan
-cargo build --manifest-path (Join-Path $root "Cargo.toml") --release -p vietflow-core
-
-$qt = $env:QT_ROOT
-if (-not $qt -or -not (Test-Path $qt)) {
-    $qt = "C:\Qt\6.8.3\msvc2022_64"
-}
-
-$uiExe = $null
-$windeployqt = Join-Path $qt "bin\windeployqt.exe"
-if (Test-Path $windeployqt) {
-    Write-Host "Building VietFlow Qt UI..." -ForegroundColor Cyan
-    $uiSource = Join-Path $root "ui"
-    $uiBuild = Join-Path $uiSource "build"
-
-    cmake -S $uiSource -B $uiBuild -DCMAKE_PREFIX_PATH="$qt"
-    cmake --build $uiBuild --config Release
-    $uiExe = Join-Path $uiBuild "Release\vietflow-ui.exe"
-
-    if ($Separate) {
-        & $windeployqt --qmldir (Join-Path $uiSource "qml") --dir $dist --release `
-            --no-translations --no-opengl-sw $uiExe
-        Copy-Artifact $uiExe
-        Copy-Artifact (Join-Path $root "target\release\vietflow_core.dll")
+if ($useStatic) {
+    $env:RUSTFLAGS = if ($previousRustFlags) {
+        "$previousRustFlags -C target-feature=+crt-static"
     } else {
-        $stage = Join-Path $uiSource "runtime"
-        Remove-Path $stage
-        New-Item -ItemType Directory -Force -Path $stage | Out-Null
-
-        & $windeployqt --qmldir (Join-Path $uiSource "qml") --dir $stage --release `
-            --no-translations --no-opengl-sw `
-            --skip-plugin-types "qmltooling,generic,networkinformation,tls,styles,iconengines" `
-            --exclude-plugins "qgif,qjpeg,qtiff,qwebp,qico,qminimal,qoffscreen,qdirect2d" `
-            --no-quickcontrols2material --no-quickcontrols2materialstyleimpl `
-            --no-quickcontrols2universal --no-quickcontrols2universalstyleimpl `
-            --no-quickcontrols2fusion --no-quickcontrols2fusionstyleimpl `
-            --no-quickcontrols2imagine --no-quickcontrols2imaginestyleimpl `
-            --no-quickcontrols2windowsstyleimpl --no-quickcontrols2fluentwinui3styleimpl `
-            $uiExe
-
-        Copy-Item $uiExe $stage -Force
-        Copy-Item (Join-Path $root "target\release\vietflow_core.dll") $stage -Force
-
-        # Optional libraries not used by this UI; removing them keeps the payload small.
-        # Keep Qt6Network (imported by Qt6Quick) and Qt6QuickShapes (imported by the
-        # Basic style); Qt6QuickEffects is not used.
-        Remove-Path (Join-Path $stage "Qt6QuickEffects.dll")
-        foreach ($style in @("FluentWinUI3", "Fusion", "Imagine", "Material", "Universal", "Windows")) {
-            Remove-Path (Join-Path $stage "qml\QtQuick\Controls\$style")
-        }
-        Remove-Path (Join-Path $stage "styles")
-        Remove-Path (Join-Path $stage "iconengines")
-        Get-ChildItem (Join-Path $stage "imageformats") -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -ne "qsvg.dll" } |
-            Remove-Item -Force -ErrorAction SilentlyContinue
-        Get-ChildItem (Join-Path $stage "platforms") -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -ne "qwindows.dll" } |
-            Remove-Item -Force -ErrorAction SilentlyContinue
-
-        # MSVC runtime DLLs: required when the target machine lacks the VC++ redist.
-        $crt = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter "msvcp140.dll" -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match '\\x64\\Microsoft\.VC14\d\.CRT\\' } |
-            Sort-Object FullName -Descending |
-            Select-Object -First 1
-        if ($crt) {
-            Copy-Item (Join-Path $crt.DirectoryName "*.dll") $stage -Force -ErrorAction SilentlyContinue
-        }
-
-        Remove-Path (Join-Path $stage "vc_redist.x64.exe")
-        Remove-Path (Join-Path $stage "qt.conf")
-
-        Remove-Path $payload
-        Write-Host "Packing Qt runtime..." -ForegroundColor Cyan
-        Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $payload -CompressionLevel Optimal
-        Write-Host ("Payload: {0:N1} MB" -f ((Get-Item $payload).Length / 1MB)) -ForegroundColor DarkGray
+        "-C target-feature=+crt-static"
     }
+    Write-Host "  CRT: static (/MT, no VC++ redist)" -ForegroundColor Yellow
 } else {
-    Write-Warning "Qt 6 not found at '$qt'. A UI-less host will be built (set QT_ROOT to override)."
-    Remove-Path $payload
-}
-
-Write-Host "Building VietFlow host..." -ForegroundColor Cyan
-# Force a rebuild so the optional payload state (present/absent) is respected.
-cargo clean --manifest-path (Join-Path $root "Cargo.toml") -p vietflow-windows --release 2>$null | Out-Null
-cargo build --manifest-path (Join-Path $root "Cargo.toml") --release -p vietflow-windows
-
-if (-not $Separate) {
-    # Remove files from the previous separate-runtime layout.
-    foreach ($name in @("vietflow-ui.exe", "vietflow_core.dll", "opengl32sw.dll", "D3Dcompiler_47.dll", "vc_redist.x64.exe", "qt.conf")) {
-        Remove-Path (Join-Path $dist $name)
+    if ($previousRustFlags -match '\+crt-static') {
+        $env:RUSTFLAGS = ($previousRustFlags -replace '\s*-C\s+target-feature=\+crt-static', '').Trim()
     }
-    foreach ($dir in @("qml", "platforms", "imageformats", "iconengines", "styles", "translations", "tls", "networkinformation", "generic", "qmltooling")) {
-        Remove-Path (Join-Path $dist $dir)
+    Write-Host "  CRT: dynamic (/MD, needs VC++ 2015-2022 redist)" -ForegroundColor DarkGray
+}
+$staticCrtValue = if ($useStatic) { "ON" } else { "OFF" }
+
+# ---------------------------------------------------------------------------
+# 1. Build the C++ ImGui/DX11 static library for each selected architecture
+# ---------------------------------------------------------------------------
+$imguiSourceDir = Join-Path $root "ui_imgui"
+foreach ($a in $archs) {
+    $buildDir = if ($a -eq 'x86') {
+        Join-Path $imguiSourceDir "build-x86"
+    } else {
+        Join-Path $imguiSourceDir "build"
     }
-    Get-ChildItem $dist -Filter "Qt6*.dll" -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+
+    Write-Host "`n[1/5] Building C++ ImGui library ($a)..." -ForegroundColor Yellow
+    $cmakeArgs = @(
+        "-B", $buildDir,
+        "-S", $imguiSourceDir,
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DVIETFLOW_STATIC_CRT=$staticCrtValue"
+    )
+    if ($a -eq 'x86') {
+        $cmakeArgs += @("-A", "Win32")
+    }
+    & cmake @cmakeArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "CMake configure failed for $a!"
+        exit $LASTEXITCODE
+    }
+    & cmake --build $buildDir --config Release
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "C++ ImGui build failed for $a!"
+        exit $LASTEXITCODE
+    }
 }
 
-Remove-Path (Join-Path $dist "VietFlow.new.exe")
-Copy-Artifact (Join-Path $root "target\release\VietFlow.exe")
-
-Write-Host "`nBuild succeeded! Artifacts available in:" -ForegroundColor Green
-Get-ChildItem $dist | Select-Object Name, @{N = "MB"; E = { [math]::Round($_.Length / 1MB, 1) } } | Format-Table -AutoSize
-
-# The single-file exe already contains the payload; keep the tree clean.
-if (-not $Separate) {
-    Remove-Path (Join-Path $root "ui\runtime")
-    Remove-Path $payload
+# ---------------------------------------------------------------------------
+# 2. Tests (host x64 when x64 is selected, otherwise the x86 target)
+# ---------------------------------------------------------------------------
+Write-Host "`n[2/5] Running workspace unit tests..." -ForegroundColor Yellow
+if ($archs -contains 'x64') {
+    & cargo test --manifest-path (Join-Path $root "Cargo.toml") --workspace
+} else {
+    & cargo test --manifest-path (Join-Path $root "Cargo.toml") --workspace --target i686-pc-windows-msvc
+}
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Unit tests failed!"
+    exit $LASTEXITCODE
 }
 
-if ($Velopack) {
-    Write-Host "`nPackaging with Velopack..." -ForegroundColor Cyan
-    $vpk = Get-Command "vpk" -ErrorAction SilentlyContinue
-    if (-not $vpk) {
-        Write-Error "Velopack CLI 'vpk' not found. Please install via 'dotnet tool install -g vpk'."
+# ---------------------------------------------------------------------------
+# 3. Build release executables
+# ---------------------------------------------------------------------------
+Write-Host "`n[3/5] Building release executable(s)..." -ForegroundColor Yellow
+$built = @{}
+$builtDist = @{}
+$cargoManifest = Join-Path $root "Cargo.toml"
+
+foreach ($a in $archs) {
+    if ($a -eq 'x86') {
+        Write-Host "  Compiling x86 (i686-pc-windows-msvc)..." -ForegroundColor DarkGray
+        & cargo build --manifest-path $cargoManifest --release --target i686-pc-windows-msvc -p vietflow-windows
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "x86 release build failed!"
+            exit $LASTEXITCODE
+        }
+        $src = Join-Path $root "target\i686-pc-windows-msvc\release\VietFlow.exe"
+        $distName = "VietFlow-x86.exe"
+    } else {
+        Write-Host "  Compiling x64 (host target)..." -ForegroundColor DarkGray
+        & cargo build --manifest-path $cargoManifest --release -p vietflow-windows
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "x64 release build failed!"
+            exit $LASTEXITCODE
+        }
+        $src = Join-Path $root "target\release\VietFlow.exe"
+        $distName = "VietFlow.exe"
+    }
+    if (-not (Test-Path $src)) {
+        Write-Error "Expected executable not found: $src"
         exit 1
     }
+    $built[$a] = $src
+    $builtDist[$a] = Join-Path $DistDir $distName
+}
 
-    if ([string]::IsNullOrWhiteSpace($VelopackVersion)) {
-        $cargoContent = Get-Content (Join-Path $root "platforms\windows\Cargo.toml") -Raw
-        if ($cargoContent -match 'version\s*=\s*"([^"]+)"') {
-            $VelopackVersion = $matches[1]
-        } else {
-            $VelopackVersion = "0.1.0"
-        }
+Stop-Process -Name "VietFlow" -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 400
+
+foreach ($a in $archs) {
+    Copy-Item $built[$a] $builtDist[$a] -Force
+    if ($a -eq 'x64') {
+        Copy-Item $built[$a] (Join-Path $DistDir "VietFlow-x64.exe") -Force
     }
+}
 
+$oldDll = Join-Path $DistDir "vietflow_ui.dll"
+if (Test-Path $oldDll) {
+    Remove-Item $oldDll -Force
+}
+
+# ---------------------------------------------------------------------------
+# 4. Updater metadata (common for all architectures)
+# ---------------------------------------------------------------------------
+Write-Host "`n[4/5] Writing updater metadata (version.txt, latest.json, CHANGELOG.md)..." -ForegroundColor Yellow
+
+$versionFile = Join-Path $DistDir "version.txt"
+Write-Utf8NoBom $versionFile "$version`n"
+
+$changelogSource = Join-Path $root "CHANGELOG.md"
+$changelogFile = Join-Path $DistDir "CHANGELOG.md"
+$changelogText = ""
+if (Test-Path $changelogSource) {
+    $changelogText = Get-Content $changelogSource -Raw -Encoding UTF8
+    Copy-Item $changelogSource $changelogFile -Force
+} else {
+    Write-Warning "CHANGELOG.md not found at $changelogSource"
+}
+
+$vpk = if ($Velopack) { Get-Command "vpk" -ErrorAction SilentlyContinue } else { $null }
+$willPackage = $Velopack -and $vpk
+$downloads = [ordered]@{}
+if ($willPackage) {
+    if ($archs -contains 'x64') {
+        $downloads['x64'] = "$releaseDownloadBase/VietFlow-win-x64-Setup.exe"
+    }
+    if ($archs -contains 'x86') {
+        $downloads['x86'] = "$releaseDownloadBase/VietFlow-win-x86-Setup.exe"
+    }
+}
+
+$notes = Get-ChangelogSection $changelogText $version
+$manifest = [ordered]@{
+    version   = $version
+    notes     = $notes
+    url       = $releaseTagUrl
+    released  = (Get-Date).ToString("yyyy-MM-dd")
+    downloads = $downloads
+}
+$manifestFile = Join-Path $DistDir "latest.json"
+Write-Utf8NoBom $manifestFile (($manifest | ConvertTo-Json -Depth 4) + "`n")
+
+foreach ($a in $archs) {
+    $sizeMb = [math]::Round(((Get-Item $builtDist[$a]).Length / 1MB), 3)
+    Write-Host "      ${a}: $($builtDist[$a]) ($sizeMb MB)" -ForegroundColor Green
+}
+Write-Host "      Version:  $versionFile" -ForegroundColor Green
+Write-Host "      Manifest: $manifestFile" -ForegroundColor Green
+
+# ---------------------------------------------------------------------------
+# 5. Optional Velopack packaging, one channel per architecture
+# ---------------------------------------------------------------------------
+if ($willPackage) {
     $releasesDir = Join-Path $root "releases"
     New-Item -ItemType Directory -Force -Path $releasesDir | Out-Null
 
-    $iconPath = Join-Path $root "assets\VietFlow.ico"
-    $vpkArgs = @(
-        "pack",
-        "--packId", "VietFlow",
-        "--packVersion", $VelopackVersion,
-        "--packDir", $dist,
-        "--outputDir", $releasesDir,
-        "--mainExe", "VietFlow.exe",
-        "--packTitle", "VietFlow",
-        "--packAuthors", "VietFlow Team"
-    )
-    if (Test-Path $iconPath) {
-        $vpkArgs += @("--icon", $iconPath)
-    }
-    if ($Msi) {
-        $vpkArgs += @("--msi")
+    foreach ($a in $archs) {
+        $channel = if ($a -eq 'x86') { "win-x86" } else { "win-x64" }
+        $runtime = if ($a -eq 'x86') { "win-x86" } else { "win-x64" }
+        $packDir = Join-Path $root "target\release\pack_staging-$a"
+        Remove-Item -Recurse -Force $packDir -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path $packDir | Out-Null
+        Copy-Item -Path $built[$a] -Destination (Join-Path $packDir "VietFlow.exe") -Force
+        Copy-Item -Path $versionFile, $manifestFile -Destination $packDir -Force
+        if (Test-Path $changelogFile) {
+            Copy-Item -Path $changelogFile -Destination $packDir -Force
+        }
+
+        Write-Host "`n[5/5] Packaging $a with Velopack v$version (channel $channel)..." -ForegroundColor Magenta
+        & $vpk.Source pack --packId "VietFlow" --packVersion $version --channel $channel --runtime $runtime --packDir $packDir --packTitle "VietFlow" --packAuthors "VietFlow Team" --mainExe "VietFlow.exe" --icon (Join-Path $root "assets\VietFlow.ico") --outputDir $releasesDir
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Velopack packaging failed for $a!"
+            exit $LASTEXITCODE
+        }
     }
 
-    & vpk @vpkArgs
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Velopack pack failed with code $LASTEXITCODE."
-        exit $LASTEXITCODE
+    Copy-Item -Path $versionFile, $manifestFile -Destination $releasesDir -Force
+    if (Test-Path $changelogFile) {
+        Copy-Item -Path $changelogFile -Destination $releasesDir -Force
     }
 
-    Write-Host "`nVelopack packaging completed! Release packages in:" -ForegroundColor Green
-    Get-ChildItem $releasesDir | Select-Object Name, @{N = "MB"; E = { [math]::Round($_.Length / 1MB, 1) } } | Format-Table -AutoSize
+    Write-Host "Velopack releases ready in: $releasesDir" -ForegroundColor Green
+    Write-Host "Upload these assets to the GitHub release:" -ForegroundColor Green
+    Write-Host "  VietFlow-x64.exe, VietFlow-x86.exe" -ForegroundColor Green
+    Write-Host "  VietFlow-win-x64-Setup.exe, VietFlow-win-x86-Setup.exe" -ForegroundColor Green
+    Write-Host "  latest.json, version.txt, CHANGELOG.md" -ForegroundColor Green
+} elseif ($Velopack) {
+    Write-Warning "'vpk' tool was not found in PATH. Skipping Velopack packaging."
+} else {
+    Write-Host "`n[5/5] Velopack packaging skipped (use -Velopack to build installers)." -ForegroundColor DarkGray
 }
+
+if ($env:RUSTFLAGS -ne $previousRustFlags) {
+    if ($null -eq $previousRustFlags) {
+        Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
+    } else {
+        $env:RUSTFLAGS = $previousRustFlags
+    }
+}
+
+Write-Host "`n[OK] VietFlow build finished successfully!" -ForegroundColor Green

@@ -1,0 +1,43 @@
+# Embedded UI assets
+
+These files are embedded into `VietFlow.exe` by
+`platforms/windows/src/main.rs` (`include_bytes!`) and `build.rs` (icon).
+
+## Font
+
+`JetBrainsMonoNerdFont-Regular.ttf` is a **subset** of the upstream
+JetBrains Mono Nerd Font (kept in `full/`). It contains only the glyphs the UI
+can render:
+
+- `U+0020–U+00FF` — Basic Latin + Latin-1
+- `U+0102–0103`, `U+0110–0111`, `U+0128–0129`, `U+0168–0169`,
+  `U+01A0–01A1`, `U+01AF–01B0`, `U+1EA0–1EF9` — Vietnamese
+- `U+0300`, `U+0301`, `U+0303`, `U+0309`, `U+0323` — combining marks
+- `U+2022` — bullet used by list rows
+- The 14 Nerd Font icon codepoints used by `src/theme.h`
+  (`F00C F013 F01A F021 F067 F07B F0C5 F0C7 F0E7 F0EC F11B F11C F1F8 F1FC`)
+
+Result: ~23 KB instead of ~2.4 MB. The atlas is also much smaller because
+`SetupFonts()` only requests those icon codepoints.
+
+The upstream font is licensed under the SIL Open Font License 1.1; see
+`full/OFL.txt`.
+
+### Regenerate the subset
+
+```powershell
+python -m fontTools.subset full\JetBrainsMonoNerdFont-Regular.ttf `
+  --unicodes="U+0020-00FF,U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+1EA0-1EF9,U+0300,U+0301,U+0303,U+0309,U+0323,U+2022,U+F00C,U+F013,U+F01A,U+F021,U+F067,U+F07B,U+F0C5,U+F0C7,U+F0E7,U+F0EC,U+F11B,U+F11C,U+F1F8,U+F1FC" `
+  --no-hinting --desubroutinize --layout-features="" `
+  --output-file=JetBrainsMonoNerdFont-Regular.ttf
+```
+
+If you add a new `NF_*` icon to `src/theme.h`, add its codepoint to **both**
+this command and `icon_ranges[]` in `src/theme.cpp`. Otherwise ImGui renders a
+missing-glyph box even though the glyph exists in the TTF.
+
+## Icon
+
+`assets/VietFlow.ico` uses PNG compression for the 256×256 frame (Windows
+Vista+); the 16/32/48 frames stay as BMP. Keep the source icon outside the repo
+if you need to regenerate it.
