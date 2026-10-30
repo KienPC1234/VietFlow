@@ -6,30 +6,100 @@ use crate::tables::{
     IS_VN_VOWEL, STD_VN_ROOT_CHAR, TCVN3_TABLE, TOTAL_VN_CHARS, UNICODE_TABLE, VNI_WIN_TABLE,
 };
 
+const fn build_tcvn3_inverse() -> [u8; 256] {
+    let mut table = [0xFF; 256];
+    let mut i = 0;
+    while i < TOTAL_VN_CHARS {
+        let b = TCVN3_TABLE[i];
+        if table[b as usize] == 0xFF || (i & 1 != 0) {
+            table[b as usize] = i as u8;
+        }
+        i += 1;
+    }
+    table
+}
+
+const fn build_ascii_to_unicode_index() -> [u8; 128] {
+    let mut table = [0xFF; 128];
+    let mut i = 0;
+    while i < TOTAL_VN_CHARS {
+        let ch = UNICODE_TABLE[i];
+        if (ch as u32) < 128 {
+            table[ch as usize] = i as u8;
+        }
+        i += 1;
+    }
+    table
+}
+
+const fn build_unicode_sorted() -> [(char, u8); TOTAL_VN_CHARS] {
+    let mut arr = [('\0', 0u8); TOTAL_VN_CHARS];
+    let mut i = 0;
+    while i < TOTAL_VN_CHARS {
+        arr[i] = (UNICODE_TABLE[i], i as u8);
+        i += 1;
+    }
+    let mut i = 1;
+    while i < TOTAL_VN_CHARS {
+        let key = arr[i];
+        let mut j = i;
+        while j > 0 && (arr[j - 1].0 as u32) > (key.0 as u32) {
+            arr[j] = arr[j - 1];
+            j -= 1;
+        }
+        arr[j] = key;
+        i += 1;
+    }
+    arr
+}
+
+static INVERSE_TCVN3: [u8; 256] = build_tcvn3_inverse();
+static ASCII_TO_UNICODE_INDEX: [u8; 128] = build_ascii_to_unicode_index();
+static UNICODE_SORTED: [(char, u8); TOTAL_VN_CHARS] = build_unicode_sorted();
+
+#[inline]
+pub fn unicode_to_table_index(c: char) -> Option<usize> {
+    if c.is_ascii() {
+        let idx = ASCII_TO_UNICODE_INDEX[c as usize];
+        if idx != 0xFF {
+            return Some(idx as usize);
+        }
+        return None;
+    }
+    UNICODE_SORTED
+        .binary_search_by_key(&(c as u32), |&(ch, _)| ch as u32)
+        .ok()
+        .map(|pos| UNICODE_SORTED[pos].1 as usize)
+}
+
+#[inline]
+pub fn strip_accent_char(c: char) -> char {
+    if c.is_ascii() {
+        return c;
+    }
+    match c {
+        'Á' | 'À' | 'Ả' | 'Ã' | 'Ạ' | 'Â' | 'Ấ' | 'Ầ' | 'Ẩ' | 'Ẫ' | 'Ậ' | 'Ă' | 'Ắ' | 'Ằ' | 'Ẳ' | 'Ẵ' | 'Ặ' => 'A',
+        'á' | 'à' | 'ả' | 'ã' | 'ạ' | 'â' | 'ấ' | 'ầ' | 'ẩ' | 'ẫ' | 'ậ' | 'ă' | 'ắ' | 'ằ' | 'ẳ' | 'ẵ' | 'ặ' => 'a',
+        'É' | 'È' | 'Ẻ' | 'Ẽ' | 'Ẹ' | 'Ê' | 'Ế' | 'Ề' | 'Ể' | 'Ễ' | 'Ệ' => 'E',
+        'é' | 'è' | 'ẻ' | 'ẽ' | 'ẹ' | 'ê' | 'ế' | 'ề' | 'ể' | 'ễ' | 'ệ' => 'e',
+        'Í' | 'Ì' | 'Ỉ' | 'Ĩ' | 'Ị' => 'I',
+        'í' | 'ì' | 'ỉ' | 'ĩ' | 'ị' => 'i',
+        'Ó' | 'Ò' | 'Ỏ' | 'Õ' | 'Ọ' | 'Ô' | 'Ố' | 'Ồ' | 'Ổ' | 'Ỗ' | 'Ộ' | 'Ơ' | 'Ớ' | 'Ờ' | 'Ở' | 'Ỡ' | 'Ợ' => 'O',
+        'ó' | 'ò' | 'ỏ' | 'õ' | 'ọ' | 'ô' | 'ố' | 'ồ' | 'ổ' | 'ỗ' | 'ộ' | 'ơ' | 'ớ' | 'ờ' | 'ở' | 'ỡ' | 'ợ' => 'o',
+        'Ú' | 'Ù' | 'Ủ' | 'Ũ' | 'Ụ' | 'Ư' | 'Ứ' | 'Ừ' | 'Ử' | 'Ữ' | 'Ự' => 'U',
+        'ú' | 'ù' | 'ủ' | 'ũ' | 'ụ' | 'ư' | 'ứ' | 'ừ' | 'ử' | 'ữ' | 'ự' => 'u',
+        'Ý' | 'Ỳ' | 'Ỷ' | 'Ỹ' | 'Ỵ' => 'Y',
+        'ý' | 'ỳ' | 'ỷ' | 'ỹ' | 'ỵ' => 'y',
+        'Đ' => 'D',
+        'đ' => 'd',
+        other => other,
+    }
+}
+
 pub fn strip_accents(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     for c in text.chars() {
-        if let Some(idx) = UNICODE_TABLE.iter().position(|&x| x == c) {
-            let root = STD_VN_ROOT_CHAR[idx] as usize;
-            if root < TOTAL_VN_CHARS {
-                let rc = match UNICODE_TABLE[root] {
-                    'Â' | 'Ă' => 'A',
-                    'â' | 'ă' => 'a',
-                    'Ê' => 'E',
-                    'ê' => 'e',
-                    'Ô' | 'Ơ' => 'O',
-                    'ô' | 'ơ' => 'o',
-                    'Ư' => 'U',
-                    'ư' => 'u',
-                    'Đ' => 'D',
-                    'đ' => 'd',
-                    other => other,
-                };
-                result.push(rc);
-                continue;
-            }
-        }
-        result.push(c);
+        result.push(strip_accent_char(c));
     }
     result
 }
@@ -42,14 +112,9 @@ fn decode_source_bytes(input: &[u8], source: CharsetId) -> String {
         CharsetId::Tcvn3 => {
             let mut out = String::with_capacity(input.len());
             for &byte in input {
-                if let Some(mut idx) = TCVN3_TABLE.iter().position(|&x| x == byte) {
-                    if idx & 1 == 0
-                        && idx + 1 < TOTAL_VN_CHARS
-                        && TCVN3_TABLE[idx + 1] == byte
-                    {
-                        idx += 1;
-                    }
-                    out.push(UNICODE_TABLE[idx]);
+                let idx = INVERSE_TCVN3[byte as usize];
+                if idx != 0xFF {
+                    out.push(UNICODE_TABLE[idx as usize]);
                 } else {
                     out.push(char::from(byte));
                 }
@@ -94,7 +159,7 @@ pub fn convert_charset_bytes(input: &[u8], source: CharsetId, target: CharsetId)
         CharsetId::Tcvn3 => {
             let mut out = Vec::with_capacity(unicode.len());
             for c in unicode.chars() {
-                if let Some(idx) = UNICODE_TABLE.iter().position(|&x| x == c) {
+                if let Some(idx) = unicode_to_table_index(c) {
                     if idx < TOTAL_VN_CHARS {
                         out.push(TCVN3_TABLE[idx]);
                         continue;
@@ -112,7 +177,7 @@ pub fn convert_charset_bytes(input: &[u8], source: CharsetId, target: CharsetId)
         CharsetId::VniWindows => {
             let mut out = Vec::with_capacity(unicode.len() * 2);
             for c in unicode.chars() {
-                if let Some(idx) = UNICODE_TABLE.iter().position(|&x| x == c) {
+                if let Some(idx) = unicode_to_table_index(c) {
                     if idx < TOTAL_VN_CHARS {
                         let word = VNI_WIN_TABLE[idx];
                         out.push((word & 0xFF) as u8);
@@ -151,13 +216,13 @@ pub fn convert_charset(text: &str, source: CharsetId, target: CharsetId) -> Stri
         let c = chars[i];
         match source {
             CharsetId::Unicode => {
-                let idx = UNICODE_TABLE.iter().position(|&x| x == c);
+                let idx = unicode_to_table_index(c);
                 indices.push(idx);
                 raw_chars.push(c);
                 i += 1;
             }
             CharsetId::UnicodeComposite => {
-                let base_idx = UNICODE_TABLE.iter().position(|&x| x == c);
+                let base_idx = unicode_to_table_index(c);
                 if let Some(b_idx) = base_idx {
                     if b_idx < TOTAL_VN_CHARS && IS_VN_VOWEL[b_idx] {
                         let root = STD_VN_ROOT_CHAR[b_idx] as usize;
@@ -188,18 +253,12 @@ pub fn convert_charset(text: &str, source: CharsetId, target: CharsetId) -> Stri
             CharsetId::Tcvn3 => {
                 let b = c as u32;
                 let idx = if b <= 255 {
-                    TCVN3_TABLE.iter().position(|&x| x == b as u8).map(|idx| {
-                        // TCVN3 shares one byte for upper/lower accented vowels.
-                        // Prefer the lowercase slot (odd index) when duplicated.
-                        if idx & 1 == 0
-                            && idx + 1 < TOTAL_VN_CHARS
-                            && TCVN3_TABLE[idx + 1] == TCVN3_TABLE[idx]
-                        {
-                            idx + 1
-                        } else {
-                            idx
-                        }
-                    })
+                    let val = INVERSE_TCVN3[b as usize];
+                    if val != 0xFF {
+                        Some(val as usize)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };
@@ -231,7 +290,7 @@ pub fn convert_charset(text: &str, source: CharsetId, target: CharsetId) -> Stri
                 }
             }
             _ => {
-                let idx = UNICODE_TABLE.iter().position(|&x| x == c);
+                let idx = unicode_to_table_index(c);
                 indices.push(idx);
                 raw_chars.push(c);
                 i += 1;

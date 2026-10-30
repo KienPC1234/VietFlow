@@ -19,7 +19,7 @@ pub fn is_ascii_upper(c: char) -> bool {
 
 #[inline(always)]
 pub fn is_letter_fast(c: char) -> bool {
-    c.is_alphabetic()
+    c.is_ascii_alphabetic() || c.is_alphabetic()
 }
 
 #[inline(always)]

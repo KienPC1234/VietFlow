@@ -172,16 +172,20 @@ pub static VOWEL_SEQS: &[VowelSeq] = &[
 
 #[inline]
 pub fn find_vowel_seq(vowels: &[VnLexiName]) -> Option<&'static VowelSeq> {
-    if vowels.is_empty() || vowels.len() > 3 {
-        return None;
-    }
+    let (slice, len) = match vowels.len() {
+        1 => (&VOWEL_SEQS[0..12], 1),
+        2 => (&VOWEL_SEQS[12..52], 2),
+        3 => (&VOWEL_SEQS[52..], 3),
+        _ => return None,
+    };
+
     let norm = [
         normalize_vowel(vowels[0]),
-        if vowels.len() > 1 { normalize_vowel(vowels[1]) } else { VnLexiName::None },
-        if vowels.len() > 2 { normalize_vowel(vowels[2]) } else { VnLexiName::None },
+        if len > 1 { normalize_vowel(vowels[1]) } else { VnLexiName::None },
+        if len > 2 { normalize_vowel(vowels[2]) } else { VnLexiName::None },
     ];
 
-    VOWEL_SEQS.iter().find(|s| s.len == vowels.len() && s.v[..vowels.len()] == norm[..vowels.len()])
+    slice.iter().find(|s| s.v[..len] == norm[..len])
 }
 
 pub fn get_tone_position(vowels: &[VnLexiName], has_coda: bool, modern_style: bool) -> usize {
