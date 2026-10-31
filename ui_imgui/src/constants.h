@@ -18,6 +18,8 @@ inline constexpr UINT WM_VF_RELOAD_CONFIG = WM_USER + 104;
 
 // Command IDs
 inline constexpr UINT IDM_VF_CHECK_UPDATE = 1070;
+inline constexpr UINT IDM_VF_ABOUT = 1071;
+inline constexpr UINT IDM_VF_RESTART_ADMIN = 1072;
 
 // Window Class Names & IPC Identifiers
 inline constexpr const wchar_t* WINDOW_CLASS_DAEMON = L"VietFlowMessageWindowClass";
@@ -60,14 +62,10 @@ enum class InputMethodId : int {
 // Charset Identifiers
 enum class CharsetId : int {
     Unicode = 0,
-    Tcvn3 = 1,
-    Vni = 2,
-    Viqr = 3,
-    BkHcm1 = 4,
-    BkHcm2 = 5,
-    UnicodeCompound = 6,
-    VietwareX = 7,
-    VietwareF = 8,
+    UnicodeComposite = 1,
+    Tcvn3 = 2,
+    VniWindows = 3,
+    Viqr = 4,
 };
 
 } // namespace vietflow

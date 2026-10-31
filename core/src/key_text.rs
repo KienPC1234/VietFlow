@@ -122,6 +122,29 @@ impl std::ops::Deref for KeyText {
     }
 }
 
+impl PartialEq for KeyText {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for KeyText {}
+
+impl PartialEq<str> for KeyText {
+    #[inline]
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for KeyText {
+    #[inline]
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
 impl std::fmt::Display for KeyText {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())

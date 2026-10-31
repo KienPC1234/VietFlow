@@ -1,3 +1,5 @@
+@docs/ACTIVE_WORK.md
+
 # VietFlow Engineering Rules & Architecture Standards
 
 Core rules for developing, maintaining and shipping VietFlow on Windows. The
@@ -31,6 +33,11 @@ engine and C ABI remain portable so Linux and macOS hosts can be added later.
      permission. Foreground changes must resolve the profile without a restart.
    - Configuration changes are picked up at runtime by watching the JSON file
      (250 ms timer), so saving the UI does not require a daemon restart.
+   - **Experimental exception**: `experiments/tsf_tip` may prototype a TSF text
+     service to evaluate replacing clipboard injection. It must stay isolated,
+     must not be linked into `VietFlow.exe`, and must not ship until validated.
+     Production remains low-level-hook based; TSF/IME/TIP is allowed only under
+     `experiments/` for evaluation.
 
 3. **`ui_imgui/` (Dear ImGui + DirectX 11 settings frontend)**:
    - Native C++20 UI linked into `VietFlow.exe` as a static library.

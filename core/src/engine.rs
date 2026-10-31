@@ -15,7 +15,8 @@ use crate::models::{
 };
 use crate::tables::{iso_to_vn_lexi, IS_VN_VOWEL, TOTAL_VN_CHARS};
 use crate::tone_rules::{
-    get_tone_position, is_stop_coda, is_valid_ending_consonant, is_valid_initial_with_vowel,
+    can_vowel_seq_take_coda, get_tone_position, is_stop_coda, is_valid_ending_consonant,
+    is_valid_initial, is_valid_initial_with_vowel, is_valid_vowel_seq,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -98,6 +99,11 @@ impl VietFlowEngine {
         self.reset_word();
         self.capitalize_next = false;
         self.display_shadow.clear();
+    }
+
+    /// Returns the exact word string currently tracked in display shadow.
+    pub fn current_word(&self) -> String {
+        self.display_shadow.iter().collect()
     }
 
     fn reset_word(&mut self) {
@@ -460,7 +466,10 @@ impl VietFlowEngine {
             }
         }
 
-        let out = self.encode_slot_str(&self.buffer.last().unwrap());
+        let out = match self.buffer.last() {
+            Some(last) => self.encode_slot_str(last),
+            None => KeyText::new(),
+        };
         self.display_len += out.chars().count();
         (0, out)
     }
@@ -477,6 +486,9 @@ impl VietFlowEngine {
     }
 
     fn is_double_key_modify(&self, c: char) -> bool {
+        if self.options.method == InputMethod::Viqr {
+            return to_lower_ascii(c) == 'd';
+        }
         let is_double_ok = matches!(
             self.options.method,
             InputMethod::Telex
@@ -600,58 +612,119 @@ impl VietFlowEngine {
                 | InputMethod::SimpleTelex
                 | InputMethod::TelexSimple2
                 | InputMethod::TelexVni
+                | InputMethod::Viqr
         ) || (self.options.method == InputMethod::UserCustom
             && self.options.custom_keymap.telex_double_keys);
 
-        if is_double_ok && self.word_form != WordForm::NonVn
-        {
+        if is_double_ok && self.word_form != WordForm::NonVn {
             if lower == 'd' {
-                let last_idx = self.buffer.len() - 1;
-                let slot = &mut self.buffer[last_idx];
+                let last_idx = self.buffer.len().saturating_sub(1);
+                let last_slot = &mut self.buffer[last_idx];
                 if matches!(
-                    slot.lexi,
+                    last_slot.lexi,
                     VnLexiName::d | VnLexiName::D | VnLexiName::dd | VnLexiName::DD
                 ) {
-                    if slot.modified {
-                        slot.lexi = if slot.is_upper { VnLexiName::D } else { VnLexiName::d };
-                        slot.modified = false;
-                        let (bk, mut s) = self.rebuild_current_word();
-                        s.push_char(raw_key);
-                        self.display_len += 1;
-                        return Some((bk, s));
+                    if last_slot.modified {
+                        last_slot.lexi = if last_slot.is_upper { VnLexiName::D } else { VnLexiName::d };
+                        last_slot.modified = false;
+                        self.buffer.push(Slot::new(raw_key));
+                        return Some(self.rebuild_current_word());
                     }
 
-                    slot.lexi = if slot.is_upper { VnLexiName::DD } else { VnLexiName::dd };
-                    slot.modified = true;
+                    last_slot.lexi = if last_slot.is_upper { VnLexiName::DD } else { VnLexiName::dd };
+                    last_slot.modified = true;
                     return Some(self.rebuild_current_word());
+                } else if self.options.free_marking && !self.buffer.is_empty() {
+                    // Free marking: 'd' typed after vowels AND ending consonant (e.g. "dem" + "d" -> "đem", "dang" + "d" -> "đang", "di" + "d" -> "đi")
+                    let first_is_d = matches!(self.buffer[0].lexi, VnLexiName::d | VnLexiName::D | VnLexiName::dd | VnLexiName::DD);
+                    if first_is_d && self.vowel_count > 0 {
+                        let ending_start = self.vowel_start + self.vowel_count;
+                        let ending_len = self.buffer.len().saturating_sub(ending_start);
+                        let coda_ok = if ending_len > 0 && ending_len <= 2 {
+                            let mut coda = ['\0'; 2];
+                            for (idx, slot) in self.buffer[ending_start..].iter().enumerate() {
+                                coda[idx] = to_lower_ascii(slot.raw_char);
+                            }
+                            is_valid_ending_consonant(&coda[..ending_len])
+                        } else {
+                            false
+                        };
+                        if coda_ok {
+                            let slot = &mut self.buffer[0];
+                            if slot.modified {
+                                slot.lexi = if slot.is_upper { VnLexiName::D } else { VnLexiName::d };
+                                slot.modified = false;
+                                self.buffer.push(Slot::new(raw_key));
+                                return Some(self.rebuild_current_word());
+                            }
+                            slot.lexi = if slot.is_upper { VnLexiName::DD } else { VnLexiName::dd };
+                            slot.modified = true;
+                            return Some(self.rebuild_current_word());
+                        }
+                    }
                 }
             }
 
-            if matches!(lower, 'a' | 'e' | 'o') {
-                let last_idx = self.buffer.len() - 1;
-                let slot = &mut self.buffer[last_idx];
-                let slot_char = to_lower_ascii(slot.raw_char);
+            if matches!(lower, 'a' | 'e' | 'o') && self.options.method != InputMethod::Viqr {
+                let last_idx = self.buffer.len().saturating_sub(1);
+                let last_slot = &mut self.buffer[last_idx];
+                let last_slot_char = to_lower_ascii(last_slot.raw_char);
 
-                if slot_char == lower {
-                    if slot.modified {
-                        slot.lexi = iso_to_vn_lexi(slot_char);
-                        slot.modified = false;
-                        let (bk, mut s) = self.rebuild_current_word();
-                        s.push_char(raw_key);
-                        self.display_len += 1;
-                        return Some((bk, s));
+                if last_slot_char == lower {
+                    if last_slot.modified {
+                        last_slot.lexi = iso_to_vn_lexi(last_slot_char);
+                        last_slot.modified = false;
+                        self.buffer.push(Slot::new(raw_key));
+                        return Some(self.rebuild_current_word());
                     }
 
                     let circumflex = match lower {
-                        'a' => if slot.is_upper { VnLexiName::Ar } else { VnLexiName::ar },
-                        'e' => if slot.is_upper { VnLexiName::Er } else { VnLexiName::er },
-                        'o' => if slot.is_upper { VnLexiName::Or } else { VnLexiName::or },
-                        _ => slot.lexi,
+                        'a' => if last_slot.is_upper { VnLexiName::Ar } else { VnLexiName::ar },
+                        'e' => if last_slot.is_upper { VnLexiName::Er } else { VnLexiName::er },
+                        'o' => if last_slot.is_upper { VnLexiName::Or } else { VnLexiName::or },
+                        _ => last_slot.lexi,
                     };
 
-                    slot.lexi = circumflex;
-                    slot.modified = true;
+                    last_slot.lexi = circumflex;
+                    last_slot.modified = true;
                     return Some(self.rebuild_current_word());
+                } else if self.options.free_marking && self.vowel_count > 0 {
+                    // Free marking: 'a', 'e', or 'o' typed after coda (e.g. "them" + "e" -> "thêm", "dem" + "e" -> "dêm", "ton" + "o" -> "tôn")
+                    let vowel_start = self.vowel_start;
+                    let ending_start = vowel_start + self.vowel_count;
+                    let ending_len = self.buffer.len().saturating_sub(ending_start);
+                    if ending_len > 0 && ending_len <= 2 {
+                        let mut coda = ['\0'; 2];
+                        for (idx, slot) in self.buffer[ending_start..].iter().enumerate() {
+                            coda[idx] = to_lower_ascii(slot.raw_char);
+                        }
+                        if is_valid_ending_consonant(&coda[..ending_len]) {
+                            for i in (vowel_start..ending_start).rev() {
+                                let slot = &mut self.buffer[i];
+                                let slot_char = to_lower_ascii(slot.raw_char);
+                                if slot_char == lower {
+                                    if slot.modified {
+                                        slot.lexi = iso_to_vn_lexi(slot_char);
+                                        slot.modified = false;
+                                        self.buffer.push(Slot::new(raw_key));
+                                        return Some(self.rebuild_current_word());
+                                    }
+
+                                    let circumflex = match lower {
+                                        'a' => if slot.is_upper { VnLexiName::Ar } else { VnLexiName::ar },
+                                        'e' => if slot.is_upper { VnLexiName::Er } else { VnLexiName::er },
+                                        'o' => if slot.is_upper { VnLexiName::Or } else { VnLexiName::or },
+                                        _ => slot.lexi,
+                                    };
+
+                                    slot.lexi = circumflex;
+                                    slot.modified = true;
+                                    self.refresh_tone_position();
+                                    return Some(self.rebuild_current_word());
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -712,6 +785,13 @@ impl VietFlowEngine {
                         let slot = &mut self.buffer[i];
                         let c = to_lower_ascii(slot.raw_char);
                         if matches!(c, 'a' | 'e' | 'o') {
+                            if slot.modified && matches!(slot.lexi, VnLexiName::ar | VnLexiName::Ar | VnLexiName::er | VnLexiName::Er | VnLexiName::or | VnLexiName::Or) {
+                                let plain = iso_to_vn_lexi(c);
+                                slot.lexi = if slot.is_upper { plain.to_upper() } else { plain };
+                                slot.modified = false;
+                                self.buffer.push(Slot::new(raw_key));
+                                return Some(self.rebuild_current_word());
+                            }
                             slot.lexi = match c {
                                 'a' => if slot.is_upper { VnLexiName::Ar } else { VnLexiName::ar },
                                 'e' => if slot.is_upper { VnLexiName::Er } else { VnLexiName::er },
@@ -731,6 +811,12 @@ impl VietFlowEngine {
                         }
                         let slot = &mut self.buffer[i];
                         if to_lower_ascii(slot.raw_char) == 'a' {
+                            if slot.modified && matches!(slot.lexi, VnLexiName::ah | VnLexiName::Ah) {
+                                slot.lexi = if slot.is_upper { VnLexiName::A } else { VnLexiName::a };
+                                slot.modified = false;
+                                self.buffer.push(Slot::new(raw_key));
+                                return Some(self.rebuild_current_word());
+                            }
                             slot.lexi = if slot.is_upper { VnLexiName::Ah } else { VnLexiName::ah };
                             slot.modified = true;
                             self.refresh_tone_position();
@@ -745,6 +831,12 @@ impl VietFlowEngine {
                         }
                         let slot = &mut self.buffer[i];
                         if to_lower_ascii(slot.raw_char) == 'd' {
+                            if slot.modified && matches!(slot.lexi, VnLexiName::dd | VnLexiName::DD) {
+                                slot.lexi = if slot.is_upper { VnLexiName::D } else { VnLexiName::d };
+                                slot.modified = false;
+                                self.buffer.push(Slot::new(raw_key));
+                                return Some(self.rebuild_current_word());
+                            }
                             slot.lexi = if slot.is_upper { VnLexiName::DD } else { VnLexiName::dd };
                             slot.modified = true;
                             return Some(self.rebuild_current_word());
@@ -848,27 +940,23 @@ impl VietFlowEngine {
             let o_horned = matches!(self.buffer[o].lexi, VnLexiName::oh | VnLexiName::Oh);
 
             if u_horned && o_horned {
-                // ươ + w -> uo (undo)
+                // ươ + w -> uo + w (undo)
                 self.buffer[u].lexi = if self.buffer[u].is_upper { VnLexiName::U } else { VnLexiName::u };
                 self.buffer[o].lexi = if self.buffer[o].is_upper { VnLexiName::O } else { VnLexiName::o };
                 self.buffer[u].modified = false;
                 self.buffer[o].modified = false;
                 self.refresh_tone_position();
-                let (bk, mut s) = self.rebuild_current_word();
-                s.push_char(raw_key);
-                self.display_len += 1;
-                return Some((bk, s));
+                self.buffer.push(Slot::new(raw_key));
+                return Some(self.rebuild_current_word());
             }
 
             if o_horned {
-                // uơ + w -> uo (undo)
+                // uơ + w -> uo + w (undo)
                 self.buffer[o].lexi = if self.buffer[o].is_upper { VnLexiName::O } else { VnLexiName::o };
                 self.buffer[o].modified = false;
                 self.refresh_tone_position();
-                let (bk, mut s) = self.rebuild_current_word();
-                s.push_char(raw_key);
-                self.display_len += 1;
-                return Some((bk, s));
+                self.buffer.push(Slot::new(raw_key));
+                return Some(self.rebuild_current_word());
             }
 
             if u_horned {
@@ -901,45 +989,48 @@ impl VietFlowEngine {
             return Some(self.rebuild_current_word());
         }
 
-        // Check double 'w' undo: only on immediately preceding modified vowel
-        let last_idx = self.buffer.len() - 1;
-        let last_slot = &mut self.buffer[last_idx];
-        if last_slot.modified
-            && matches!(
-                last_slot.lexi,
-                VnLexiName::ah
-                    | VnLexiName::Ah
-                    | VnLexiName::oh
-                    | VnLexiName::Oh
-                    | VnLexiName::uh
-                    | VnLexiName::Uh
-            )
-        {
-            if to_lower_ascii(last_slot.raw_char) == 'w' {
-                last_slot.lexi = if is_ascii_upper(last_slot.raw_char) {
-                    VnLexiName::W
+        // Check double 'w' undo: find modified vowel (last slot or with free marking)
+        let last_buf_idx = self.buffer.len().saturating_sub(1);
+        for i in (vowel_start..self.buffer.len()).rev() {
+            let slot = &mut self.buffer[i];
+            if slot.modified
+                && matches!(
+                    slot.lexi,
+                    VnLexiName::ah
+                        | VnLexiName::Ah
+                        | VnLexiName::oh
+                        | VnLexiName::Oh
+                        | VnLexiName::uh
+                        | VnLexiName::Uh
+                )
+            {
+                if !self.options.free_marking && i != last_buf_idx {
+                    break;
+                }
+                if to_lower_ascii(slot.raw_char) == 'w' {
+                    slot.lexi = if is_ascii_upper(slot.raw_char) {
+                        VnLexiName::W
+                    } else {
+                        VnLexiName::w
+                    };
+                    slot.modified = false;
+                    self.word_form = WordForm::NonVn;
+                    self.recalculate_vowel_state();
+                    self.refresh_tone_position();
+                    return Some(self.rebuild_current_word());
+                }
+
+                let plain = iso_to_vn_lexi(to_lower_ascii(slot.raw_char));
+                slot.lexi = if is_ascii_upper(slot.raw_char) {
+                    plain.to_upper()
                 } else {
-                    VnLexiName::w
+                    plain
                 };
-                last_slot.modified = false;
-                self.word_form = WordForm::NonVn;
-                self.recalculate_vowel_state();
+                slot.modified = false;
                 self.refresh_tone_position();
+                self.buffer.push(Slot::new(raw_key));
                 return Some(self.rebuild_current_word());
             }
-
-            let plain = iso_to_vn_lexi(to_lower_ascii(last_slot.raw_char));
-            last_slot.lexi = if is_ascii_upper(last_slot.raw_char) {
-                plain.to_upper()
-            } else {
-                plain
-            };
-            last_slot.modified = false;
-            self.refresh_tone_position();
-            let (bk, mut s) = self.rebuild_current_word();
-            s.push_char(raw_key);
-            self.display_len += 1;
-            return Some((bk, s));
         }
 
         // Modify the nearest preceding a, o or u inside the vowel nucleus
@@ -1075,7 +1166,7 @@ impl VietFlowEngine {
         }
 
         if self.buffer.is_empty() {
-            return (1, KeyText::new());
+            return (0, KeyText::new());
         }
 
         let word_len = self.measure_range(0, self.buffer.len());
@@ -1395,23 +1486,42 @@ impl VietFlowEngine {
         }
 
         if self.vowel_count == 0 {
-            return true;
+            return self.buffer.len() <= 3;
         }
 
-        if self.vowel_count == 1 && self.vowel_start > 0 {
+        // Validate initial consonants
+        if self.vowel_start > 0 {
             let initial_len = self.vowel_start;
-            if initial_len <= 3 {
-                let mut initial = ['\0'; 3];
-                for (i, slot) in self.buffer[..initial_len].iter().enumerate() {
-                    initial[i] = to_lower_ascii(slot.raw_char);
-                }
-                if !is_valid_initial_with_vowel(&initial[..initial_len], self.buffer[self.vowel_start].lexi) {
-                    return false;
-                }
+            if initial_len > 3 {
+                return false;
+            }
+            let mut initial = ['\0'; 3];
+            for (i, slot) in self.buffer[..initial_len].iter().enumerate() {
+                initial[i] = to_lower_ascii(slot.raw_char);
+            }
+            if !self.options.consonant_shortcuts && !is_valid_initial(&initial[..initial_len]) {
+                return false;
+            }
+            if !is_valid_initial_with_vowel(&initial[..initial_len], self.buffer[self.vowel_start].lexi) {
+                return false;
             }
         }
 
-        let ending_start = self.vowel_start + self.vowel_count;
+        // Extract and validate the vowel nucleus
+        let vowel_count = self.vowel_count;
+        if vowel_count > 3 {
+            return false;
+        }
+        let mut vowels = [VnLexiName::None; 3];
+        for i in 0..vowel_count {
+            vowels[i] = self.buffer[self.vowel_start + i].lexi;
+        }
+        if !is_valid_vowel_seq(&vowels[..vowel_count]) {
+            return false;
+        }
+
+        // Validate ending coda (if present)
+        let ending_start = self.vowel_start + vowel_count;
         if ending_start < self.buffer.len() {
             let ending_len = self.buffer.len() - ending_start;
             // No Vietnamese syllable ends with more than two consonants.
@@ -1423,6 +1533,21 @@ impl VietFlowEngine {
                 ending[i] = to_lower_ascii(slot.raw_char);
             }
             if !is_valid_ending_consonant(&ending[..ending_len]) {
+                return false;
+            }
+
+            // Vowel sequence must be allowed to take a coda
+            if !can_vowel_seq_take_coda(&vowels[..vowel_count]) {
+                return false;
+            }
+
+            // Stop codas (c, ch, p, t) cannot take grave, hook or tilde
+            if is_stop_coda(&ending[..ending_len])
+                && matches!(
+                    self.current_tone,
+                    VnLexiTone::Grave | VnLexiTone::Hook | VnLexiTone::Tilde
+                )
+            {
                 return false;
             }
         }

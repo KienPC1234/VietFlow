@@ -12,7 +12,7 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 - Hướng dẫn ngắn ở trang Gõ tắt và Chuyển mã.
 - Không tự loại trừ cửa sổ VietFlow, để người dùng soạn macro/nguồn chuyển mã ngay trong app.
 - Cấu hình riêng theo từng ứng dụng: kiểu gõ, bảng mã, cách gửi phím và gõ tắt.
-- Chế độ gửi phím Unicode, scan-code, clipboard và an toàn cho app/game khó nhận ký tự.
+- Chế độ gửi phím Unicode, scan-code và an toàn cho app/game khó nhận ký tự.
 - Gõ tắt chỉ chạy ở chế độ macro khi tiếng Việt đang tắt hoặc app bị loại trừ.
 - Nhập/xuất danh sách gõ tắt từ file TSV/TXT/CSV.
 - Tùy chỉnh ký tự kết thúc câu dùng để tự viết hoa.
@@ -31,9 +31,21 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 - Bố cục cửa sổ hẹp: tab không bị rút ngắn/ellipsis, nút phím tắt tự xuống dòng, bỏ thanh cuộn ngang ngoài, gợi ý dài xuống dòng.
 - Không tự loại trừ cửa sổ VietFlow, để soạn macro/nguồn chuyển mã ngay trong app.
 - Chuyển mã thật qua core C ABI, gồm chuyển byte thô TCVN3/VNI qua clipboard.
-- Chế độ gửi phím "Tự động" tự chuyển sang clipboard nếu Windows chặn `SendInput`; việc khôi phục clipboard chạy nền để không chặn hook.
+- Chế độ gửi phím "Tự động" fallback sang gửi chậm nếu Windows chặn `SendInput`, không tự chuyển Clipboard.
 - Có thể tắt khóa phím tắt trong app loại trừ bằng checkbox.
 - Tray override trong app loại trừ bật/tắt đúng ngay lần bấm đầu.
+- Hộp thoại kiểm tra cập nhật luôn hiện trên cửa sổ cài đặt thay vì nằm phía sau.
+- Sửa rò GDI icon khay khi lưu cấu hình nhiều lần; sau 20 lần reload, GDI objects giữ nguyên 12 thay vì tăng lên 132.
+- Chỉ tạo lại icon khay khi cấu hình icon thay đổi.
+- Icon khay V/E lấy glyph từ subset JetBrains Mono chỉ chứa đúng 2 chữ V/E (~1,4 KB); bỏ GDI+ để giảm khởi tạo và rò tài nguyên, đồng thời giữ nét sắc ở mọi DPI.
+- Ổn định âm thanh thông báo V/E: nhúng sẵn chime IMA ADPCM ~3,1 KB, phát bằng một worker tuần tự, gộp các lần bấm nhanh, có fallback `%SystemRoot%\Media`/alias/beep và bỏ việc UI + daemon cùng phát một tiếng.
+- UI giải phóng D3D11 device/swap chain khi minimize và tạo lại khi mở, giảm khoảng 10 MB working set / 6,5 MB private bytes.
+- Bỏ chế độ gửi phím Clipboard; cấu hình cũ dùng Clipboard tự chuyển về Tự động, tránh lỗi và nhận diện nhầm.
+- Tự tắt tiếng Việt trong cửa sổ ANSI-only như VBA IDE; có checkbox để tắt tính năng này nếu app vẫn nhận tiếng Việt.
+- Sửa banner cảnh báo IME bị cắt chân chữ và hiện scrollbar; căn lại header "Kiểu gõ tự định nghĩa".
+- Gõ tắt mặc định tắt; UI chỉ bật checkbox phụ khi người dùng chủ động bật gõ tắt.
+- Cảnh báo bộ gõ tiếng Việt khác chuyển từ banner trong UI sang hộp thoại khi khởi động daemon.
+- Giữ trạng thái tạm bật tiếng Việt khi bấm icon khay từ app loại trừ; trở về app khác sẽ tự tắt lại.
 
 ## [0.1.1] - 2026-10-30
 

@@ -3,8 +3,11 @@
 
 use crate::config::AppProfile;
 use std::collections::HashMap;
-use windows_sys::Win32::Foundation::CloseHandle;
-use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Foundation::{CloseHandle, HWND, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+    TH32CS_SNAPPROCESS,
+};
 use windows_sys::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
 };
@@ -55,6 +58,63 @@ pub fn app_name_matches(current: &str, configured: &str) -> bool {
     app == proc || app_stem == proc_stem
 }
 
+fn is_known_ime_name(name: &str) -> bool {
+    matches!(
+        name,
+        "unikey.exe"
+            | "unikeynt.exe"
+            | "unikey64.exe"
+            | "evkey.exe"
+            | "evkey64.exe"
+            | "openkey.exe"
+            | "openkey64.exe"
+            | "vietkey.exe"
+            | "vietkey64.exe"
+            | "gotiengviet.exe"
+            | "viettype.exe"
+            | "viettype64.exe"
+            | "vietpad.exe"
+            | "winvnkey.exe"
+            | "vpskeys.exe"
+            | "vietuni.exe"
+            | "avavietkey.exe"
+    )
+}
+
+/// Known Vietnamese IME processes that are running right now. The current
+/// VietFlow process is excluded so startup does not warn about itself.
+pub fn known_ime_conflicts() -> Vec<String> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Vec::new();
+    }
+
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut found = Vec::new();
+
+    unsafe {
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                let name = String::from_utf16_lossy(&entry.szExeFile)
+                    .trim_end_matches('\0')
+                    .to_ascii_lowercase();
+                if name != "vietflow.exe"
+                    && is_known_ime_name(&name)
+                    && !found.iter().any(|item| item == &name)
+                {
+                    found.push(name);
+                }
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+    }
+    found
+}
+
 pub fn is_app_excluded(current_process: Option<&str>, excluded_apps: &[String]) -> bool {
     match current_process {
         Some(proc) => excluded_apps.iter().any(|app| app_name_matches(proc, app)),
@@ -97,12 +157,21 @@ mod tests {
     }
 
     #[test]
+    fn test_known_ime_names() {
+        assert!(is_known_ime_name("evkey64.exe"));
+        assert!(is_known_ime_name("openkey.exe"));
+        assert!(is_known_ime_name("unikey.exe"));
+        assert!(!is_known_ime_name("vietflow.exe"));
+        assert!(!is_known_ime_name("notepad.exe"));
+    }
+
+    #[test]
     fn test_profile_for_app_uses_same_matching_rules() {
         let mut profiles = HashMap::new();
         profiles.insert(
             "Code.exe".to_string(),
             AppProfile {
-                injection_mode: Some(3),
+                injection_mode: Some(4),
                 ..Default::default()
             },
         );
@@ -116,7 +185,7 @@ mod tests {
 
         assert_eq!(
             profile_for_app(Some("code"), &profiles).and_then(|p| p.injection_mode),
-            Some(3)
+            Some(4)
         );
         assert_eq!(
             profile_for_app(Some("CS2.EXE"), &profiles).and_then(|p| p.allow_macro),

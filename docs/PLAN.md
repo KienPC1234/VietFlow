@@ -71,13 +71,13 @@ accepts names with or without `.exe`, reusing the exclusion matching rules.
 
 ### Injection modes
 
-- `Auto`: Unicode `SendInput` (current behavior).
+- `Auto`: Unicode `SendInput`, then paced Unicode if the atomic batch is rejected.
 - `Unicode`: force Unicode `SendInput`.
 - `ScanCode`: VK/scancode events for ASCII, Unicode fallback for characters that
   cannot be mapped.
-- `Clipboard`: set clipboard, send Ctrl+V, restore the previous clipboard text.
 - `Safe`: paced Unicode output with full backspaces, for apps that drop fast
   batches or mis-handle display shadowing.
+- Legacy `Clipboard` mode is removed; an old value of 3 migrates to `Auto`.
 
 Each mode keeps the existing atomic backspace + text behavior where possible.
 
@@ -117,14 +117,14 @@ Each mode keeps the existing atomic backspace + text behavior where possible.
    - hotkey lock checkbox on/off; V/E, settings and converter shortcuts;
    - tray override first/second click in an excluded app;
    - per-app profile for an IDE, browser and game;
-   - Unicode, scan-code, clipboard and safe injection modes;
+   - Unicode, scan-code and safe injection modes;
    - macro-only in English mode and in an excluded app;
    - TCVN3/VNI clipboard conversion in both directions;
    - macro import/export with Unicode replacements;
    - admin relaunch with UAC accepted and cancelled.
-3. **Fix validation findings** before any release. Likely risk areas: clipboard
-   mode blocking the hook, uppercase TCVN3 roundtrip, and apps that only expose
-   Unicode clipboard data.
+3. **Fix validation findings** before any release. Likely risk areas: uppercase
+   TCVN3 roundtrip and apps that silently drop Unicode (the TSF spike under
+   `experiments/` is the intended replacement path).
 4. **Sync stale docs**: `ROADMAP.md` still describes the old Qt UI and single-file
    Qt runtime; `AGENTS.md` and `docs/BUILD_CMAKE.md` also mention Qt. Update them
    to the ImGui/DX11 layout before another agent works from them.

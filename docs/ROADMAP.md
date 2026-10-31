@@ -3,7 +3,8 @@
 All active and completed work items across the VietFlow codebase.
 
 The implementation plan for the UniKey / EVKey / OpenKey gaps is in
-[`PLAN.md`](PLAN.md).
+[`PLAN.md`](PLAN.md). Runtime memory measurements and optimization candidates
+are in [`PERFORMANCE.md`](PERFORMANCE.md).
 
 ---
 

@@ -57,6 +57,65 @@ static INVERSE_TCVN3: [u8; 256] = build_tcvn3_inverse();
 static ASCII_TO_UNICODE_INDEX: [u8; 128] = build_ascii_to_unicode_index();
 static UNICODE_SORTED: [(char, u8); TOTAL_VN_CHARS] = build_unicode_sorted();
 
+const fn build_vni_single_inverse() -> [u8; 256] {
+    let mut table = [0xFF; 256];
+    let mut i = 0;
+    while i < TOTAL_VN_CHARS {
+        let word = VNI_WIN_TABLE[i];
+        if (word >> 8) == 0 && (word & 0xFF) > 127 {
+            let b = (word & 0xFF) as usize;
+            if table[b] == 0xFF {
+                table[b] = i as u8;
+            }
+        }
+        i += 1;
+    }
+    table
+}
+
+const fn count_vni_pairs() -> usize {
+    let mut count = 0;
+    let mut i = 0;
+    while i < TOTAL_VN_CHARS {
+        if (VNI_WIN_TABLE[i] >> 8) != 0 {
+            count += 1;
+        }
+        i += 1;
+    }
+    count
+}
+
+const VNI_PAIR_COUNT: usize = count_vni_pairs();
+
+const fn build_vni_pair_sorted() -> [(u16, u8); VNI_PAIR_COUNT] {
+    let mut arr = [(0u16, 0u8); VNI_PAIR_COUNT];
+    let mut i = 0;
+    let mut idx = 0;
+    while i < TOTAL_VN_CHARS {
+        let word = VNI_WIN_TABLE[i];
+        if (word >> 8) != 0 {
+            arr[idx] = (word, i as u8);
+            idx += 1;
+        }
+        i += 1;
+    }
+    let mut i = 1;
+    while i < VNI_PAIR_COUNT {
+        let key = arr[i];
+        let mut j = i;
+        while j > 0 && arr[j - 1].0 > key.0 {
+            arr[j] = arr[j - 1];
+            j -= 1;
+        }
+        arr[j] = key;
+        i += 1;
+    }
+    arr
+}
+
+static INVERSE_VNI_SINGLE: [u8; 256] = build_vni_single_inverse();
+static VNI_PAIRS_SORTED: [(u16, u8); VNI_PAIR_COUNT] = build_vni_pair_sorted();
+
 #[inline]
 pub fn unicode_to_table_index(c: char) -> Option<usize> {
     if c.is_ascii() {
@@ -128,17 +187,15 @@ fn decode_source_bytes(input: &[u8], source: CharsetId) -> String {
                 let byte = input[i];
                 if i + 1 < input.len() {
                     let pair = ((input[i + 1] as u16) << 8) | (byte as u16);
-                    if let Some(idx) = VNI_WIN_TABLE.iter().position(|&x| x == pair) {
-                        out.push(UNICODE_TABLE[idx]);
+                    if let Ok(pos) = VNI_PAIRS_SORTED.binary_search_by_key(&pair, |&(p, _)| p) {
+                        out.push(UNICODE_TABLE[VNI_PAIRS_SORTED[pos].1 as usize]);
                         i += 2;
                         continue;
                     }
                 }
-                if let Some(idx) = VNI_WIN_TABLE
-                    .iter()
-                    .position(|&x| (x & 0xFF) == byte as u16 && (x >> 8) == 0 && byte > 127)
-                {
-                    out.push(UNICODE_TABLE[idx]);
+                let single_idx = INVERSE_VNI_SINGLE[byte as usize];
+                if single_idx != 0xFF {
+                    out.push(UNICODE_TABLE[single_idx as usize]);
                 } else {
                     out.push(char::from(byte));
                 }

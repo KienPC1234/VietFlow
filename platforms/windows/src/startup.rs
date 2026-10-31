@@ -33,7 +33,29 @@ pub unsafe fn set_start_with_windows(enable: bool) -> bool {
 
     let success = if enable {
         if let Ok(exe_path) = std::env::current_exe() {
-            let quoted = format!("\"{}\"", exe_path.to_string_lossy());
+            // When installed via Velopack or MSI, the app executable is in `current\VietFlow.exe`.
+            // Pointing the Run registry entry to the root launcher stub `..\VietFlow.exe` ensures
+            // startup executes the latest version through updates.
+            let target_exe = if exe_path
+                .parent()
+                .and_then(|p| p.file_name())
+                .map(|f| f.to_string_lossy().eq_ignore_ascii_case("current"))
+                .unwrap_or(false)
+            {
+                if let Some(grandparent) = exe_path.parent().and_then(|p| p.parent()) {
+                    let root_stub = grandparent.join("VietFlow.exe");
+                    if root_stub.exists() {
+                        root_stub
+                    } else {
+                        exe_path
+                    }
+                } else {
+                    exe_path
+                }
+            } else {
+                exe_path
+            };
+            let quoted = format!("\"{}\"", target_exe.to_string_lossy());
             let wide_val = to_wide(&quoted);
             let byte_len = (wide_val.len() * std::mem::size_of::<u16>()) as u32;
 

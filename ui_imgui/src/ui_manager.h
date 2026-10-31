@@ -28,6 +28,7 @@ public:
     void Render();
     bool IsDirty() const { return dirty_; }
     void SaveConfig();
+    void ResetToDefaults();
     void SetOnSavedCallback(std::function<void()> cb) { on_saved_cb_ = cb; }
 
 private:
@@ -50,6 +51,10 @@ private:
     // Macro page temp buffers
     char new_macro_key_[64] = {0};
     char new_macro_val_[256] = {0};
+    char macro_filter_[128] = {0};
+
+    // System state
+    bool is_running_as_admin_ = false;
 
     // Exclusion page temp buffer & running apps picker
     char new_excluded_app_[128] = {0};

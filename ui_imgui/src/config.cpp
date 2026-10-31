@@ -12,6 +12,13 @@ namespace vietflow {
 
 using json = nlohmann::json;
 
+static int NormalizeInjectionMode(int mode) {
+    // -1 means "inherit" for a per-app profile. Clipboard mode (3) was removed;
+    // migrate it to Auto. Keep Safe (4).
+    if (mode == -1) return -1;
+    return (mode == 0 || mode == 1 || mode == 2 || mode == 4) ? mode : 0;
+}
+
 static void NormalizeWordList(std::vector<std::string>& words) {
     for (auto& word : words) {
         std::string normalized;
@@ -61,12 +68,13 @@ bool Config::Load(const std::string& custom_path) {
         auto_capitalize = j.value("auto_capitalize", auto_capitalize);
         auto_capitalize_chars = j.value("auto_capitalize_chars", auto_capitalize_chars);
         disable_on_non_us_layout = j.value("disable_on_non_us_layout", disable_on_non_us_layout);
+        disable_on_non_unicode_window = j.value("disable_on_non_unicode_window", disable_on_non_unicode_window);
         enable_macro = j.value("enable_macro", enable_macro);
         allow_macro_when_disabled = j.value("allow_macro_when_disabled", allow_macro_when_disabled);
-        injection_mode = j.value("injection_mode", injection_mode);
-        use_clipboard_for_unicode = j.value("use_clipboard_for_unicode", use_clipboard_for_unicode);
+        injection_mode = NormalizeInjectionMode(j.value("injection_mode", injection_mode));
         start_with_windows = j.value("start_with_windows", start_with_windows);
         notification_sound = j.value("notification_sound", notification_sound);
+        use_tsf = j.value("use_tsf", use_tsf);
         typing_timeout_ms = j.value("typing_timeout_ms", typing_timeout_ms);
         hotkey_mode = j.value("hotkey_mode", hotkey_mode);
         hotkey_settings = j.value("hotkey_settings", hotkey_settings);
@@ -106,7 +114,9 @@ bool Config::Load(const std::string& custom_path) {
                 AppProfile profile;
                 if (value.contains("method") && !value["method"].is_null()) profile.method = value["method"];
                 if (value.contains("charset") && !value["charset"].is_null()) profile.charset = value["charset"];
-                if (value.contains("injection_mode") && !value["injection_mode"].is_null()) profile.injection_mode = value["injection_mode"];
+                if (value.contains("injection_mode") && !value["injection_mode"].is_null()) {
+                    profile.injection_mode = NormalizeInjectionMode(value["injection_mode"].get<int>());
+                }
                 if (value.contains("allow_macro") && !value["allow_macro"].is_null()) profile.allow_macro = value["allow_macro"].get<bool>() ? 1 : 0;
                 app_profiles[name] = profile;
             }
@@ -167,12 +177,13 @@ bool Config::Save(const std::string& custom_path) const {
         j["auto_capitalize"] = auto_capitalize;
         j["auto_capitalize_chars"] = auto_capitalize_chars;
         j["disable_on_non_us_layout"] = disable_on_non_us_layout;
+        j["disable_on_non_unicode_window"] = disable_on_non_unicode_window;
         j["enable_macro"] = enable_macro;
         j["allow_macro_when_disabled"] = allow_macro_when_disabled;
         j["injection_mode"] = injection_mode;
-        j["use_clipboard_for_unicode"] = use_clipboard_for_unicode;
         j["start_with_windows"] = start_with_windows;
         j["notification_sound"] = notification_sound;
+        j["use_tsf"] = use_tsf;
         j["typing_timeout_ms"] = typing_timeout_ms;
         j["hotkey_mode"] = hotkey_mode;
         j["hotkey_settings"] = hotkey_settings;

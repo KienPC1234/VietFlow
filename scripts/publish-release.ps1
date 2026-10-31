@@ -41,10 +41,17 @@ $requiredAssets = @(
     'dist\CHANGELOG.md'
 )
 $optionalAssets = @(
+    'dist\vietflow_tip.dll',
     'dist\VietFlow-arm64.exe',
     'releases\VietFlow-win-x64-Setup.exe',
     'releases\VietFlow-win-x86-Setup.exe',
-    'releases\VietFlow-win-arm64-Setup.exe'
+    'releases\VietFlow-win-arm64-Setup.exe',
+    'releases\VietFlow-win-x64.msi',
+    'releases\VietFlow-win-x86.msi',
+    'releases\VietFlow-win-arm64.msi',
+    'releases\VietFlow-win-x64-Portable.zip',
+    'releases\VietFlow-win-x86-Portable.zip',
+    'releases\VietFlow-win-arm64-Portable.zip'
 )
 
 $assets = @($requiredAssets)

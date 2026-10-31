@@ -6,13 +6,19 @@ the injected keys.
 
 ## Automated pre-checks (2026-10-30)
 
-- [x] `cargo test --workspace`: 31 core tests + 15 host tests pass, 1 network test ignored.
+- [x] `cargo test --workspace`: 35 core tests + 24 host tests pass, 1 network test ignored.
+- [x] x86 host suite also passes (24 passed, 1 ignored).
 - [x] x64 and x86 Release builds pass locally.
 - [x] GitHub Actions x64, x86 and ARM64 jobs pass.
 - [x] ARM64 artifact downloaded; PE header reports `Arm64` / PE32+.
 - [x] `dumpbin /dependents` shows no `VCRUNTIME140` or `MSVCP140`.
 - [x] `VietFlow.exe --settings` and `VietFlow.exe --convert` start and stay alive.
 - [x] Daemon starts with a temporary config containing `lock_hotkeys_in_excluded_apps=false` and an app profile.
+- [x] GDI objects stay stable over 20 live config reloads (12 before and after).
+- [x] Startup registry verified: enabling writes the quoted executable path;
+      disabling removes the value. The test restored the original registry state.
+- [x] Minimizing the settings UI releases D3D11 resources and restores normally
+      (40.9 MB / 17.7 MB -> 30.8 MB / 11.2 MB minimized).
 - [ ] Interactive typing and game/app matrix below.
 
 ## Environment
@@ -45,7 +51,9 @@ the injected keys.
 - [ ] Tray icon still toggles the language.
 - [ ] First tray click in Notepad enables typing; second click returns to the
       excluded state.
-- [ ] Switch to another app: manual override resets.
+- [ ] Click the tray from a focused game (Windows moves focus to the shell),
+      return to the game: the temporary Vietnamese mode is still active.
+- [ ] Switch from that game to a browser: the temporary override resets.
 - [ ] Uncheck the hotkey-lock checkbox; V/E, settings and converter work again.
 - [ ] Press V/E in the excluded app with the lock off: first press enables typing
       through the override, second returns to excluded.
@@ -53,9 +61,10 @@ the injected keys.
 
 ## 3. Per-app profiles
 
-- [ ] Add a profile for `Code.exe`: clipboard mode, macros on.
+- [ ] Add a profile for `Code.exe`: Auto or Safe mode, macros on.
 - [ ] Add a profile for a game: scan-code or safe mode, macros off.
-- [ ] Add a profile for `chrome.exe`: clipboard or safe mode.
+- [ ] Add a profile for `chrome.exe`: Auto or Safe mode.
+- [ ] Load an old config with `injection_mode: 3`; it becomes Auto.
 - [ ] Switch apps and confirm the active profile changes without restarting.
 - [ ] Delete a profile and confirm the global settings apply again.
 - [ ] Type in the VietFlow settings window itself; it must not be excluded.
@@ -65,19 +74,23 @@ the injected keys.
 For each mode, test Notepad, Chrome/Edge, VS Code, Telegram Web and one
 DirectInput game.
 
-- [ ] Auto: normal typing; if `SendInput` is rejected, clipboard fallback runs.
+- [ ] Auto: normal typing; if `SendInput` is rejected, paced Unicode fallback
+      runs; the clipboard is never changed automatically.
 - [ ] Unicode: normal typing.
 - [ ] Scan-code: ASCII keys work; Vietnamese characters are not dropped.
-- [ ] Clipboard: text arrives, clipboard is restored after the burst, typing does
-      not visibly freeze.
 - [ ] Safe: slower output, no missing first character.
-- [ ] Remote desktop / VM: test at least clipboard and safe modes.
+- [ ] Remote desktop / VM: test Auto, Unicode and Safe modes.
+- [ ] Confirm the injection dropdown has no Clipboard entry.
 - [ ] No duplicated first character in Telegram Web.
-- [ ] No missing characters in VS Code Markdown.
+- [x] No missing characters in VS Code Markdown (user test passed).
+- [ ] Open an ANSI-only window such as the VBA IDE: Vietnamese typing is disabled
+      by default; unchecking the new option restores the old behavior.
 
 ## 5. Macros
 
 - [ ] `vn` + Space -> `Việt Nam` in a normal app.
+- [ ] Fresh config: macro is OFF by default; `vn` + Space stays `vn `.
+- [ ] Enable macro explicitly; `vn` + Space -> `Việt Nam`.
 - [ ] Macro while English mode is active with "allow macro when disabled" on:
       only the macro expands; Vietnamese typing stays off.
 - [ ] Macro in an excluded app with the profile macro flag on.
@@ -88,7 +101,6 @@ DirectInput game.
 - [ ] Import `key=value`, `key||value`, `key,value` and `key: value`.
 - [ ] Import Unicode replacement text.
 - [ ] Export and re-import; no duplicate or lost entries.
-- [ ] Clipboard mode with a macro uses the target app's clipboard correctly.
 
 ## 6. Converter
 
@@ -116,23 +128,32 @@ DirectInput game.
 - [ ] 100%, 150% and 200% DPI; no clipped tabs or buttons.
 - [ ] Minimum window 760×560; popups stay inside the window.
 - [ ] Long macro and exclusion lists scroll inside the page.
+- [x] Tray V/E glyphs render from the two-glyph JetBrains subset; GDI objects
+      stayed at 4 after 200 direct renders.
 - [ ] Tray icons for V/E and custom colors.
 - [ ] Sound preview and V/E notification.
+- [x] Notification sound uses the embedded 3.1 KB IMA ADPCM chime first, then
+      `%SystemRoot%\Media`/alias/beep fallbacks. One serialized worker per
+      process; only one UI/daemon playback per V/E toggle. Listening check
+      still pending on the target machine.
+- [x] "Kiểm tra bản cập nhật" opens the update dialog above the settings window,
+      not behind it. Verified on 2026-10-30: window class `#32770`, `topmost=True`,
+      `foreground=True` after posting `IDM_CHECK_UPDATE` from the settings UI.
+      The tray menu uses the same updater path.
 - [ ] `dist\latest.json` has the correct version, notes and downloads.
 - [ ] Velopack installers start the app and preserve `%APPDATA%\VietFlow`.
 - [ ] Uninstall leaves the user config intact.
 
 ## Known risks to watch
 
-1. **Clipboard mode** now restores the clipboard on a debounced worker thread, but
-   pasting is still synchronous. Watch for interleaving when typing very fast.
-2. **TCVN3 uppercase** may lose upper/lower distinction because the legacy table
+1. **TCVN3 uppercase** may lose upper/lower distinction because the legacy table
    uses one byte for both. Test uppercase words explicitly.
-3. **Auto mode** falls back only when `SendInput` reports failure. Apps that
-   silently swallow Unicode still need an explicit per-app clipboard profile.
-4. **Admin relaunch** uses a retrying single-instance mutex. Test UAC accept and
+2. **Auto mode** falls back to paced Unicode only when `SendInput` reports
+   failure and never changes the clipboard. Apps that silently swallow Unicode
+   remain unsupported until the TSF spike proves an alternative.
+3. **Admin relaunch** uses a retrying single-instance mutex. Test UAC accept and
    cancel paths on a slow machine.
-5. **Concurrent work**: QR/donation files may be present in the working tree. Do
+4. **Concurrent work**: QR/donation files may be present in the working tree. Do
    not include them in the validation build unless that feature is also being
    reviewed.
 

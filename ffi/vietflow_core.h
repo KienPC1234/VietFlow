@@ -21,9 +21,11 @@ extern "C" {
 /* Input methods (matches vietflow_core::InputMethod). */
 enum VfInputMethod {
     VF_METHOD_TELEX = 0,
-    VF_METHOD_SIMPLE_TELEX = 1,
-    VF_METHOD_VNI = 2,
-    VF_METHOD_VIQR = 3,
+    VF_METHOD_VNI = 1,
+    VF_METHOD_VIQR = 2,
+    VF_METHOD_SIMPLE_TELEX = 3,
+    VF_METHOD_TELEX_SIMPLE2 = 4,
+    VF_METHOD_TELEX_VNI = 5,
     VF_METHOD_USER_CUSTOM = 6
 };
 

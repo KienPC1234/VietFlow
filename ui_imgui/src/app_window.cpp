@@ -265,6 +265,7 @@ int RunAppWindow(const std::string& config_path, bool convert_mode, void (*on_sa
     }
 
     bool done = false;
+    bool device_released = false;
     while (!done) {
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0U, 0U, PM_REMOVE)) {
@@ -277,18 +278,38 @@ int RunAppWindow(const std::string& config_path, bool convert_mode, void (*on_sa
         }
         if (done) break;
 
-        if (g_ResizeWidth != 0 && g_ResizeHeight != 0) {
+        if (g_ResizeWidth != 0 && g_ResizeHeight != 0 && !device_released) {
             CleanupRenderTarget();
             g_pSwapChain->ResizeBuffers(0, g_ResizeWidth, g_ResizeHeight, DXGI_FORMAT_UNKNOWN, 0);
             g_ResizeWidth = g_ResizeHeight = 0;
             CreateRenderTarget();
         }
 
-        // While minimized there is no visible swap chain: do not burn a full
-        // 60 fps frame just to present into an occluded window.
+        // While minimized there is no visible swap chain. Release the D3D11
+        // device, swap chain and render target instead of just skipping frames;
+        // recreate them when the window is restored.
         if (IsIconic(hwnd)) {
+            if (!device_released) {
+                g_ui_ready = false;
+                ImGui_ImplDX11_Shutdown();
+                CleanupDeviceD3D();
+                device_released = true;
+            }
             Sleep(16);
             continue;
+        }
+
+        if (device_released) {
+            if (!CreateDeviceD3D(hwnd)) {
+                CleanupDeviceD3D();
+                done = true;
+                break;
+            }
+            g_ResizeWidth = g_ResizeHeight = 0;
+            ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
+            g_ui_ready = true;
+            RebuildUiForDpi(g_dpi_scale);
+            device_released = false;
         }
 
         ImGui_ImplDX11_NewFrame();
@@ -307,11 +328,15 @@ int RunAppWindow(const std::string& config_path, bool convert_mode, void (*on_sa
     }
 
     g_ui_ready = false;
-    ImGui_ImplDX11_Shutdown();
+    if (!device_released) {
+        ImGui_ImplDX11_Shutdown();
+    }
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
 
-    CleanupDeviceD3D();
+    if (!device_released) {
+        CleanupDeviceD3D();
+    }
     DestroyWindow(hwnd);
     UnregisterClassW(wc.lpszClassName, wc.hInstance);
 

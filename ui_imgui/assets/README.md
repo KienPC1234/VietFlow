@@ -20,6 +20,10 @@ can render:
 Result: ~23 KB instead of ~2.4 MB. The atlas is also much smaller because
 `SetupFonts()` only requests those icon codepoints.
 
+`JetBrainsMonoTrayVE.ttf` is a second, icon-only subset containing exactly the
+`V` and `E` glyph outlines used by the native tray renderer. It is ~1.4 KB; do
+not replace it with the full UI font or the daemon grows by ~23 KB.
+
 The upstream font is licensed under the SIL Open Font License 1.1; see
 `full/OFL.txt`.
 
@@ -35,6 +39,14 @@ python -m fontTools.subset full\JetBrainsMonoNerdFont-Regular.ttf `
 If you add a new `NF_*` icon to `src/theme.h`, add its codepoint to **both**
 this command and `icon_ranges[]` in `src/theme.cpp`. Otherwise ImGui renders a
 missing-glyph box even though the glyph exists in the TTF.
+
+Regenerate the tray-only subset (keep exactly `V` and `E`):
+
+```powershell
+python -m fontTools.subset JetBrainsMonoNerdFont-Regular.ttf `
+  --unicodes="U+0045,U+0056" --no-hinting --desubroutinize --layout-features="" `
+  --output-file=JetBrainsMonoTrayVE.ttf
+```
 
 ## Icon
 

@@ -48,15 +48,22 @@ pub struct AppConfig {
     /// is not US (EVKey: "Tắt TV khi Layout bàn phím khác US").
     #[serde(default)]
     pub disable_on_non_us_layout: bool,
+    /// Disable Vietnamese input in ANSI-only windows (for example the VBA IDE),
+    /// where Unicode characters cannot be displayed correctly.
     #[serde(default = "default_true")]
+    pub disable_on_non_unicode_window: bool,
+    /// Macros are opt-in: the default Vietnamese typing experience must never
+    /// replace ordinary words such as `vn` or `vf` without explicit consent.
+    #[serde(default)]
     pub enable_macro: bool,
     #[serde(default)]
     pub allow_macro_when_disabled: bool,
-    /// 0: Auto, 1: Unicode SendInput, 2: scan-code, 3: clipboard, 4: safe paced.
+    /// 0: Auto, 1: Unicode SendInput, 2: scan-code, 4: safe paced.
+    /// Legacy 3 (clipboard) is migrated to Auto.
     #[serde(default)]
     pub injection_mode: u8,
     #[serde(default)]
-    pub use_clipboard_for_unicode: bool,
+    pub use_tsf: bool,
     #[serde(default)]
     pub start_with_windows: bool,
     #[serde(default)]
@@ -295,10 +302,11 @@ impl Default for AppConfig {
             auto_capitalize: false,
             auto_capitalize_chars: default_auto_capitalize_chars(),
             disable_on_non_us_layout: false,
-            enable_macro: true,
+            disable_on_non_unicode_window: true,
+            enable_macro: false,
             allow_macro_when_disabled: false,
             injection_mode: 0,
-            use_clipboard_for_unicode: false,
+            use_tsf: false,
             start_with_windows: false,
             notification_sound: false,
             typing_timeout_ms: 1500,
@@ -328,7 +336,24 @@ impl Default for AppConfig {
     }
 }
 
+/// Removed Clipboard mode (3) becomes Auto. Safe remains 4.
+pub fn normalize_injection_mode(mode: u8) -> u8 {
+    match mode {
+        0..=2 | 4 => mode,
+        _ => 0,
+    }
+}
+
 impl AppConfig {
+    pub fn normalize(&mut self) {
+        self.injection_mode = normalize_injection_mode(self.injection_mode);
+        for profile in self.app_profiles.values_mut() {
+            if let Some(mode) = profile.injection_mode {
+                profile.injection_mode = Some(normalize_injection_mode(mode));
+            }
+        }
+    }
+
     pub fn config_path() -> PathBuf {
         if let Ok(appdata) = std::env::var("APPDATA") {
             let mut p = PathBuf::from(appdata);
@@ -343,7 +368,8 @@ impl AppConfig {
     pub fn load() -> Self {
         let path = Self::config_path();
         if let Ok(content) = fs::read_to_string(&path) {
-            if let Ok(cfg) = serde_json::from_str(&content) {
+            if let Ok(mut cfg) = serde_json::from_str::<AppConfig>(&content) {
+                cfg.normalize();
                 return cfg;
             }
         }
@@ -383,6 +409,22 @@ impl AppConfig {
         words
     }
 
+    /// True when a config reload needs to rebuild the tray HICONs. Keeping the
+    /// existing icons avoids two glyph renders on every save.
+    pub fn icon_settings_differ(&self, other: &Self) -> bool {
+        self.tray_icon_theme != other.tray_icon_theme
+            || self.custom_icon_v != other.custom_icon_v
+            || self.custom_icon_e != other.custom_icon_e
+            || self.tray_icon_v_fill != other.tray_icon_v_fill
+            || self.tray_icon_v_fill_color != other.tray_icon_v_fill_color
+            || self.tray_icon_v_border != other.tray_icon_v_border
+            || self.tray_icon_v_border_color != other.tray_icon_v_border_color
+            || self.tray_icon_e_fill != other.tray_icon_e_fill
+            || self.tray_icon_e_fill_color != other.tray_icon_e_fill_color
+            || self.tray_icon_e_border != other.tray_icon_e_border
+            || self.tray_icon_e_border_color != other.tray_icon_e_border_color
+    }
+
     pub fn normalized_foreign_initials(&self) -> Vec<char> {
         let mut initials = Vec::new();
         for c in self.foreign_initials.chars().filter(|c| c.is_alphabetic()) {
@@ -408,7 +450,7 @@ mod tests {
 
     #[test]
     fn parses_profile_overrides_and_hotkey_lock() {
-        let config: AppConfig = serde_json::from_str(
+        let mut config: AppConfig = serde_json::from_str(
             r#"{
                 "lock_hotkeys_in_excluded_apps": false,
                 "injection_mode": 3,
@@ -420,16 +462,44 @@ mod tests {
             }"#,
         )
         .expect("config must parse");
+        config.normalize();
 
         assert!(!config.lock_hotkeys_in_excluded_apps);
-        assert_eq!(config.injection_mode, 3);
+        assert_eq!(config.injection_mode, 0);
         assert_eq!(config.auto_capitalize_chars, "。\n");
         let code = config.app_profiles.get("Code.exe").unwrap();
-        assert_eq!(code.injection_mode, Some(3));
+        assert_eq!(code.injection_mode, Some(0));
         assert_eq!(code.allow_macro, Some(true));
         assert_eq!(code.method, None);
         let cs2 = config.app_profiles.get("cs2").unwrap();
         assert_eq!(cs2.method, Some(1));
         assert_eq!(cs2.charset, Some(2));
+    }
+
+    #[test]
+    fn macros_are_opt_in() {
+        assert!(!AppConfig::default().enable_macro);
+        let missing: AppConfig = serde_json::from_str("{}").expect("empty config");
+        assert!(!missing.enable_macro);
+
+        let enabled: AppConfig = serde_json::from_str(r#"{"enable_macro":true}"#)
+            .expect("explicit macro config");
+        assert!(enabled.enable_macro);
+    }
+
+    #[test]
+    fn detects_only_icon_related_changes() {
+        let mut first = AppConfig::default();
+        let mut second = AppConfig::default();
+        assert!(!first.icon_settings_differ(&second));
+
+        second.notification_sound = true;
+        assert!(!first.icon_settings_differ(&second));
+
+        second.tray_icon_v_fill_color = "#123456".to_string();
+        assert!(first.icon_settings_differ(&second));
+
+        first.tray_icon_v_fill_color = "#123456".to_string();
+        assert!(!first.icon_settings_differ(&second));
     }
 }

@@ -211,8 +211,52 @@ pub fn is_valid_vowel_seq(vowels: &[VnLexiName]) -> bool {
     find_vowel_seq(vowels).is_some()
 }
 
+pub fn can_vowel_seq_take_coda(vowels: &[VnLexiName]) -> bool {
+    match vowels.len() {
+        0 => false,
+        1 => true,
+        2 => {
+            let v0 = normalize_vowel(vowels[0]);
+            let v1 = normalize_vowel(vowels[1]);
+            matches!(
+                (v0, v1),
+                (VnLexiName::I, VnLexiName::E)
+                    | (VnLexiName::I, VnLexiName::Er)
+                    | (VnLexiName::Y, VnLexiName::E)
+                    | (VnLexiName::Y, VnLexiName::Er)
+                    | (VnLexiName::U, VnLexiName::O)
+                    | (VnLexiName::U, VnLexiName::Or)
+                    | (VnLexiName::U, VnLexiName::Oh)
+                    | (VnLexiName::Uh, VnLexiName::Oh)
+                    | (VnLexiName::Uh, VnLexiName::O)
+                    | (VnLexiName::O, VnLexiName::A)
+                    | (VnLexiName::O, VnLexiName::Ah)
+                    | (VnLexiName::O, VnLexiName::E)
+                    | (VnLexiName::U, VnLexiName::Ar)
+                    | (VnLexiName::U, VnLexiName::Er)
+                    | (VnLexiName::U, VnLexiName::Y)
+                    | (VnLexiName::O, VnLexiName::O)
+                    | (VnLexiName::O, VnLexiName::Or)
+            )
+        }
+        3 => {
+            let v0 = normalize_vowel(vowels[0]);
+            let v1 = normalize_vowel(vowels[1]);
+            let v2 = normalize_vowel(vowels[2]);
+            v0 == VnLexiName::U
+                && v1 == VnLexiName::Y
+                && (v2 == VnLexiName::E || v2 == VnLexiName::Er)
+        }
+        _ => false,
+    }
+}
+
 pub fn is_valid_ending_consonant(ending: &[char]) -> bool {
-    match ending {
+    let mut lower = ['\0'; 2];
+    for (i, &c) in ending.iter().take(2).enumerate() {
+        lower[i] = c.to_ascii_lowercase();
+    }
+    match &lower[..ending.len().min(2)] {
         ['c'] | ['m'] | ['n'] | ['p'] | ['t'] => true,
         ['c', 'h'] | ['n', 'g'] | ['n', 'h'] => true,
         _ => false,
@@ -220,7 +264,11 @@ pub fn is_valid_ending_consonant(ending: &[char]) -> bool {
 }
 
 pub fn is_stop_coda(ending: &[char]) -> bool {
-    match ending {
+    let mut lower = ['\0'; 2];
+    for (i, &c) in ending.iter().take(2).enumerate() {
+        lower[i] = c.to_ascii_lowercase();
+    }
+    match &lower[..ending.len().min(2)] {
         ['c'] | ['p'] | ['t'] => true,
         ['c', 'h'] => true,
         _ => false,
@@ -228,7 +276,11 @@ pub fn is_stop_coda(ending: &[char]) -> bool {
 }
 
 pub fn is_valid_initial(initial: &[char]) -> bool {
-    match initial {
+    let mut lower = ['\0'; 3];
+    for (i, &c) in initial.iter().take(3).enumerate() {
+        lower[i] = c.to_ascii_lowercase();
+    }
+    match &lower[..initial.len().min(3)] {
         ['b'] | ['c'] | ['d'] | ['g'] | ['h'] | ['k'] | ['l'] | ['m'] | ['n'] | ['p'] | ['r']
         | ['s'] | ['t'] | ['v'] | ['x'] => true,
         ['c', 'h'] | ['g', 'h'] | ['g', 'i'] | ['k', 'h'] | ['n', 'g'] | ['n', 'h'] | ['p', 'h']
@@ -244,30 +296,38 @@ pub fn is_valid_initial_with_vowel(initial: &[char], first_vowel: VnLexiName) ->
     }
 
     let norm_v = normalize_vowel(first_vowel);
+    let mut init_lower = ['\0'; 3];
+    for (i, &c) in initial.iter().take(3).enumerate() {
+        init_lower[i] = c.to_ascii_lowercase();
+    }
+    let lower_slice = &init_lower[..initial.len().min(3)];
 
     // 'k' only pairs with e, ê, i, y
-    if initial == ['k'] || initial == ['K'] {
+    if lower_slice == ['k'] {
         return matches!(norm_v, VnLexiName::E | VnLexiName::Er | VnLexiName::I | VnLexiName::Y);
     }
 
     // 'gh', 'ngh' only with e, ê, i
-    if initial == ['g', 'h'] || initial == ['n', 'g', 'h'] {
+    if lower_slice == ['g', 'h'] || lower_slice == ['n', 'g', 'h'] {
         return matches!(norm_v, VnLexiName::E | VnLexiName::Er | VnLexiName::I);
     }
 
+    // 'g', 'ng' cannot pair with e, ê, i (must use 'gh', 'ngh')
+    if lower_slice == ['g'] || lower_slice == ['n', 'g'] {
+        return !matches!(norm_v, VnLexiName::E | VnLexiName::Er | VnLexiName::I);
+    }
+
     // 'c' does not pair with e, ê, i, y
-    if initial == ['c'] || initial == ['C'] {
+    if lower_slice == ['c'] {
         return !matches!(norm_v, VnLexiName::E | VnLexiName::Er | VnLexiName::I | VnLexiName::Y);
     }
 
     // 'gi' does not pair with i, 'qu' does not pair with u
-    if initial.len() == 2 {
-        let c0 = initial[0].to_ascii_lowercase();
-        let c1 = initial[1].to_ascii_lowercase();
-        if c0 == 'g' && c1 == 'i' && norm_v == VnLexiName::I {
+    if lower_slice.len() == 2 {
+        if lower_slice == ['g', 'i'] && norm_v == VnLexiName::I {
             return false;
         }
-        if c0 == 'q' && c1 == 'u' && norm_v == VnLexiName::U {
+        if lower_slice == ['q', 'u'] && norm_v == VnLexiName::U {
             return false;
         }
     }

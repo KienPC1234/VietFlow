@@ -92,6 +92,27 @@ mod tests {
     }
 
     #[test]
+    fn test_telex_free_marking_double_keys() {
+        let mut engine = VietFlowEngine::default();
+        let cases = [
+            ("theme", "thêm"),
+            ("deme", "dêm"),
+            ("ddeme", "đêm"),
+            ("tono", "tôn"),
+            ("cama", "câm"),
+            ("demd", "đem"),
+            ("dangd", "đang"),
+            ("themee", "theme"),
+        ];
+
+        for (input, expected) in cases {
+            engine.reset();
+            let actual = process_string(&mut engine, input);
+            assert_eq!(actual, expected, "Failed for input: {input}");
+        }
+    }
+
+    #[test]
     fn test_telex_undo() {
         let mut engine = VietFlowEngine::default();
         let cases = [
@@ -212,10 +233,13 @@ mod tests {
     #[test]
     fn test_backspace() {
         let mut engine = VietFlowEngine::default();
+        assert_eq!(engine.process_key('\x08'), (0, KeyText::new()));
+
         let actual = process_string(&mut engine, "vieetj\x08");
         assert_eq!(actual, "việ");
 
         engine.reset();
+        assert_eq!(engine.process_key('\x08'), (0, KeyText::new()));
         let actual2 = process_string(&mut engine, "vieetj\x08\x08");
         assert_eq!(actual2, "vi");
     }
@@ -725,5 +749,169 @@ mod tests {
         assert_eq!(process_string(&mut engine, "xin chào. bạn"), "xin chào. bạn");
         engine.reset();
         assert_eq!(process_string(&mut engine, "xin chào。bạn"), "xin chào。Bạn");
+    }
+
+    #[test]
+    fn test_viqr_input() {
+        let mut engine = VietFlowEngine::new(
+            EngineOptions {
+                method: InputMethod::Viqr,
+                ..Default::default()
+            },
+            CharsetId::Unicode,
+        );
+
+        let cases = [
+            ("toan'", "toán"),
+            ("toan`", "toàn"),
+            ("toan?", "toản"),
+            ("toan~", "toãn"),
+            ("toan.", "toạn"),
+            ("a^", "â"),
+            ("e^", "ê"),
+            ("o^", "ô"),
+            ("a(", "ă"),
+            ("o+", "ơ"),
+            ("u+", "ư"),
+            ("dd", "đ"),
+            ("ddi", "đi"),
+            ("dduong+`", "đường"),
+        ];
+
+        for (input, expected) in cases {
+            engine.reset();
+            let actual = process_string(&mut engine, input);
+            assert_eq!(actual, expected, "Failed VIQR for: {input}");
+        }
+    }
+
+    #[test]
+    fn test_words_ending_in_d_not_corrupted() {
+        let mut engine = VietFlowEngine::default();
+        let cases = [
+            ("dad ", "dad "),
+            ("did ", "did "),
+            ("bad ", "bad "),
+            ("red ", "red "),
+            ("dead ", "dead "),
+            ("demd", "đem"),
+            ("dangd", "đang"),
+        ];
+
+        for (input, expected) in cases {
+            engine.reset();
+            let actual = process_string(&mut engine, input);
+            assert_eq!(actual, expected, "Failed for input: {input}");
+        }
+    }
+
+    #[test]
+    fn test_macro_local_datetime_expansion() {
+        let mut engine = VietFlowEngine::new(
+            EngineOptions {
+                enable_macro: true,
+                ..Default::default()
+            },
+            CharsetId::Unicode,
+        );
+        engine.macros.insert("curdate", "@date");
+        engine.macros.insert("curtime", "@time");
+
+        let expanded_date = process_string(&mut engine, "curdate ");
+        // Format is dd/MM/yyyy
+        assert!(expanded_date.trim().len() == 10, "Expected dd/MM/yyyy, got: {expanded_date}");
+        assert!(expanded_date.contains('/'));
+
+        engine.reset();
+        let expanded_time = process_string(&mut engine, "curtime ");
+        // Format is HH:mm
+        assert!(expanded_time.trim().len() == 5, "Expected HH:mm, got: {expanded_time}");
+        assert!(expanded_time.contains(':'));
+    }
+
+    #[test]
+    fn test_w_words_english_restore() {
+        let mut engine = VietFlowEngine::default();
+        let cases = [
+            ("win ", "win "),
+            ("web ", "web "),
+            ("word ", "word "),
+            ("with ", "with "),
+            ("work ", "work "),
+            ("wait ", "wait "),
+            ("wifi ", "wifi "),
+            ("wiki ", "wiki "),
+            ("warn ", "warn "),
+            ("wing ", "wing "),
+        ];
+
+        for (input, expected) in cases {
+            engine.reset();
+            let actual = process_string(&mut engine, input);
+            assert_eq!(actual, expected, "Failed English restore for: {input}");
+        }
+    }
+
+    #[test]
+    fn test_diphthong_coda_phonotactic_restore() {
+        let mut engine = VietFlowEngine::default();
+        let cases = [
+            ("main ", "main "),
+            ("join ", "join "),
+            ("point ", "point "),
+            ("coin ", "coin "),
+            ("suit ", "suit "),
+            ("train ", "train "),
+            ("rain ", "rain "),
+            ("gain ", "gain "),
+            ("pain ", "pain "),
+            ("mail ", "mail "),
+        ];
+
+        for (input, expected) in cases {
+            engine.reset();
+            let actual = process_string(&mut engine, input);
+            assert_eq!(actual, expected, "Failed phonotactic coda restore for: {input}");
+        }
+    }
+
+    #[test]
+    fn test_telex_and_vni_modify_undo() {
+        let mut telex_engine = VietFlowEngine::default();
+        let telex_cases = [
+            ("ddd", "dd"),
+            ("aaa", "aa"),
+            ("eee", "ee"),
+            ("ooo", "oo"),
+            ("uoww", "uow"),
+            ("baww", "baw"),
+            ("bangww", "bangw"),
+        ];
+
+        for (input, expected) in telex_cases {
+            telex_engine.reset();
+            let actual = process_string(&mut telex_engine, input);
+            assert_eq!(actual, expected, "Failed Telex undo for: {input}");
+        }
+
+        let mut vni_engine = VietFlowEngine::new(
+            EngineOptions {
+                method: InputMethod::Vni,
+                ..Default::default()
+            },
+            CharsetId::Unicode,
+        );
+        let vni_cases = [
+            ("a66", "a6"),
+            ("a88", "a8"),
+            ("d99", "d9"),
+            ("ban11", "ban1"),
+        ];
+
+        for (input, expected) in vni_cases {
+            vni_engine.reset();
+            let actual = process_string(&mut vni_engine, input);
+            assert_eq!(actual, expected, "Failed VNI undo for: {input}");
+        }
     }
 }

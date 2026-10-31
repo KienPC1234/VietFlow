@@ -46,6 +46,7 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib=imm32");
         println!("cargo:rustc-link-lib=dylib=comdlg32");
         println!("cargo:rustc-link-lib=dylib=wininet");
+        println!("cargo:rustc-link-lib=dylib=advapi32");
 
         let numeric: Vec<u32> = version
             .split(|c: char| !c.is_ascii_digit())

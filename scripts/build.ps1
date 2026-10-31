@@ -11,6 +11,7 @@ param(
     [string]$Arch = 'x64',
     [string]$DistDir = "",
     [switch]$Velopack,
+    [switch]$Msi,
     [string]$VelopackVersion = "",
     [switch]$StaticCrt,
     [switch]$DynamicCrt,
@@ -198,6 +199,11 @@ foreach ($a in $archs) {
             Write-Error "x64 release build failed!"
             exit $LASTEXITCODE
         }
+        & cargo build --manifest-path $cargoManifest --release -p vietflow-tsf
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "x64 TSF DLL release build failed!"
+            exit $LASTEXITCODE
+        }
         $src = Join-Path $root "target\release\VietFlow.exe"
         $distName = "VietFlow.exe"
     }
@@ -216,6 +222,20 @@ foreach ($a in $archs) {
     Copy-Item $built[$a] $builtDist[$a] -Force
     if ($a -eq 'x64') {
         Copy-Item $built[$a] (Join-Path $DistDir "VietFlow-x64.exe") -Force
+        $tsfDll = Join-Path $root "target\release\vietflow_tip.dll"
+        if (Test-Path $tsfDll) {
+            $destTip = Join-Path $DistDir "vietflow_tip.dll"
+            try {
+                Copy-Item $tsfDll $destTip -Force
+            } catch {
+                # In-process COM DLL may be loaded in Windows CTF. Rename locked file then copy.
+                $tempOld = Join-Path $DistDir "vietflow_tip.dll.old"
+                if (Test-Path $tempOld) { Remove-Item $tempOld -Force -ErrorAction SilentlyContinue }
+                Move-Item $destTip $tempOld -Force -ErrorAction SilentlyContinue
+                Copy-Item $tsfDll $destTip -Force
+            }
+            Write-Host "      TSF: $($tsfDll) -> $($destTip)" -ForegroundColor Green
+        }
     }
 }
 
@@ -248,12 +268,15 @@ $downloads = [ordered]@{}
 if ($willPackage) {
     if ($archs -contains 'x64') {
         $downloads['x64'] = "$releaseDownloadBase/VietFlow-win-x64-Setup.exe"
+        $downloads['msi_x64'] = "$releaseDownloadBase/VietFlow-win-x64.msi"
     }
     if ($archs -contains 'x86') {
         $downloads['x86'] = "$releaseDownloadBase/VietFlow-win-x86-Setup.exe"
+        $downloads['msi_x86'] = "$releaseDownloadBase/VietFlow-win-x86.msi"
     }
     if ($archs -contains 'arm64') {
         $downloads['arm64'] = "$releaseDownloadBase/VietFlow-win-arm64-Setup.exe"
+        $downloads['msi_arm64'] = "$releaseDownloadBase/VietFlow-win-arm64.msi"
     }
 }
 
@@ -293,13 +316,33 @@ if ($willPackage) {
         Remove-Item -Recurse -Force $packDir -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Force -Path $packDir | Out-Null
         Copy-Item -Path $built[$a] -Destination (Join-Path $packDir "VietFlow.exe") -Force
+        $tsfDll = Join-Path $DistDir "vietflow_tip.dll"
+        if (Test-Path $tsfDll) {
+            Copy-Item -Path $tsfDll -Destination $packDir -Force
+        }
         Copy-Item -Path $versionFile, $manifestFile -Destination $packDir -Force
         if (Test-Path $changelogFile) {
             Copy-Item -Path $changelogFile -Destination $packDir -Force
         }
 
         Write-Host "`n[5/5] Packaging $a with Velopack v$version (channel $channel)..." -ForegroundColor Magenta
-        & $vpk.Source pack --packId "VietFlow" --packVersion $version --channel $channel --runtime $runtime --packDir $packDir --packTitle "VietFlow" --packAuthors "VietFlow Team" --mainExe "VietFlow.exe" --icon (Join-Path $root "assets\VietFlow.ico") --outputDir $releasesDir
+        $packArgs = @(
+            "pack",
+            "--packId", "VietFlow",
+            "--packVersion", $version,
+            "--channel", $channel,
+            "--runtime", $runtime,
+            "--packDir", $packDir,
+            "--packTitle", "VietFlow",
+            "--packAuthors", "VietFlow Team",
+            "--mainExe", "VietFlow.exe",
+            "--icon", (Join-Path $root "assets\VietFlow.ico"),
+            "--outputDir", $releasesDir
+        )
+        if ($Msi) {
+            $packArgs += "--msi"
+        }
+        & $vpk.Source @packArgs
         if ($LASTEXITCODE -ne 0) {
             Write-Error "Velopack packaging failed for $a!"
             exit $LASTEXITCODE

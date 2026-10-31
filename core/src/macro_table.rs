@@ -2,7 +2,6 @@
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub struct MacroTable {
@@ -120,42 +119,84 @@ impl MacroTable {
     }
 }
 
+#[cfg(windows)]
+fn get_local_date_time() -> (i32, u32, u32, u32, u32, u32) {
+    #[repr(C)]
+    struct SYSTEMTIME {
+        w_year: u16,
+        w_month: u16,
+        w_day_of_week: u16,
+        w_day: u16,
+        w_hour: u16,
+        w_minute: u16,
+        w_second: u16,
+        w_milliseconds: u16,
+    }
+    extern "system" {
+        fn GetLocalTime(lpSystemTime: *mut SYSTEMTIME);
+    }
+    let mut st = SYSTEMTIME {
+        w_year: 0,
+        w_month: 0,
+        w_day_of_week: 0,
+        w_day: 0,
+        w_hour: 0,
+        w_minute: 0,
+        w_second: 0,
+        w_milliseconds: 0,
+    };
+    unsafe {
+        GetLocalTime(&mut st);
+    }
+    (
+        st.w_year as i32,
+        st.w_month as u32,
+        st.w_day as u32,
+        st.w_hour as u32,
+        st.w_minute as u32,
+        st.w_second as u32,
+    )
+}
+
+#[cfg(not(windows))]
+fn get_local_date_time() -> (i32, u32, u32, u32, u32, u32) {
+    #[repr(C)]
+    struct Tm {
+        tm_sec: i32,
+        tm_min: i32,
+        tm_hour: i32,
+        tm_mday: i32,
+        tm_mon: i32,
+        tm_year: i32,
+        tm_wday: i32,
+        tm_yday: i32,
+        tm_isdst: i32,
+    }
+    extern "C" {
+        fn time(t: *mut i64) -> i64;
+        fn localtime_r(timep: *const i64, result: *mut Tm) -> *mut Tm;
+    }
+    let mut t: i64 = 0;
+    unsafe {
+        time(&mut t);
+        let mut tm: Tm = std::mem::zeroed();
+        if !localtime_r(&t, &mut tm).is_null() {
+            (
+                tm.tm_year + 1900,
+                (tm.tm_mon + 1) as u32,
+                tm.tm_mday as u32,
+                tm.tm_hour as u32,
+                tm.tm_min as u32,
+                tm.tm_sec as u32,
+            )
+        } else {
+            (1970, 1, 1, 0, 0, 0)
+        }
+    }
+}
+
 fn format_date(fmt: &str) -> String {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    let total_secs = now.as_secs();
-
-    // Days since Jan 1 1970
-    let mut days = (total_secs / 86400) as i64;
-    let rem_secs = (total_secs % 86400) as u32;
-    let hour = rem_secs / 3600;
-    let minute = (rem_secs % 3600) / 60;
-    let second = rem_secs % 60;
-
-    // Convert days to year/month/day
-    let mut year = 1970;
-    loop {
-        let leap = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) { 1 } else { 0 };
-        let days_in_year = 365 + leap;
-        if days >= days_in_year {
-            days -= days_in_year;
-            year += 1;
-        } else {
-            break;
-        }
-    }
-
-    let leap = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) { 1 } else { 0 };
-    let month_days = [31, 28 + leap, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut month = 1;
-    for &md in &month_days {
-        if days >= md {
-            days -= md;
-            month += 1;
-        } else {
-            break;
-        }
-    }
-    let day = days + 1;
+    let (year, month, day, hour, minute, second) = get_local_date_time();
 
     let mut res = fmt.to_string();
     res = res.replace("dd", &format!("{:02}", day));

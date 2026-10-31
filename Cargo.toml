@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "core",
     "platforms/windows",
+    "platforms/windows_tsf",
 ]
 
 [workspace.package]

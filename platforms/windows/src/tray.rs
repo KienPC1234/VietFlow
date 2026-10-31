@@ -10,8 +10,9 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos,
-    SetForegroundWindow, TrackPopupMenu, HICON,
+    PostMessageW, SetForegroundWindow, TrackPopupMenu, HICON,
     MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+    WM_NULL,
 };
 
 pub use crate::constants::*;
@@ -21,19 +22,31 @@ pub struct TrayIcon {
     nid: NOTIFYICONDATAW,
     icon_v: HICON,
     icon_e: HICON,
+    icon_app: HICON,
+    pub is_tsf_mode: bool,
 }
 
 impl TrayIcon {
-    pub unsafe fn new(hwnd: HWND, icon_v: HICON, icon_e: HICON) -> Self {
+    pub unsafe fn new(
+        hwnd: HWND,
+        icon_v: HICON,
+        icon_e: HICON,
+        icon_app: HICON,
+        is_tsf_mode: bool,
+    ) -> Self {
         let mut nid: NOTIFYICONDATAW = zeroed();
         nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
         nid.hWnd = hwnd;
         nid.uID = 1;
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
-        nid.hIcon = icon_v;
+        nid.hIcon = if is_tsf_mode { icon_app } else { icon_v };
 
-        let tip = "VietFlow - Bộ gõ tiếng Việt\0";
+        let tip = if is_tsf_mode {
+            "VietFlow - Cài đặt [IME]\0"
+        } else {
+            "VietFlow - Bộ gõ tiếng Việt\0"
+        };
         let mut tip_buf = [0u16; 128];
         for (i, c) in tip.encode_utf16().take(127).enumerate() {
             tip_buf[i] = c;
@@ -51,30 +64,63 @@ impl TrayIcon {
             nid,
             icon_v,
             icon_e,
+            icon_app,
+            is_tsf_mode,
         }
     }
 
-    pub unsafe fn set_icons(&mut self, icon_v: HICON, icon_e: HICON) {
+    pub unsafe fn set_icons(&mut self, icon_v: HICON, icon_e: HICON, icon_app: HICON) {
+        let old_v = self.icon_v;
+        let old_e = self.icon_e;
+        let old_app = self.icon_app;
         self.icon_v = icon_v;
         self.icon_e = icon_e;
+        self.icon_app = icon_app;
+        if !old_v.is_null() && old_v != icon_v {
+            DestroyIcon(old_v);
+        }
+        if !old_e.is_null() && old_e != icon_e {
+            DestroyIcon(old_e);
+        }
+        if !old_app.is_null() && old_app != icon_app {
+            DestroyIcon(old_app);
+        }
+    }
+
+    pub unsafe fn set_tsf_mode(&mut self, is_tsf: bool) {
+        self.is_tsf_mode = is_tsf;
     }
 
     pub unsafe fn update_status(&mut self, is_vietnamese: bool) {
-        self.nid.hIcon = if is_vietnamese { self.icon_v } else { self.icon_e };
-        let tip_str = if is_vietnamese {
-            "VietFlow - Tiếng Việt [V]\0"
+        if self.is_tsf_mode {
+            self.nid.hIcon = self.icon_app;
+            let tip_str = "VietFlow - Cài đặt [IME]\0";
+            let mut tip_buf = [0u16; 128];
+            for (i, c) in tip_str.encode_utf16().take(127).enumerate() {
+                tip_buf[i] = c;
+            }
+            std::ptr::copy_nonoverlapping(
+                tip_buf.as_ptr(),
+                std::ptr::addr_of_mut!(self.nid.szTip) as *mut u16,
+                128,
+            );
         } else {
-            "VietFlow - English [E]\0"
-        };
-        let mut tip_buf = [0u16; 128];
-        for (i, c) in tip_str.encode_utf16().take(127).enumerate() {
-            tip_buf[i] = c;
+            self.nid.hIcon = if is_vietnamese { self.icon_v } else { self.icon_e };
+            let tip_str = if is_vietnamese {
+                "VietFlow - Tiếng Việt [V]\0"
+            } else {
+                "VietFlow - English [E]\0"
+            };
+            let mut tip_buf = [0u16; 128];
+            for (i, c) in tip_str.encode_utf16().take(127).enumerate() {
+                tip_buf[i] = c;
+            }
+            std::ptr::copy_nonoverlapping(
+                tip_buf.as_ptr(),
+                std::ptr::addr_of_mut!(self.nid.szTip) as *mut u16,
+                128,
+            );
         }
-        std::ptr::copy_nonoverlapping(
-            tip_buf.as_ptr(),
-            std::ptr::addr_of_mut!(self.nid.szTip) as *mut u16,
-            128,
-        );
         Shell_NotifyIconW(NIM_MODIFY, &self.nid);
     }
 
@@ -86,6 +132,10 @@ impl TrayIcon {
         enable_macro: bool,
         spell_check: bool,
         start_with_windows: bool,
+        hotkey_mode: &str,
+        tsf_present: bool,
+        use_tsf: bool,
+        tsf_registered: bool,
     ) {
         let hmenu = CreatePopupMenu();
         let hmenu_method = CreatePopupMenu();
@@ -93,11 +143,22 @@ impl TrayIcon {
 
         let check_flag = |cond: bool| if cond { MF_CHECKED } else { MF_UNCHECKED };
 
+        let hotkey_label = match hotkey_mode {
+            "CtrlShift" => "Ctrl + Shift",
+            "AltZ" => "Alt + Z",
+            "CtrlSpace" => "Ctrl + Space",
+            "ShiftSpace" => "Shift + Space",
+            "AltShift" => "Alt + Shift",
+            "CapsLock" => "Caps Lock",
+            "WinSpace" => "Win + Space",
+            other => other,
+        };
+
         // Toggle item
         let toggle_text = if is_vietnamese {
-            to_wide("Chuyển sang English [Ctrl+Shift]")
+            to_wide(&format!("Chuyển sang English [{hotkey_label}]"))
         } else {
-            to_wide("Chuyển sang Tiếng Việt [Ctrl+Shift]")
+            to_wide(&format!("Chuyển sang Tiếng Việt [{hotkey_label}]"))
         };
         AppendMenuW(hmenu, MF_STRING, IDM_TOGGLE, toggle_text.as_ptr());
         AppendMenuW(hmenu, MF_SEPARATOR, 0, null_mut());
@@ -206,6 +267,33 @@ impl TrayIcon {
             to_wide("Khởi động cùng Windows").as_ptr(),
         );
 
+        if tsf_present {
+            let hmenu_tsf = CreatePopupMenu();
+            AppendMenuW(
+                hmenu_tsf,
+                MF_STRING | check_flag(use_tsf),
+                IDM_TSF_ENABLE,
+                to_wide("Bật chế độ TSF").as_ptr(),
+            );
+            let reg_label = if tsf_registered {
+                "Hủy đăng ký TSF TIP (Unregister)..."
+            } else {
+                "Cài đặt / Đăng ký TSF TIP (Register)..."
+            };
+            AppendMenuW(
+                hmenu_tsf,
+                MF_STRING,
+                IDM_TSF_REGISTER,
+                to_wide(reg_label).as_ptr(),
+            );
+            AppendMenuW(
+                hmenu,
+                MF_POPUP,
+                hmenu_tsf as usize,
+                to_wide("Chế độ TSF IME").as_ptr(),
+            );
+        }
+
         AppendMenuW(hmenu, MF_SEPARATOR, 0, null_mut());
         AppendMenuW(
             hmenu,
@@ -258,6 +346,7 @@ impl TrayIcon {
             self.hwnd,
             null_mut(),
         );
+        PostMessageW(self.hwnd, WM_NULL, 0, 0);
         DestroyMenu(hmenu);
     }
 }
@@ -271,6 +360,9 @@ impl Drop for TrayIcon {
             }
             if !self.icon_e.is_null() {
                 DestroyIcon(self.icon_e);
+            }
+            if !self.icon_app.is_null() {
+                DestroyIcon(self.icon_app);
             }
         }
     }

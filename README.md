@@ -6,16 +6,17 @@ Repository: [https://github.com/KienPC1234/VietFlow](https://github.com/KienPC12
 
 ## Why VietFlow
 
-These are the parts that address common complaints about classic UniKey: accidental hotkeys in games, a fixed English list, 32-bit installs and low-DPI settings.
+These are the parts that address common complaints about classic UniKey, EVKey and OpenKey: accidental hotkeys in games, a fixed English list, 32-bit installs, per-app conflicts and low-DPI settings.
 
 - VietFlow disables the global shortcuts in apps on the exclusion list, so Ctrl+Shift in a game cannot switch V/E. The tray icon and its menu still change the language by hand. The lock is a checkbox if you want shortcuts back.
-- Each app can override the typing method, charset, key-injection mode and macro permission. Available modes are Unicode, scan-code, clipboard and a slower safe mode for games, Chromium apps and remote sessions.
+- Each app can override the typing method, charset, key-injection mode and macro permission. Available modes are Unicode, scan-code and a slower safe mode for games, Chromium apps and remote sessions.
 - The default English list leaves out short words that are also Vietnamese keystrokes (`test`, `reset`, `me`). A searchable popup adds or removes any keyword, including the defaults.
 - The converter uses the Rust engine for Unicode, TCVN3 and VNI text, including raw-byte clipboard input and output. Macros can be imported and exported as TSV, CSV or `trigger=value` lines.
+- Macros can keep working in an excluded app or English mode while Vietnamese typing stays off, so a game or terminal can use text expansions without accidental Vietnamese.
 - Builds for x64, x86 and ARM64 use the static MSVC runtime, so the target machine does not need the VC++ Redistributable.
 - The UI scales per monitor from 100% to 200%; tabs, preset buttons, popups and dialogs fit at the minimum window width.
 - Press a shortcut to record the settings or converter hotkey. You can also type it by hand.
-- The update check runs only when you ask. It reads a release manifest with the changelog and separate x64/x86 installers.
+- The update check runs only when you ask. It reads a release manifest with the changelog and separate x64/x86/ARM64 installers.
 - The engine supports Telex, VNI and VIQR, modern tone placement, free marking, macros with `@date`, `@time` and `@clipboard`, and custom tray icons.
 
 ## Layout
@@ -54,7 +55,7 @@ Build commands:
 ```powershell
 cargo test --manifest-path Cargo.toml
 
-# Default: x64, static MSVC runtime (~1.6 MB)
+# Default: x64, static MSVC runtime (~1.7 MB)
 .\scripts\build.ps1
 
 # x64, x86 and ARM64, with Velopack installers

@@ -52,12 +52,13 @@ struct Config {
     bool auto_capitalize = false;
     std::string auto_capitalize_chars = ".!?\r\n";
     bool disable_on_non_us_layout = false;
-    bool enable_macro = true;
+    bool disable_on_non_unicode_window = true;
+    bool enable_macro = false;
     bool allow_macro_when_disabled = false;
-    int injection_mode = 0; // 0 Auto, 1 Unicode, 2 scan-code, 3 clipboard, 4 safe
-    bool use_clipboard_for_unicode = false;
+    int injection_mode = 0; // 0 Auto, 1 Unicode, 2 scan-code, 4 safe; 3 is legacy
     bool start_with_windows = false;
     bool notification_sound = false;
+    bool use_tsf = false;
     uint64_t typing_timeout_ms = 1500;
     std::string hotkey_mode = "CtrlShift";
     std::string hotkey_settings = "Ctrl + Shift + F5";

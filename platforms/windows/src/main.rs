@@ -11,6 +11,7 @@ mod startup;
 mod tray;
 mod updater;
 mod version;
+pub mod tsf;
 
 use std::ffi::c_void;
 use std::mem::zeroed;
@@ -21,14 +22,14 @@ use vietflow_core::models::{CharsetId, InputMethod};
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, WPARAM,
 };
-use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetMessageW, MessageBoxW,
     PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer, ShowWindow,
-    TranslateMessage, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MSG, SW_RESTORE,
-    SW_SHOWNORMAL, WNDCLASSW, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
-    WM_RBUTTONUP, WM_TIMER,
+    TranslateMessage, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_SETFOREGROUND,
+    MB_TOPMOST, MSG, SW_RESTORE, SW_SHOWNORMAL, WNDCLASSW, WM_CLOSE, WM_COMMAND, WM_DESTROY,
+    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER,
 };
 
 pub mod constants;
@@ -36,7 +37,7 @@ pub mod constants;
 use crate::config::AppConfig;
 use crate::constants::*;
 use crate::hook::{apply_config, install_hook, uninstall_hook, STATE};
-use crate::icon::{create_e_icon, create_v_icon};
+use crate::icon::{create_app_icon, create_e_icon, create_v_icon};
 use crate::startup::set_start_with_windows;
 use crate::tray::{to_wide, TrayIcon};
 
@@ -59,9 +60,18 @@ fn config_mtime() -> Option<SystemTime> {
         .and_then(|meta| meta.modified().ok())
 }
 
-static UI_CHILD_PIDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+static UI_CHILDREN: Mutex<Vec<std::process::Child>> = Mutex::new(Vec::new());
 
 fn spawn_gui(convert_mode: bool) {
+    unsafe {
+        let class_name = to_wide(WINDOW_CLASS_UI);
+        let existing = FindWindowW(class_name.as_ptr(), null_mut());
+        if !existing.is_null() {
+            ShowWindow(existing, SW_RESTORE);
+            SetForegroundWindow(existing);
+            return;
+        }
+    }
     if let Ok(exe) = std::env::current_exe() {
         let mut command = std::process::Command::new(exe);
         if convert_mode {
@@ -69,32 +79,38 @@ fn spawn_gui(convert_mode: bool) {
         } else {
             command.arg("--settings");
         }
-        if let Ok(child) = command.spawn() {
-            if let Ok(mut pids) = UI_CHILD_PIDS.lock() {
-                pids.push(child.id());
+        if let Ok(mut children) = UI_CHILDREN.lock() {
+            // Drop already-exited children before adding a new one.
+            children.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+            if !children.is_empty() {
+                return;
+            }
+            if let Ok(child) = command.spawn() {
+                children.push(child);
             }
         }
     }
 }
 
 fn terminate_all_ui() {
-    if let Ok(pids) = UI_CHILD_PIDS.lock() {
-        for &pid in pids.iter() {
-            unsafe {
-                let h = OpenProcess(PROCESS_TERMINATE, 0, pid);
-                if !h.is_null() {
-                    TerminateProcess(h, 0);
-                    CloseHandle(h);
-                }
-            }
+    if let Ok(mut children) = UI_CHILDREN.lock() {
+        for child in children.iter_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
+        children.clear();
     }
 
     unsafe {
-        let gui_title = to_wide("VietFlow - Bảng điều khiển bộ gõ tiếng Việt");
-        let gui_hwnd = FindWindowW(null_mut(), gui_title.as_ptr());
-        if !gui_hwnd.is_null() {
+        let class_name = to_wide(WINDOW_CLASS_UI);
+        let mut gui_hwnd = FindWindowW(class_name.as_ptr(), null_mut());
+        while !gui_hwnd.is_null() {
             PostMessageW(gui_hwnd, WM_CLOSE, 0, 0);
+            gui_hwnd = FindWindowW(class_name.as_ptr(), null_mut());
+            if !gui_hwnd.is_null() {
+                // If it doesn't close immediately, break to avoid infinite loop
+                break;
+            }
         }
     }
 }
@@ -116,6 +132,22 @@ fn show_message(message: &str, flags: u32) {
     }
 }
 
+fn warn_ime_conflicts() {
+    let conflicts = crate::process::known_ime_conflicts();
+    if conflicts.is_empty() {
+        return;
+    }
+    let message = format!(
+        "Phát hiện bộ gõ tiếng Việt khác đang chạy:\n{}\n\n\
+         Hãy tắt bộ gõ này khi dùng VietFlow để tránh gõ đúp hoặc mất dấu.",
+        conflicts.join(", ")
+    );
+    show_message(
+        &message,
+        MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST,
+    );
+}
+
 /// A second launch should open the settings window of the running daemon.
 /// If the first instance is still starting up, wait briefly for its message
 /// window instead of exiting silently.
@@ -123,8 +155,8 @@ unsafe fn open_existing_settings() -> bool {
     let class_name = to_wide(WINDOW_CLASS_DAEMON);
     let window_title = to_wide(WINDOW_TITLE_DAEMON);
 
-    let gui_title = to_wide("VietFlow - Bảng điều khiển bộ gõ tiếng Việt");
-    let gui_hwnd = FindWindowW(null_mut(), gui_title.as_ptr());
+    let gui_class = to_wide(WINDOW_CLASS_UI);
+    let gui_hwnd = FindWindowW(gui_class.as_ptr(), null_mut());
     if !gui_hwnd.is_null() {
         ShowWindow(gui_hwnd, SW_RESTORE);
         SetForegroundWindow(gui_hwnd);
@@ -152,6 +184,13 @@ extern "C" {
 
 fn run_native_gui(convert_mode: bool) {
     unsafe {
+        let class_name = to_wide(WINDOW_CLASS_UI);
+        let existing = FindWindowW(class_name.as_ptr(), null_mut());
+        if !existing.is_null() {
+            ShowWindow(existing, SW_RESTORE);
+            SetForegroundWindow(existing);
+            return;
+        }
         SetEmbeddedFontData(EMBEDDED_FONT.as_ptr(), EMBEDDED_FONT.len());
         if convert_mode {
             ShowConverterGui(std::ptr::null());
@@ -184,6 +223,13 @@ fn relaunch_as_admin() -> bool {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+
+    // Fast-path for Velopack installer / updater lifecycle hooks
+    // (--veloapp-install, --veloapp-updated, --veloapp-obsolete, --veloapp-uninstall)
+    if args.iter().any(|a| a.starts_with("--veloapp-")) {
+        return;
+    }
+
     if args.iter().any(|a| a == "--gui" || a == "-g" || a == "--settings") {
         run_native_gui(false);
         return;
@@ -191,6 +237,30 @@ fn main() {
     if args.iter().any(|a| a == "--convert" || a == "-c") {
         run_native_gui(true);
         return;
+    }
+    if args.iter().any(|a| a == "--register-tsf") {
+        match crate::tsf::register_tsf() {
+            Ok(_) => {
+                println!("Đã đăng ký VietFlow TSF TIP thành công.");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("Lỗi đăng ký VietFlow TSF TIP: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if args.iter().any(|a| a == "--unregister-tsf") {
+        match crate::tsf::unregister_tsf() {
+            Ok(_) => {
+                println!("Đã hủy đăng ký VietFlow TSF TIP thành công.");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("Lỗi hủy đăng ký VietFlow TSF TIP: {e}");
+                std::process::exit(1);
+            }
+        }
     }
 
     unsafe {
@@ -237,6 +307,7 @@ fn main() {
         }
 
         let config = AppConfig::load();
+        warn_ime_conflicts();
 
         let class_name = to_wide(WINDOW_CLASS_DAEMON);
         let mut wc: WNDCLASSW = zeroed();
@@ -262,7 +333,9 @@ fn main() {
 
         let icon_v = create_v_icon(&config);
         let icon_e = create_e_icon(&config);
-        let mut tray = TrayIcon::new(hwnd, icon_v, icon_e);
+        let icon_app = create_app_icon();
+        let is_tsf_mode = config.use_tsf && crate::tsf::is_tsf_dll_present() && crate::tsf::is_tsf_registered();
+        let mut tray = TrayIcon::new(hwnd, icon_v, icon_e, icon_app, is_tsf_mode);
         tray.update_status(config.enabled);
 
         TRAY_PTR = &mut tray;
@@ -293,10 +366,14 @@ unsafe extern "system" fn wnd_proc(
         WM_TRAYICON => {
             let event = l_param as u32;
             if event == WM_LBUTTONDBLCLK {
-                toggle_mode(hwnd);
                 spawn_gui(false);
             } else if event == WM_LBUTTONUP {
-                toggle_mode(hwnd);
+                let is_tsf = !TRAY_PTR.is_null() && (*TRAY_PTR).is_tsf_mode;
+                if is_tsf {
+                    spawn_gui(false);
+                } else {
+                    toggle_mode(hwnd);
+                }
             } else if event == WM_RBUTTONUP {
                 if let Ok(lock) = STATE.lock() {
                     if let Some(state) = lock.as_ref() {
@@ -308,6 +385,10 @@ unsafe extern "system" fn wnd_proc(
                                 state.config.enable_macro,
                                 state.config.spell_check,
                                 state.config.start_with_windows,
+                                &state.config.hotkey_mode,
+                                crate::tsf::is_tsf_dll_present(),
+                                state.config.use_tsf,
+                                crate::tsf::is_tsf_registered(),
                             );
                         }
                     }
@@ -392,6 +473,7 @@ unsafe extern "system" fn wnd_proc(
                                 _ => InputMethod::Telex,
                             };
                             state.engine.reset();
+                            crate::tsf::sync_tsf_config(&state.config, state.effective_enabled());
                             state.config.save();
                         }
                     }
@@ -415,6 +497,7 @@ unsafe extern "system" fn wnd_proc(
                                 _ => CharsetId::Unicode,
                             };
                             state.engine.reset();
+                            crate::tsf::sync_tsf_config(&state.config, state.effective_enabled());
                             state.config.save();
                         }
                     }
@@ -424,6 +507,7 @@ unsafe extern "system" fn wnd_proc(
                         if let Some(state) = lock.as_mut() {
                             state.config.enable_macro = !state.config.enable_macro;
                             state.engine.options.enable_macro = state.config.enable_macro;
+                            crate::tsf::sync_tsf_config(&state.config, state.effective_enabled());
                             state.config.save();
                         }
                     }
@@ -433,6 +517,7 @@ unsafe extern "system" fn wnd_proc(
                         if let Some(state) = lock.as_mut() {
                             state.config.spell_check = !state.config.spell_check;
                             state.engine.options.spell_check = state.config.spell_check;
+                            crate::tsf::sync_tsf_config(&state.config, state.effective_enabled());
                             state.config.save();
                         }
                     }
@@ -466,6 +551,56 @@ unsafe extern "system" fn wnd_proc(
                 IDM_ABOUT => {
                     crate::updater::show_about_dialog();
                 }
+                IDM_TSF_ENABLE => {
+                    if crate::tsf::is_tsf_dll_present() {
+                        if let Ok(mut lock) = STATE.lock() {
+                            if let Some(state) = lock.as_mut() {
+                                if !state.config.use_tsf && !crate::tsf::is_tsf_registered() {
+                                    let _ = crate::tsf::register_tsf();
+                                }
+                                state.config.use_tsf = !state.config.use_tsf;
+                                crate::tsf::sync_tsf_config(&state.config, state.effective_enabled());
+                                if state.config.use_tsf && crate::tsf::is_tsf_registered() {
+                                    crate::tsf::set_tsf_profile_active(true);
+                                } else {
+                                    crate::tsf::set_tsf_profile_active(false);
+                                }
+                                state.config.save();
+                            }
+                        }
+                    }
+                }
+                IDM_TSF_REGISTER => {
+                    if crate::tsf::is_tsf_dll_present() {
+                        let is_reg = crate::tsf::is_tsf_registered();
+                        if is_reg {
+                            match crate::tsf::unregister_tsf() {
+                                Ok(_) => show_message(
+                                    "Đã hủy đăng ký VietFlow TSF IME thành công.",
+                                    MB_OK | MB_ICONINFORMATION,
+                                ),
+                                Err(e) => show_error(&format!("Lỗi hủy đăng ký TSF: {e}")),
+                            }
+                        } else {
+                            match crate::tsf::register_tsf() {
+                                Ok(_) => {
+                                    if let Ok(lock) = STATE.lock() {
+                                        if let Some(state) = lock.as_ref() {
+                                            if state.config.use_tsf {
+                                                crate::tsf::set_tsf_profile_active(true);
+                                            }
+                                        }
+                                    }
+                                    show_message(
+                                        "Đã cài đặt và đăng ký VietFlow TSF IME thành công.",
+                                        MB_OK | MB_ICONINFORMATION,
+                                    );
+                                }
+                                Err(e) => show_error(&format!("Lỗi đăng ký TSF: {e}")),
+                            }
+                        }
+                    }
+                }
                 IDM_EXIT => {
                     terminate_all_ui();
                     uninstall_hook();
@@ -492,10 +627,29 @@ unsafe extern "system" fn wnd_proc(
 
 unsafe fn reload_runtime_config() {
     let config = AppConfig::load();
-    let icon_v = create_v_icon(&config);
-    let icon_e = create_e_icon(&config);
     if !TRAY_PTR.is_null() {
-        (*TRAY_PTR).set_icons(icon_v, icon_e);
+        let is_tsf_mode = config.use_tsf && crate::tsf::is_tsf_dll_present() && crate::tsf::is_tsf_registered();
+        (*TRAY_PTR).set_tsf_mode(is_tsf_mode);
+        let rebuild_icons = STATE
+            .lock()
+            .ok()
+            .and_then(|lock| {
+                lock.as_ref()
+                    .map(|state| state.config.icon_settings_differ(&config))
+            })
+            .unwrap_or(true);
+        if rebuild_icons {
+            let icon_v = create_v_icon(&config);
+            let icon_e = create_e_icon(&config);
+            let icon_app = create_app_icon();
+            (*TRAY_PTR).set_icons(icon_v, icon_e, icon_app);
+        }
+        let effective = STATE
+            .lock()
+            .ok()
+            .and_then(|lock| lock.as_ref().map(|s| s.effective_enabled()))
+            .unwrap_or(config.enabled);
+        (*TRAY_PTR).update_status(effective);
     }
     apply_config(config);
 }
@@ -503,13 +657,20 @@ unsafe fn reload_runtime_config() {
 unsafe fn toggle_mode(_hwnd: HWND) {
     if let Ok(mut lock) = STATE.lock() {
         if let Some(state) = lock.as_mut() {
-            // Tray action is the manual override path in excluded apps.
-            state.toggle_language();
-            state.config.save();
+            // A tray click can move focus to the shell. If we came from an
+            // excluded app, toggle that app's temporary override instead of
+            // changing the global V/E mode.
+            if state.last_game_process.is_some() {
+                state.toggle_temporary_override();
+            } else {
+                state.toggle_language();
+                state.config.save();
+            }
             if state.config.notification_sound {
                 crate::hook::play_notification_sound();
             }
             let effective = state.effective_enabled();
+            crate::tsf::sync_tsf_config(&state.config, effective);
             if !TRAY_PTR.is_null() {
                 (*TRAY_PTR).update_status(effective);
             }
