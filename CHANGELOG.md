@@ -4,16 +4,26 @@ Mọi thay đổi đáng chú ý của VietFlow được ghi ở đây.
 Định dạng dựa trên [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
-## [Unreleased]
+## [0.1.2] - 2026-11-01
 
 ### Added
 
-- Biểu tượng thế hệ mới: vector full-bleed đa độ phân giải (16 đến 256 px) cho chế độ thường (`VietFlow.ico`) và biểu tượng có huy hiệu TSF (`VietFlow-TSF.ico`) cho chế độ TSF IME, hiển thị sắc nét chuẩn DPI theo `SM_CXSMICON`.
-- Tối ưu daemon ở chế độ TSF: tự động gỡ toàn bộ low-level hooks (`WH_KEYBOARD_LL`, `WH_MOUSE_LL`, `win_event_hook`), chuyển sang dùng `RegisterHotKey` của Windows cho phím tắt toàn cục, đạt 0 độ trễ gõ và 0 context switch trong daemon.
+- Phản hồi 0ms không độ trễ (Native Passthrough): Các phím gõ đơn không biến đổi âm tiết (`is_plain_passthrough`) được chuyển tiếp trực tiếp bằng `CallNextHookEx`, không nuốt phím và không phát SendInput ảo.
+- Hỗ trợ di chuyển mượt mà trong game (Hardware Key Auto-Repeat): Quản lý `held_vk` cho phép giữ phím (WASD) di chuyển liên tục trong game (Roblox, CS2, Valorant) theo đúng tần số lặp phần cứng của bàn phím.
+- Nhận diện game/ứng dụng trong container UWP / Windows Store / Xbox GDK: Tự động phân giải tiến trình vỏ `ApplicationFrameHost.exe` thông qua duyệt cây cửa sổ con (`EnumChildWindows`) để trích xuất chính xác PID và file thực thi gốc (ví dụ: `RobloxPlayerBeta.exe`).
+- Khớp tiền tố thông minh cho danh sách loại trừ (`app_name_matches`): Người dùng chỉ cần thêm `roblox` thì mọi biến thể tiến trình (`RobloxPlayerBeta.exe`, `RobloxStudioBeta.exe`, `roblox.exe`) đều được tự động nhận diện và loại trừ.
+- Bổ sung nút bấm nhanh preset Roblox vào giao diện Cài đặt (trang Loại trừ).
+- Thiết kế lại phần hiển thị và giải thích chế độ TSF trong giao diện Cài đặt: Diễn giải rõ ràng lợi ích gõ trực tiếp không dùng Backspace (trị dứt điểm giật con trỏ trong Excel/Word/trình duyệt), nút đăng ký/hủy đăng ký trực quan kèm nhãn trạng thái thời gian thực.
+- Bổ sung bảng so sánh tính năng toàn diện giữa VietFlow, EVKey, OpenKey và UniKey 4.3 trong tài liệu `README.md`.
+- Biểu tượng thế hệ mới: vector full-bleed đa độ phân giải (16 đến 256 px) cho chế độ thường (`VietFlow.ico`) và biểu tượng bàn phím TSF (`VietFlow-TSF.ico`) cho chế độ TSF IME, hiển thị sắc nét chuẩn DPI theo `SM_CXSMICON`.
+- Chế độ TSF vẫn giữ low-level hook nhẹ để phím tắt, danh sách loại trừ và override tạm thời tiếp tục hoạt động; phần gõ phím được nhường cho TSF nên không xử lý trùng.
 - Nút "Cài lại TSF TIP" trong cài đặt chế độ TSF IME để tự động unregister và re-register TIP COM server sạch sẽ vào hệ thống.
 - Xử lý bộ gõ TSF theo kiến trúc Linux IME (IBus/Fcitx): tách biệt trạng thái preedit qua `current_preedit_text()`, tự động mở rộng macro và khôi phục tiếng Anh (`finish_composition_on_break`) ngay tại ranh giới từ (Space, Enter, Tab, ký tự ngắt từ) thông qua action `ReplaceAndEndComposition` trước khi kết thúc composition.
 - Đồng bộ `enable_macro` qua IPC bộ nhớ dùng chung `TsfSharedConfig`.
 - Phím tắt riêng cho mở bảng điều khiển và mở công cụ chuyển mã (mặc định `Ctrl + Shift + F5` / `Ctrl + Shift + F9`).
+- Icon khay tùy chỉnh cho từng trạng thái V/E: chọn file `.ico` hoặc `.png` trong tab Giao diện; icon riêng thay cho chữ V/E mặc định.
+- Macro `@clipboard` lấy nội dung clipboard qua cache an toàn của daemon; TSF cũng hỗ trợ khi macro được dùng trong app TSF.
+- TSF đọc thêm macro, custom keymap, phụ âm ngoại lai, danh sách từ tiếng Anh, timeout và profile theo app từ file cấu hình.
 - Hướng dẫn ngắn ở trang Gõ tắt và Chuyển mã.
 - Không tự loại trừ cửa sổ VietFlow, để người dùng soạn macro/nguồn chuyển mã ngay trong app.
 - Cấu hình riêng theo từng ứng dụng: kiểu gõ, bảng mã, cách gửi phím và gõ tắt.
@@ -26,6 +36,7 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
 ### Fixed
 
+- Sửa lỗi tràn nhãn và đè giao diện: Nới rộng khoảng cách cột nhãn icon riêng (`Tiếng Anh [E]:`, `Tiếng Việt [V]:`) trong tab Giao diện, tránh việc text box bị đè lên nhãn.
 - Undo bằng cách bấm đúp `[`, `]`, `{`, `}` (trước đây thành `ơơ`, `ưư`, `ƠƠ`, `ƯƯ`).
 - Tone undo khôi phục đúng chuỗi gốc (`owss` → `ows`, `[ss` → `[s`), không còn `ơs`/`ưs`.
 - Chỉ đối chiếu chuỗi phím gốc khi nhận diện từ tiếng Anh, tránh nhầm `mẹ` (`mej`) thành `me`.
@@ -34,7 +45,6 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 - Nút "Phát âm thanh" phát thử khi bật và dùng PlaySoundW/MessageBeep ổn định hơn; mặc định tắt.
 - "Khởi động cùng Windows" được áp dụng ngay cả khi daemon khởi động sau khi UI đã lưu.
 - Bố cục cửa sổ hẹp: tab không bị rút ngắn/ellipsis, nút phím tắt tự xuống dòng, bỏ thanh cuộn ngang ngoài, gợi ý dài xuống dòng.
-- Không tự loại trừ cửa sổ VietFlow, để soạn macro/nguồn chuyển mã ngay trong app.
 - Chuyển mã thật qua core C ABI, gồm chuyển byte thô TCVN3/VNI qua clipboard.
 - Chế độ gửi phím "Tự động" fallback sang gửi chậm nếu Windows chặn `SendInput`, không tự chuyển Clipboard.
 - Có thể tắt khóa phím tắt trong app loại trừ bằng checkbox.
@@ -54,7 +64,11 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 - Chuyển mã Unicode tổ hợp (NFD) đúng cả chiều đọc/ghi, gồm circumflex/breve/horn + dấu thanh; bỏ dấu hoạt động với văn bản NFD.
 - UI: sửa ID trùng giữa các dòng profile app, màu icon khay bị cũ sau reset, ghi quá 1 byte khi đổi đường dẫn/tên app, lower-case UTF-8 và chỉ số combo cấu hình lỗi.
 - UI: kiểm tra lỗi tạo render target D3D11 thay vì tiếp tục vẽ vào null.
+- Icon ứng dụng bị đen: tạo lại `VietFlow-Normal.ico` và `VietFlow-TSF.ico` trực tiếp từ SVG gốc, đủ frame 16–256 px; app x64/x86 và `dist` đã dùng icon đã sửa.
 - UI: rút gọn nhãn và thêm tooltip giải thích cho phím tắt trong app loại trừ, cách gửi phím, TSF và các tùy chọn dễ nhầm; nội dung chọn trong bảng profile ngắn gọn hơn.
+- UI: tự reload cấu hình khi daemon đổi V/E/tray, tránh ghi đè thay đổi; nút khôi phục mặc định giữ đúng danh sách app và macro gốc.
+- Menu tray hiển thị đúng phím tắt cài đặt/chuyển mã; phím tắt chuyển mã mở đúng cửa sổ chuyển mã ngay cả khi bảng điều khiển đang mở.
+- Tối ưu hot path: tra macro không cấp phát `String` cho trigger ASCII thường; UI kiểm tra config mỗi 250 ms và trạng thái TSF mỗi 1 giây thay vì mỗi frame; TSF cache cấu hình/profile và chỉ đọc clipboard khi macro có `@clipboard`.
 
 ## [0.1.1] - 2026-10-30
 

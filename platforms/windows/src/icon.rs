@@ -551,6 +551,7 @@ pub fn create_icon_from_png(bytes: &[u8]) -> HICON {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon;
 
     #[test]
     fn test_create_glyph_icons() {
@@ -576,5 +577,21 @@ mod tests {
             ICON_FONT.len() < 4096,
             "tray font must remain a small V/E-only subset"
         );
+    }
+
+    #[test]
+    fn test_loads_custom_icon_file() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/VietFlow.ico");
+        let icon = load_icon_from_file(path);
+        assert!(icon.is_some(), "custom .ico must load");
+        unsafe {
+            DestroyIcon(icon.unwrap());
+
+            let mut config = AppConfig::default();
+            config.custom_icon_v = path.to_string();
+            let configured = create_v_icon(&config);
+            assert!(!configured.is_null(), "custom icon must replace the V glyph");
+            DestroyIcon(configured);
+        }
     }
 }

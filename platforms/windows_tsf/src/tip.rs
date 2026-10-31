@@ -24,12 +24,25 @@ use windows::Win32::UI::TextServices::{
     ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl, ITfThreadMgr,
     TF_ES_READWRITE, TF_ES_SYNC,
 };
-use windows_sys::Win32::Foundation::HGLOBAL;
+use windows_sys::Win32::Foundation::{CloseHandle, HGLOBAL};
 use windows_sys::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
 use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, GetWindowThreadProcessId,
+};
 
 const CF_UNICODETEXT: u32 = 13;
 const MAX_CLIPBOARD_CHARS: usize = 1_048_576;
+
+#[derive(Clone, Copy)]
+struct ActiveProfile {
+    method: Option<u8>,
+    charset: Option<u8>,
+    allow_macro: Option<bool>,
+}
 
 fn read_clipboard_text() -> String {
     unsafe {
@@ -80,12 +93,44 @@ pub struct VietFlowTip {
     config_reader: SharedConfigReader,
     active_composition: RefCell<Option<ITfComposition>>,
     last_config_check: Cell<Instant>,
+    last_profile_check: Cell<Instant>,
     config_mtime: Cell<Option<SystemTime>>,
+    user_json: RefCell<Option<serde_json::Value>>,
+    active_profile: RefCell<Option<ActiveProfile>>,
 }
 
 fn user_config_path() -> Option<PathBuf> {
     let appdata = std::env::var_os("APPDATA")?;
     Some(PathBuf::from(appdata).join("VietFlow").join("vietflow_config.json"))
+}
+
+fn foreground_process_name() -> Option<String> {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 {
+            return None;
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return None;
+        }
+        let mut buffer = [0u16; 1024];
+        let mut len = buffer.len() as u32;
+        let ok = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut len);
+        CloseHandle(process);
+        if ok == 0 || len == 0 {
+            return None;
+        }
+        let path = String::from_utf16_lossy(&buffer[..len as usize]);
+        std::path::Path::new(&path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    }
 }
 
 fn normalized_words(value: Option<&serde_json::Value>) -> Vec<String> {
@@ -213,7 +258,10 @@ impl VietFlowTip {
             config_reader: SharedConfigReader::new(),
             active_composition: RefCell::new(None),
             last_config_check: Cell::new(Instant::now() - Duration::from_secs(2)),
+            last_profile_check: Cell::new(Instant::now() - Duration::from_secs(2)),
             config_mtime: Cell::new(None),
+            user_json: RefCell::new(None),
+            active_profile: RefCell::new(None),
         };
         tip.load_user_config(&mut tip.engine.borrow_mut());
         tip
@@ -228,9 +276,74 @@ impl VietFlowTip {
         if let Ok(text) = std::fs::read_to_string(&path) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
                 apply_user_config(engine, &json);
+                *self.user_json.borrow_mut() = Some(json);
+                self.last_profile_check
+                    .set(Instant::now() - Duration::from_secs(1));
             }
         }
         self.config_mtime.set(mtime);
+    }
+
+    fn refresh_active_profile(&self) {
+        let json = self.user_json.borrow();
+        let profile = json.as_ref().and_then(|json| {
+            let profiles = json.get("app_profiles")?.as_object()?;
+            let process = foreground_process_name()?;
+            let process_lower = process.to_ascii_lowercase();
+            let process_stem = process_lower.strip_suffix(".exe").unwrap_or(&process_lower);
+            profiles.iter().find_map(|(name, value)| {
+                let name = name.to_ascii_lowercase();
+                let name_stem = name.strip_suffix(".exe").unwrap_or(&name);
+                if name == process_lower || name_stem == process_stem {
+                    Some(value)
+                } else {
+                    None
+                }
+            })
+        });
+
+        let active = profile.map(|profile| ActiveProfile {
+            method: profile
+                .get("method")
+                .and_then(serde_json::Value::as_u64)
+                .map(|m| m.min(6) as u8),
+            charset: profile
+                .get("charset")
+                .and_then(serde_json::Value::as_u64)
+                .map(|c| c.min(3) as u8),
+            allow_macro: profile
+                .get("allow_macro")
+                .and_then(serde_json::Value::as_bool),
+        });
+        *self.active_profile.borrow_mut() = active;
+    }
+
+    fn apply_active_profile(&self, engine: &mut VietFlowEngine, global_macro_enabled: bool) {
+        let profile = *self.active_profile.borrow();
+        let Some(profile) = profile else { return; };
+
+        if let Some(method) = profile.method {
+            engine.options.method = match method {
+                1 => InputMethod::Vni,
+                2 => InputMethod::Viqr,
+                3 => InputMethod::SimpleTelex,
+                4 => InputMethod::TelexSimple2,
+                5 => InputMethod::TelexVni,
+                6 => InputMethod::UserCustom,
+                _ => InputMethod::Telex,
+            };
+        }
+        if let Some(charset) = profile.charset {
+            engine.charset = match charset {
+                1 => CharsetId::UnicodeComposite,
+                2 => CharsetId::Tcvn3,
+                3 => CharsetId::VniWindows,
+                _ => CharsetId::Unicode,
+            };
+        }
+        if let Some(allow_macro) = profile.allow_macro {
+            engine.options.enable_macro = global_macro_enabled && allow_macro;
+        }
     }
 
     fn sync_config(&self) {
@@ -264,6 +377,11 @@ impl VietFlowTip {
             self.last_config_check.set(Instant::now());
             self.load_user_config(&mut engine);
         }
+        if self.last_profile_check.get().elapsed() >= Duration::from_millis(750) {
+            self.last_profile_check.set(Instant::now());
+            self.refresh_active_profile();
+        }
+        self.apply_active_profile(&mut engine, cfg.enable_macro != 0);
     }
 
     pub fn is_modifier_pressed() -> bool {
@@ -390,6 +508,12 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
     fn OnSetFocus(&self, _fforeground: BOOL) -> Result<()> {
         self.engine.borrow_mut().reset();
         self.active_composition.replace(None);
+        // Re-evaluate the active app profile on the next key without waiting
+        // for the normal refresh interval.
+        self.last_config_check
+            .set(Instant::now() - Duration::from_secs(1));
+        self.last_profile_check
+            .set(Instant::now() - Duration::from_secs(1));
         Ok(())
     }
 
@@ -642,5 +766,24 @@ impl ITfCompositionSink_Impl for VietFlowTip_Impl {
         self.active_composition.replace(None);
         self.engine.borrow_mut().reset();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_user_macros_and_custom_keymap() {
+        let mut engine = VietFlowEngine::new(EngineOptions::default(), CharsetId::Unicode);
+        let json = serde_json::json!({
+            "macros": { "vn": "Việt Nam" },
+            "custom_keymap": { "acute": "1" },
+            "typing_timeout_ms": 800
+        });
+        apply_user_config(&mut engine, &json);
+        assert_eq!(engine.macros.get("vn").as_deref(), Some("Việt Nam"));
+        assert_eq!(engine.options.custom_keymap.acute, "1");
+        assert_eq!(engine.options.typing_timeout_ms, 800);
     }
 }

@@ -44,6 +44,10 @@ private:
     void* hwnd_ = nullptr;
     Page initial_page_ = Page::Overview;
     long long last_config_mtime_ = 0;
+    float config_check_timer_ = 0.0f;
+    float tsf_check_timer_ = 0.0f;
+    bool tsf_present_ = false;
+    bool tsf_registered_ = false;
     float saved_toast_timer_ = 0.0f;
     std::function<void()> on_saved_cb_;
 
@@ -112,6 +116,8 @@ private:
     void SyncCustomKeymapBuffersFromConfig();
     void SyncCustomKeymapBuffersToConfig();
     void SyncTextBuffersFromConfig();
+    void RefreshTsfState();
+    bool TsfActive() const;
     void LoadCustomKeymapPreset(int preset_id);
 
     // Hotkey recording state

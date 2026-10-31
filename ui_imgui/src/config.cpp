@@ -12,6 +12,12 @@ namespace vietflow {
 
 using json = nlohmann::json;
 
+static void LowerAsciiInPlace(std::string& value) {
+    for (char& c : value) {
+        c = (char)std::tolower((unsigned char)c);
+    }
+}
+
 static int NormalizeInjectionMode(int mode) {
     // -1 means "inherit" for a per-app profile. Clipboard mode (3) was removed;
     // migrate it to Auto. Keep Safe (4).
@@ -121,7 +127,13 @@ bool Config::Load(const std::string& custom_path) {
             }
         }
         if (j.contains("macros") && j["macros"].is_object()) {
-            macros = j["macros"].get<std::map<std::string, std::string>>();
+            macros.clear();
+            for (const auto& [key, value] : j["macros"].items()) {
+                if (!value.is_string()) continue;
+                std::string normalized = key;
+                LowerAsciiInPlace(normalized);
+                macros[normalized] = value.get<std::string>();
+            }
         }
         if (j.contains("custom_keymap") && j["custom_keymap"].is_object()) {
             const auto& ck = j["custom_keymap"];

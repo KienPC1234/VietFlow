@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 $env:GIT_TERMINAL_PROMPT = '0'
 $env:GCM_INTERACTIVE = 'never'
 
-$cred = "protocol=https`nhost=github.com`n`n" | git credential fill 2>$null
+$cred = @('protocol=https', 'host=github.com', '') | git credential fill 2>$null
 $token = ($cred | Select-String '^password=').Line.Substring(9)
 if (-not $token) { throw "No GitHub credential available" }
 
@@ -41,6 +41,7 @@ $requiredAssets = @(
     'dist\CHANGELOG.md'
 )
 $optionalAssets = @(
+    'dist\VietFlow.exe',
     'dist\vietflow_tip.dll',
     'dist\VietFlow-arm64.exe',
     'releases\VietFlow-win-x64-Setup.exe',

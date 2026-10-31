@@ -138,6 +138,7 @@ impl TrayIcon {
         Shell_NotifyIconW(NIM_MODIFY, &self.nid);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn show_context_menu(
         &self,
         is_vietnamese: bool,

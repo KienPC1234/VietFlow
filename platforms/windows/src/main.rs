@@ -27,6 +27,7 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::System::DataExchange::{
     AddClipboardFormatListener, RemoveClipboardFormatListener,
 };
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetMessageW, MessageBoxW,
@@ -66,12 +67,23 @@ fn config_mtime() -> Option<SystemTime> {
 
 static UI_CHILDREN: Mutex<Vec<std::process::Child>> = Mutex::new(Vec::new());
 
+#[inline]
+fn trim_working_set() {
+    unsafe {
+        SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+    }
+}
+
 /// Drop handles for UI children that have already exited. Without this, the
 /// daemon keeps one process handle after the settings window is closed until
 /// the next time the GUI is opened.
 fn reap_ui_children() {
     if let Ok(mut children) = UI_CHILDREN.lock() {
+        let prev_len = children.len();
         children.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+        if prev_len > 0 && children.is_empty() {
+            trim_working_set();
+        }
     }
 }
 
@@ -91,6 +103,12 @@ fn spawn_gui(convert_mode: bool) {
                 // Settings is open, converter is not. Close settings first so
                 // the converter hotkey actually opens the converter page.
                 terminate_all_ui();
+                for _ in 0..20 {
+                    if FindWindowW(class_name.as_ptr(), null_mut()).is_null() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
             } else {
                 ShowWindow(existing, SW_RESTORE);
                 SetForegroundWindow(existing);
@@ -376,6 +394,8 @@ fn main() {
         *CONFIG_MTIME.lock().unwrap() = config_mtime();
         SetTimer(hwnd, TIMER_ID_CONFIG, 250, None);
 
+        trim_working_set();
+
         let mut msg: MSG = zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
             TranslateMessage(&msg);
@@ -614,10 +634,22 @@ unsafe extern "system" fn wnd_proc(
                         let is_reg = crate::tsf::is_tsf_registered();
                         if is_reg {
                             match crate::tsf::unregister_tsf() {
-                                Ok(_) => show_message(
-                                    "Đã hủy đăng ký VietFlow TSF IME thành công.",
-                                    MB_OK | MB_ICONINFORMATION,
-                                ),
+                                Ok(_) => {
+                                    if let Ok(mut lock) = STATE.lock() {
+                                        if let Some(state) = lock.as_mut() {
+                                            state.config.use_tsf = false;
+                                            crate::tsf::sync_tsf_config(
+                                                &state.config,
+                                                state.effective_enabled(),
+                                            );
+                                            state.config.save();
+                                        }
+                                    }
+                                    show_message(
+                                        "Đã hủy đăng ký VietFlow TSF IME thành công.",
+                                        MB_OK | MB_ICONINFORMATION,
+                                    )
+                                }
                                 Err(e) => show_error(&format!("Lỗi hủy đăng ký TSF: {e}")),
                             }
                         } else {

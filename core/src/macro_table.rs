@@ -65,8 +65,16 @@ impl MacroTable {
     }
 
     pub fn get(&self, trigger: &str) -> Option<String> {
-        let lower = trigger.to_lowercase();
-        let template = self.macros.get(&lower)?;
+        // The engine normally passes an already-lowercase ASCII trigger. Avoid
+        // allocating a second String for every word break in that common case.
+        let template = if trigger
+            .bytes()
+            .all(|b| b.is_ascii() && !b.is_ascii_uppercase())
+        {
+            self.macros.get(trigger)?
+        } else {
+            self.macros.get(&trigger.to_lowercase())?
+        };
         Some(self.expand_variables(template))
     }
 
@@ -128,7 +136,7 @@ impl MacroTable {
 #[cfg(windows)]
 fn get_local_date_time() -> (i32, u32, u32, u32, u32, u32) {
     #[repr(C)]
-    #[allow(non_camel_case_types)]
+    #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
     struct SYSTEMTIME {
         w_year: u16,
         w_month: u16,

@@ -87,6 +87,18 @@ to `DestroyIcon`.
   so its shapes and transparent-fill state match the real icon.
 - When the border is disabled, the renderer no longer allocates and downsamples
   an empty border mask.
+- Macro lookup on a word break no longer allocates a `String` for the common
+  lowercase-ASCII trigger. The engine lowercases up to 64 bytes into a stack
+  buffer, and `MacroTable::get` skips `to_lowercase()` when the trigger is
+  already lowercase ASCII.
+- The settings UI checks the config file mtime every 250 ms instead of every
+  rendered frame. TSF DLL/registry status is cached and refreshed once per
+  second, so `PageTyping`/`Exclusions`/`Advanced` no longer hit the filesystem
+  and registry on every frame.
+- TSF refreshes the user config file only when its mtime changes (checked every
+  750 ms) and caches the active app profile; the per-keystroke path only copies
+  small scalar fields. Clipboard text is read only when a macro contains the
+  clipboard placeholder.
 
 Verification (2026-10-31): 20 live config/icon-colour reloads with the custom
 V/E font and the border-disabled path. GDI objects stayed at 20 and USER objects

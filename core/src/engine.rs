@@ -126,8 +126,7 @@ impl VietFlowEngine {
             && !self.macros.is_empty()
             && (!self.buffer.is_empty() || !self.raw_chars.is_empty())
         {
-            let trigger: String = self.raw_chars.iter().collect();
-            if let Some(replacement) = self.macros.get(&trigger) {
+            if let Some(replacement) = self.lookup_raw_macro() {
                 self.reset_word();
                 return Some(replacement);
             }
@@ -1125,8 +1124,7 @@ impl VietFlowEngine {
             && !self.macros.is_empty()
             && (!self.buffer.is_empty() || !self.raw_chars.is_empty())
         {
-            let trigger: String = self.raw_chars.iter().collect();
-            if let Some(replacement) = self.macros.get(&trigger) {
+            if let Some(replacement) = self.lookup_raw_macro() {
                 let backspaces = self.display_len;
                 let mut out = KeyText::from_str(&replacement);
                 out.push_char(c);
@@ -1474,6 +1472,31 @@ impl VietFlowEngine {
     }
 
     #[inline]
+    fn lookup_raw_macro(&self) -> Option<String> {
+        const STACK_TRIGGER_BYTES: usize = 64;
+        if self.raw_chars.len() <= STACK_TRIGGER_BYTES {
+            let mut trigger = [0u8; STACK_TRIGGER_BYTES];
+            let mut is_ascii = true;
+            for (i, &c) in self.raw_chars.iter().enumerate() {
+                if c.is_ascii() {
+                    trigger[i] = to_lower_ascii(c) as u8;
+                } else {
+                    is_ascii = false;
+                    break;
+                }
+            }
+            if is_ascii {
+                if let Ok(trigger) = std::str::from_utf8(&trigger[..self.raw_chars.len()]) {
+                    return self.macros.get(trigger);
+                }
+            }
+        }
+
+        let trigger: String = self.raw_chars.iter().map(|&c| to_lower_ascii(c)).collect();
+        self.macros.get(&trigger)
+    }
+
+    #[inline]
     fn matches_english_keyword(&self, word: &str) -> bool {
         (is_english_keyword(word)
             && !self
@@ -1561,8 +1584,8 @@ impl VietFlowEngine {
             return false;
         }
         let mut vowels = [VnLexiName::None; 3];
-        for i in 0..vowel_count {
-            vowels[i] = self.buffer[self.vowel_start + i].lexi;
+        for (i, vowel) in vowels.iter_mut().enumerate().take(vowel_count) {
+            *vowel = self.buffer[self.vowel_start + i].lexi;
         }
         if !is_valid_vowel_seq(&vowels[..vowel_count]) {
             return false;

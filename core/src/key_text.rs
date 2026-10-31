@@ -40,6 +40,7 @@ impl KeyText {
     }
 
     #[inline]
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         let mut text = Self::new();
         text.push_str(s);

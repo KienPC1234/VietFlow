@@ -2,7 +2,8 @@
 
 Date: 2026-10-31
 
-Scope: `core/` and `ui_imgui/src/`. The TSF host was not changed.
+Scope: `core/`, `ui_imgui/src/`, and the Windows/TSF integration touched by the
+feature audit.
 
 ## Fixed in this pass
 
@@ -32,6 +33,17 @@ Scope: `core/` and `ui_imgui/src/`. The TSF host was not changed.
    - `vf_engine_set_spell_check`, `vf_engine_set_modern_style` and
      `vf_engine_set_auto_restore` now call `engine.reset()`, matching the
      method/charset setters.
+
+4. **`@clipboard` was advertised but not implemented**
+   - The core now emits a private clipboard placeholder; the Windows host
+     resolves it from a clipboard cache on the daemon message loop, and the TSF
+     TIP resolves it in-process. The low-level keyboard hook never opens the
+     clipboard.
+
+5. **Macro keys were case-insensitive at runtime but not in the UI map**
+   - New and imported keys are lowercased before insertion, and existing config
+     entries are normalized on load, so the editor cannot show duplicate `VN`
+     and `vn` entries that resolve to the same trigger.
 
 ### UI
 
@@ -70,27 +82,15 @@ Scope: `core/` and `ui_imgui/src/`. The TSF host was not changed.
 
 ## Open issues / decisions
 
-1. **`@clipboard` is advertised but not implemented**
-   - `README.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/VALIDATION.md`
-     and the macro editor say macros support `@clipboard`.
-   - `core/src/macro_table.rs::resolve_variable` handles only `@date`, `@time`,
-     `@datetime`, `@newline` and `@tab`; no host code expands `@clipboard`.
-   - Core must stay OS-neutral, so this needs a host-side expansion path (or the
-     claims should be removed). This is a feature mismatch, not a crash.
-
-2. **`vf_engine_process_key` may split UTF-8 when `max_out_len` is too small**
+1. **`vf_engine_process_key` may split UTF-8 when `max_out_len` is too small**
    - The header documents "up to max_out_len bytes", but a caller can receive an
      invalid truncated UTF-8 sequence. Callers should query/allocate, or the ABI
      should copy only complete characters and report the required size.
 
-3. **Macro keys are case-insensitive at runtime but not in the UI map**
-   - `MacroTable::insert/get` lowercases triggers; the C++ editor stores map keys
-     as typed. Two entries such as `VN` and `vn` can look distinct in the UI while
-     resolving to the same trigger.
-
 ## Verification
 
-- `cargo test -p vietflow-core`: 40 passed.
-- `cargo test -p vietflow-windows`: 28 passed, 1 network test ignored.
+- `cargo test -p vietflow-core`: 42 passed.
+- `cargo test -p vietflow-windows`: 31 passed, 1 network test ignored.
+- `cargo test -p vietflow-tsf`: 2 passed.
 - `cmake --build ui_imgui/build --config Release` (x64): passed.
 - `cmake --build ui_imgui/build-x86 --config Release` (x86): passed.

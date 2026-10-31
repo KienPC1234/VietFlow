@@ -18,10 +18,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
+#[allow(clippy::upper_case_acronyms)]
 pub type HWINEVENTHOOK = *mut std::ffi::c_void;
 pub const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
 pub const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
 
+#[allow(clippy::upper_case_acronyms)]
 pub type WINEVENTPROC = Option<
     unsafe extern "system" fn(
         h_win_event_hook: HWINEVENTHOOK,
@@ -248,6 +250,7 @@ pub struct HookState {
     pub mouse_hook_handle: HHOOK,
     pub win_event_hook: HWINEVENTHOOK,
     pub tsf_registered: bool,
+    pub held_vk: Option<u16>,
 }
 
 unsafe impl Send for HookState {}
@@ -708,6 +711,7 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         mouse_hook_handle,
         win_event_hook,
         tsf_registered: crate::tsf::is_tsf_registered(),
+        held_vk: None,
     });
     drop(lock);
 
@@ -806,9 +810,13 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
 
     let msg = w_param as u32;
     let is_key_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
-    let _is_key_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+    let is_key_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
 
     let vk = kbd.vkCode as u16;
+
+    if is_key_up && state.held_vk == Some(vk) {
+        state.held_vk = None;
+    }
 
     // Track modifiers
     match vk {
@@ -947,6 +955,25 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
+    // Key auto-repeat: if this non-modifier key is already held down, pass repeated
+    // WM_KEYDOWN events natively to Windows. This allows smooth continuous
+    // movement in games (e.g. holding WASD to walk) and prevents repetitive accent loops.
+    if is_key_down && vk != VK_BACK {
+        let is_mod = matches!(
+            vk,
+            VK_LCONTROL | VK_RCONTROL | VK_CONTROL |
+            VK_LSHIFT | VK_RSHIFT | VK_SHIFT |
+            VK_LMENU | VK_RMENU | VK_MENU |
+            VK_LWIN | VK_RWIN
+        );
+        if !is_mod {
+            if state.held_vk == Some(vk) {
+                return CallNextHookEx(null_mut(), n_code, w_param, l_param);
+            }
+            state.held_vk = Some(vk);
+        }
+    }
+
     // Process alphanumeric/symbol key
     if is_key_down {
         let input_char = vk_to_char(vk, state.shift_pressed);
@@ -954,7 +981,11 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             let now_ms = unsafe { GetTickCount64() };
             let (backspaces, text) = state.engine.process_key_with_time(input_char, now_ms);
 
-            if backspaces > 0 || !text.is_empty() {
+            let mut char_buf = [0u8; 4];
+            let char_str = input_char.encode_utf8(&mut char_buf);
+            let is_plain_passthrough = backspaces == 0 && text.as_str() == char_str;
+
+            if !is_plain_passthrough && (backspaces > 0 || !text.is_empty()) {
                 state.send_engine_output(backspaces, &text);
                 return 1;
             }
@@ -1242,6 +1273,7 @@ mod tests {
             mouse_hook_handle: std::ptr::null_mut(),
             win_event_hook: std::ptr::null_mut(),
             tsf_registered: false,
+            held_vk: None,
         }
     }
 
@@ -1407,5 +1439,38 @@ mod tests {
                 0x5A
             ));
         }
+    }
+
+    #[test]
+    fn test_unmodified_keystroke_is_plain_passthrough() {
+        let mut engine = VietFlowEngine::default();
+        for &c in &['a', 's', 'd', 't', 'o', 'n'] {
+            let (backspaces, text) = engine.process_key_with_time(c, 100);
+            let mut char_buf = [0u8; 4];
+            let char_str = c.encode_utf8(&mut char_buf);
+            assert_eq!(backspaces, 0);
+            assert_eq!(text.as_str(), char_str, "Keystroke '{c}' must match itself for native passthrough");
+            engine.reset();
+        }
+
+        // When a transformation occurs (e.g. 'a' + 'a' -> 'â'), it is not a plain passthrough
+        let _ = engine.process_key_with_time('a', 100);
+        let (backspaces, text) = engine.process_key_with_time('a', 120);
+        assert_eq!(backspaces, 1);
+        assert_eq!(text.as_str(), "â");
+    }
+
+    #[test]
+    fn test_held_key_repeat_detection() {
+        let mut state = hook_state(false, false, true);
+        assert_eq!(state.held_vk, None);
+
+        // First key down sets held_vk
+        state.held_vk = Some(0x41); // 'A'
+        assert_eq!(state.held_vk, Some(0x41));
+
+        // Key up clears held_vk
+        state.held_vk = None;
+        assert_eq!(state.held_vk, None);
     }
 }

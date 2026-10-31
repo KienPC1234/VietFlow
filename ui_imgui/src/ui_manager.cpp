@@ -216,6 +216,7 @@ static bool ParseMacroLine(const std::string& raw, std::string& key, std::string
     if (split == std::string::npos) split = line.find(',');
     if (split == std::string::npos) return false;
     key = TrimString(line.substr(0, split));
+    LowerAsciiInPlace(key);
     value = TrimString(line.substr(split + (line.compare(split, 2, "||") == 0 ? 2 : 1)));
     return !key.empty() && !value.empty();
 }
@@ -427,6 +428,7 @@ UiManager::UiManager(const std::string& config_path, bool convert_mode, void* hw
     english_defaults_ = LoadDefaultEnglishKeywords();
     SyncCustomKeymapBuffersFromConfig();
     last_config_mtime_ = ConfigMtime(config_path_);
+    RefreshTsfState();
 }
 
 void UiManager::SyncCustomKeymapBuffersFromConfig() {
@@ -617,8 +619,13 @@ static void EndPageScroll() {
 // TSF is only active when the user enabled it, the TIP DLL is present, and the
 // Windows registration actually exists. The config flag alone is not enough:
 // unregistering TSF must immediately restore the normal hook controls in the UI.
-static bool IsTsfActive(const Config& config) {
-    return config.use_tsf && vf_is_tsf_present() && vf_is_tsf_registered();
+void UiManager::RefreshTsfState() {
+    tsf_present_ = vf_is_tsf_present();
+    tsf_registered_ = tsf_present_ && vf_is_tsf_registered();
+}
+
+bool UiManager::TsfActive() const {
+    return config_.use_tsf && tsf_present_ && tsf_registered_;
 }
 
 // Small, consistent help marker used when a label needs more context than the
@@ -667,18 +674,28 @@ void UiManager::Render() {
         saved_toast_timer_ -= io.DeltaTime;
     }
 
-    // The daemon can change the same JSON file (hotkey/tray). Reload external
-    // changes so an open settings window cannot silently overwrite them.
-    const long long mtime = ConfigMtime(config_path_);
-    if (mtime != 0 && last_config_mtime_ != 0 && mtime != last_config_mtime_ &&
-        !recording_hotkey_ && recording_hotkey_target_ == 0) {
-        Config fresh;
-        if (fresh.Load(config_path_)) {
-            config_ = std::move(fresh);
-            SyncTextBuffersFromConfig();
-            SyncCustomKeymapBuffersFromConfig();
-            last_config_mtime_ = mtime;
+    // Avoid polling the filesystem and TSF registry every frame.
+    config_check_timer_ -= io.DeltaTime;
+    if (config_check_timer_ <= 0.0f) {
+        config_check_timer_ = 0.25f;
+        // The daemon can change the same JSON file (hotkey/tray). Reload
+        // external changes so an open settings window cannot overwrite them.
+        const long long mtime = ConfigMtime(config_path_);
+        if (mtime != 0 && last_config_mtime_ != 0 && mtime != last_config_mtime_ &&
+            !recording_hotkey_ && recording_hotkey_target_ == 0) {
+            Config fresh;
+            if (fresh.Load(config_path_)) {
+                config_ = std::move(fresh);
+                SyncTextBuffersFromConfig();
+                SyncCustomKeymapBuffersFromConfig();
+                last_config_mtime_ = mtime;
+            }
         }
+    }
+    tsf_check_timer_ -= io.DeltaTime;
+    if (tsf_check_timer_ <= 0.0f) {
+        tsf_check_timer_ = 1.0f;
+        RefreshTsfState();
     }
 
     ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -1168,7 +1185,7 @@ void UiManager::PageOverview() {
 }
 
 void UiManager::PageTyping() {
-    const bool tsf_active = IsTsfActive(config_);
+    const bool tsf_active = TsfActive();
 
     SectionHeader("Dấu tiếng Việt");
     if (CheckboxHelp("Đặt dấu tự do", &config_.free_marking,
@@ -1250,32 +1267,38 @@ void UiManager::PageTyping() {
     }
     ImGui::EndDisabled();
 
-    SectionHeaderHelp("Chế độ TSF",
-                      "Chỉ dùng cho app hỗ trợ TSF. Game và app không hỗ trợ TSF sẽ không nhận tiếng Việt khi bật.");
-    if (vf_is_tsf_present()) {
-        bool tsf_registered = vf_is_tsf_registered();
-        if (CheckboxHelp("Bật chế độ TSF", &config_.use_tsf,
-                         "Gõ trực tiếp trong app hỗ trợ TSF (Word, trình duyệt, Notepad). "
-                         "Không dùng cho game hoặc app không hỗ trợ TSF.")) {
+    SectionHeaderHelp("Chế độ TSF (Bộ gõ chuẩn Windows)",
+                      "Text Services Framework là chuẩn nhập liệu chính thức của Microsoft, "
+                      "gõ trực tiếp vào tài liệu không cần gửi phím xóa Backspace.");
+    if (tsf_present_) {
+        bool tsf_registered = tsf_registered_;
+        if (CheckboxHelp("Kích hoạt chế độ TSF", &config_.use_tsf,
+                         "Gõ trực tiếp vào tài liệu (Word, Excel, Chrome, Edge, Notion, Discord). "
+                         "Trị dứt điểm lỗi giật con trỏ và lỗi nhảy chữ trên thanh địa chỉ.")) {
             if (config_.use_tsf && !tsf_registered) {
                 if (vf_register_tsf()) {
                     tsf_registered = true;
+                    tsf_registered_ = true;
                 }
             }
             SaveConfig();
         }
 
         ImGui::SameLine(0.0f, Px(16.0f));
-        const char* reg_btn_text = tsf_registered ? "Gỡ TSF" : "Cài TSF";
+        const char* reg_btn_text = tsf_registered ? "Hủy đăng ký TSF" : "Đăng ký TSF";
         if (ImGui::Button(reg_btn_text, ImVec2(0.0f, Px(26.0f)))) {
             if (tsf_registered) {
                 vf_unregister_tsf();
+                tsf_registered_ = false;
                 // Unregistering makes the TIP inactive; do not leave the UI
                 // pretending that TSF still owns typing.
                 config_.use_tsf = false;
                 SaveConfig();
-            } else {
-                vf_register_tsf();
+            } else if (vf_register_tsf()) {
+                tsf_registered_ = true;
+                // Refresh the tray/daemon so a newly registered TIP becomes
+                // visible immediately when use_tsf is already enabled.
+                SaveConfig();
             }
         }
         if (ImGui::IsItemHovered()) {
@@ -1284,19 +1307,31 @@ void UiManager::PageTyping() {
 
         ImGui::SameLine(0.0f, Px(8.0f));
         if (ImGui::Button("Cài lại TSF", ImVec2(0.0f, Px(26.0f)))) {
-            vf_reinstall_tsf();
+            if (vf_reinstall_tsf()) {
+                tsf_registered_ = true;
+                SaveConfig();
+            }
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Gỡ rồi cài lại TSF.");
         }
 
+        ImGui::Spacing();
         if (tsf_registered) {
-            ImGui::TextColored(ImVec4(0.25f, 0.78f, 0.35f, 1.0f), "Đã cài TSF.");
+            if (config_.use_tsf) {
+                ImGui::TextColored(ImVec4(0.35f, 0.75f, 1.0f, 1.0f),
+                                   "  Trạng thái: TSF đang hoạt động (không dùng Backspace xóa chữ).");
+                ImGui::TextDisabled("  Game và ứng dụng không có TSF sẽ tự động dùng chế độ Hook truyền thống.");
+            } else {
+                ImGui::TextColored(ImVec4(0.85f, 0.60f, 0.20f, 1.0f),
+                                   "  Đã đăng ký với Windows nhưng đang TẮT. Hãy tích ô vuông ở trên để kích hoạt.");
+            }
         } else {
-            ImGui::TextColored(ImVec4(0.85f, 0.60f, 0.20f, 1.0f), "Chưa cài TSF. Bấm Cài TSF.");
+            ImGui::TextColored(ImVec4(0.85f, 0.60f, 0.20f, 1.0f),
+                               "  Chưa đăng ký TSF với Windows. Vui lòng bấm 'Đăng ký TSF' để sử dụng.");
         }
     } else {
-        ImGui::TextDisabled("Chế độ TSF không khả dụng.");
+        ImGui::TextDisabled("Chế độ TSF không khả dụng (thiếu file vietflow_tip.dll).");
     }
 
     SectionHeader("Ngoại lai & tiếng Anh");
@@ -1551,7 +1586,7 @@ void UiManager::PageTyping() {
 }
 
 void UiManager::PageMacros() {
-    const bool tsf_active = IsTsfActive(config_);
+    const bool tsf_active = TsfActive();
     SectionHeader("Gõ tắt");
     if (CheckboxHelp("Bật gõ tắt", &config_.enable_macro,
                      "Thay từ tắt bằng nội dung đã định nghĩa khi gõ.")) {
@@ -1625,7 +1660,9 @@ void UiManager::PageMacros() {
     bool btn_clicked = ImGui::Button(NF_SAVE "  Lưu", ImVec2(btn_width, Px(26.0f)));
     if (enter_pressed || btn_clicked) {
         if (strlen(new_macro_key_) > 0 && strlen(new_macro_val_) > 0) {
-            config_.macros[new_macro_key_] = new_macro_val_;
+            std::string key = new_macro_key_;
+            LowerAsciiInPlace(key);
+            config_.macros[key] = new_macro_val_;
             new_macro_key_[0] = '\0';
             new_macro_val_[0] = '\0';
             SaveConfig();
@@ -1717,7 +1754,7 @@ void UiManager::PageMacros() {
 }
 
 void UiManager::PageExclusions() {
-    const bool tsf_active = IsTsfActive(config_);
+    const bool tsf_active = TsfActive();
     SectionHeaderHelp("Phím tắt khi dùng app loại trừ",
                       "Áp dụng khi cửa sổ đang dùng là app trong danh sách loại trừ.");
     if (CheckboxHelp("Khóa phím tắt trong app loại trừ",
@@ -1730,10 +1767,6 @@ void UiManager::PageExclusions() {
 
     SectionHeaderHelp("Thiết lập riêng cho từng app",
                       "Chỉ áp dụng cho app đã thêm. Chọn 'Theo mặc định' để dùng cài đặt chung.");
-    if (tsf_active) {
-        ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.25f, 1.0f),
-                           "TSF đang bật: cấu hình theo app chưa được áp dụng.");
-    }
     ImGui::TextDisabled("Chỉ áp dụng cho app được thêm. 'Theo mặc định' dùng cài đặt chung.");
     ImGui::SetNextItemWidth(Px(240.0f));
     ImGui::InputTextWithHint("##NewProfileApp", "vd: Code.exe, chrome.exe...", new_profile_app_, sizeof(new_profile_app_));
@@ -1898,6 +1931,7 @@ void UiManager::PageExclusions() {
 
     struct QuickExcl { const char* label; const char* exe; const char* alt_exe; };
     static const QuickExcl s_quick_excls[] = {
+        { "Roblox", "robloxplayerbeta.exe", "roblox.exe" },
         { "Counter-Strike 2", "cs2.exe", nullptr },
         { "Valorant", "valorant.exe", nullptr },
         { "Liên Minh (LoL)", "league of legends.exe", "leagueclient.exe" },
@@ -2260,7 +2294,7 @@ static void DrawTrayIconPreview(const char* letter, bool fill, const ImVec4& fil
 
 void UiManager::PageAdvanced() {
     SectionHeader("Biểu tượng khay");
-    const bool tsf_active = IsTsfActive(config_);
+    const bool tsf_active = TsfActive();
 
     if (tsf_active) {
         ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), "TSF đang bật: khay dùng biểu tượng TSF.");
@@ -2367,11 +2401,15 @@ void UiManager::PageAdvanced() {
         ImGui::PushID(id);
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(label);
-        ImGui::SameLine(Px(94.0f));
+        ImGui::SameLine(Px(140.0f));
         char path_buf[512] = {0};
         strncpy_s(path_buf, sizeof(path_buf), path.c_str(), _TRUNCATE);
-        ImGui::SetNextItemWidth(Px(300.0f));
-        if (ImGui::InputTextWithHint(id, "Chưa chọn file...", path_buf, sizeof(path_buf))) {
+        ImGui::SetNextItemWidth(Px(260.0f));
+        if (ImGui::InputTextWithHint(id, "Chưa chọn file...", path_buf, sizeof(path_buf),
+                                     ImGuiInputTextFlags_EnterReturnsTrue)) {
+            path = path_buf;
+            SaveConfig();
+        } else if (ImGui::IsItemDeactivatedAfterEdit()) {
             path = path_buf;
             SaveConfig();
         }

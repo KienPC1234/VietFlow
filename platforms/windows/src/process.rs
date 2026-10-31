@@ -3,7 +3,8 @@
 
 use crate::config::AppProfile;
 use std::collections::HashMap;
-use windows_sys::Win32::Foundation::{CloseHandle, HWND, INVALID_HANDLE_VALUE};
+use windows_sys::core::BOOL;
+use windows_sys::Win32::Foundation::{CloseHandle, HWND, INVALID_HANDLE_VALUE, LPARAM};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
     TH32CS_SNAPPROCESS,
@@ -11,19 +12,39 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 use windows_sys::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+use windows_sys::Win32::UI::WindowsAndMessaging::{EnumChildWindows, GetWindowThreadProcessId};
 
-pub unsafe fn get_process_name_for_window(hwnd: HWND) -> Option<String> {
-    if hwnd.is_null() {
-        return None;
-    }
+struct UwpChildSearch {
+    parent_pid: u32,
+    child_pid: Option<u32>,
+}
 
+unsafe extern "system" fn enum_child_uwp_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let search = &mut *(lparam as *mut UwpChildSearch);
     let mut pid: u32 = 0;
     GetWindowThreadProcessId(hwnd, &mut pid);
-    if pid == 0 {
-        return None;
+    if pid != 0 && pid != search.parent_pid {
+        search.child_pid = Some(pid);
+        0
+    } else {
+        1
     }
+}
 
+unsafe fn find_uwp_child_pid(hwnd: HWND, parent_pid: u32) -> Option<u32> {
+    let mut search = UwpChildSearch {
+        parent_pid,
+        child_pid: None,
+    };
+    EnumChildWindows(
+        hwnd,
+        Some(enum_child_uwp_proc),
+        &mut search as *mut UwpChildSearch as LPARAM,
+    );
+    search.child_pid
+}
+
+unsafe fn get_process_name_by_pid(pid: u32) -> Option<String> {
     let hprocess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
     if hprocess.is_null() {
         return None;
@@ -47,6 +68,34 @@ pub unsafe fn get_process_name_for_window(hwnd: HWND) -> Option<String> {
     file_name
 }
 
+pub unsafe fn get_process_name_for_window(hwnd: HWND) -> Option<String> {
+    if hwnd.is_null() {
+        return None;
+    }
+
+    let mut pid: u32 = 0;
+    GetWindowThreadProcessId(hwnd, &mut pid);
+    if pid == 0 {
+        return None;
+    }
+
+    let mut name = get_process_name_by_pid(pid);
+
+    // If the window belongs to ApplicationFrameHost.exe (UWP / Windows Store / Xbox GDK wrapper),
+    // probe its child hierarchy (such as Windows.UI.Core.CoreWindow) to identify the real child process.
+    if let Some(ref proc_name) = name {
+        if proc_name.eq_ignore_ascii_case("applicationframehost.exe") {
+            if let Some(real_pid) = find_uwp_child_pid(hwnd, pid) {
+                if let Some(real_name) = get_process_name_by_pid(real_pid) {
+                    name = Some(real_name);
+                }
+            }
+        }
+    }
+
+    name
+}
+
 pub fn app_name_matches(current: &str, configured: &str) -> bool {
     let proc = current.trim().to_lowercase();
     let app = configured.trim().to_lowercase();
@@ -55,7 +104,9 @@ pub fn app_name_matches(current: &str, configured: &str) -> bool {
     }
     let proc_stem = proc.strip_suffix(".exe").unwrap_or(&proc);
     let app_stem = app.strip_suffix(".exe").unwrap_or(&app);
-    app == proc || app_stem == proc_stem
+    app == proc
+        || app_stem == proc_stem
+        || (app_stem.len() >= 4 && proc_stem.starts_with(app_stem))
 }
 
 fn is_known_ime_name(name: &str) -> bool {
@@ -143,6 +194,7 @@ mod tests {
             "valorant.exe".to_string(),
             "cs2".to_string(),
             "League of Legends.exe".to_string(),
+            "roblox".to_string(),
         ];
 
         assert!(is_app_excluded(Some("valorant.exe"), &list));
@@ -151,6 +203,9 @@ mod tests {
         assert!(is_app_excluded(Some("cs2.exe"), &list));
         assert!(is_app_excluded(Some("CS2"), &list));
         assert!(is_app_excluded(Some("League of Legends.exe"), &list));
+        assert!(is_app_excluded(Some("RobloxPlayerBeta.exe"), &list));
+        assert!(is_app_excluded(Some("RobloxStudioBeta.exe"), &list));
+        assert!(is_app_excluded(Some("roblox.exe"), &list));
         assert!(!is_app_excluded(Some("notepad.exe"), &list));
         assert!(!is_app_excluded(None, &list));
         assert!(!is_app_excluded(Some(""), &list));

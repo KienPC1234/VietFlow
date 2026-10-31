@@ -114,8 +114,8 @@ Nguồn:
 - OpenKey được khen là sửa được lỗi này; người dùng chuyển macro từ EVKey sang
   OpenKey khá dễ.
 - Người dùng cần macro kiểu `@date`, `@time`, `@clipboard`, `@tab`, `@newline`.
-  Trong VietFlow, `@clipboard` hiện **được quảng cáo nhưng chưa được implement**
-  (xem `docs/BUG_AUDIT.md`).
+  Trong VietFlow, `@clipboard` hiện đã được host Windows xử lý qua cache
+  clipboard; TSF cũng xử lý khi macro được dùng trong app TSF.
 
 Nguồn:
 - [Tinh tế: chuyển EVKey sang OpenKey, lỗi macro trình duyệt](https://tinhte.vn/thread/minh-da-chuyen-tu-evkey-sang-openkey-trai-nghiem-tot-cho-ca-macos-va-windows.4009004/)

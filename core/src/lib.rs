@@ -198,6 +198,28 @@ mod tests {
             ("vie6t5", "việt"),
             ("tie6ng1", "tiếng"),
             ("d9u7o7ng2", "đường"),
+            // Free marking at end of word (common habit in UniKey / EVKey)
+            ("viet65", "việt"),
+            ("duong972", "đường"),
+            ("toan1", "toán"),
+            ("hoang2", "hoàng"),
+            ("chuye6n1", "chuyến"),
+            ("thuye6n2", "thuyền"),
+            ("khuye6n", "khuyên"),
+            ("nguye6n4", "nguyễn"),
+            // Direct tone replacement
+            ("toan12", "toàn"),
+            ("toan21", "toán"),
+            // Remove tone with '0'
+            ("toan10", "toan"),
+            // Double tone undo
+            ("toan11", "toan1"),
+            // Double modify undo
+            ("u77", "u7"),
+            ("uo77", "uo7"),
+            // Plain numbers passthrough when buffer starts with digits
+            ("123", "123"),
+            ("0901234567", "0901234567"),
         ];
 
         for (input, expected) in cases {

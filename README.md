@@ -1,108 +1,73 @@
 # VietFlow
 
-A native Windows Vietnamese input method. The engine and keyboard hook are Rust; the settings UI is a separate Dear ImGui + DirectX 11 process.
+Lightweight, memory-safe native Vietnamese input method for Windows.
+Rust core engine and hook daemon with an isolated Dear ImGui + DirectX 11 settings UI.
 
 Repository: [https://github.com/KienPC1234/VietFlow](https://github.com/KienPC1234/VietFlow)
 
-## Why VietFlow
+## Key Features
 
-These are the parts that address common complaints about classic UniKey, EVKey and OpenKey: accidental hotkeys in games, a fixed English list, 32-bit installs, per-app conflicts and low-DPI settings.
+- **Hybrid Input**: Native Text Services Framework (TSF TIP) for zero-backspace typing in modern apps, plus a 0ms low-level hook with hardware key repeat (WASD) for games.
+- **Game Safe**: Automatic global hotkey locking (Ctrl+Shift / Alt+Z) and smart UWP/Xbox container detection (Roblox, CS2, Valorant).
+- **Per-App Overrides**: Custom typing method, charset, key-injection mode, and macro access per executable.
+- **Resource Footprint**: Always-on daemon uses ~2.9 MB private bytes and 0% idle CPU. Settings UI runs out-of-process and frees 100% RAM/GPU when closed.
+- **Smart English Habit**: Phonotactic restoration prevents mangling common technical words (`test`, `reset`, `setup`).
+- **Native Multi-Arch**: Static MSVC builds for x64, x86, and ARM64 (no VC++ Redistributable required). High-DPI vector UI (100%–200%).
 
-- VietFlow disables the global shortcuts in apps on the exclusion list, so Ctrl+Shift in a game cannot switch V/E. The tray icon and its menu still change the language by hand. The lock is a checkbox if you want shortcuts back.
-- Each app can override the typing method, charset, key-injection mode and macro permission. Available modes are Unicode, scan-code and a slower safe mode for games, Chromium apps and remote sessions.
-- The default English list leaves out short words that are also Vietnamese keystrokes (`test`, `reset`, `me`). A searchable popup adds or removes any keyword, including the defaults.
-- The converter uses the Rust engine for Unicode, TCVN3 and VNI text, including raw-byte clipboard input and output. Macros can be imported and exported as TSV, CSV or `trigger=value` lines.
-- Macros can keep working in an excluded app or English mode while Vietnamese typing stays off, so a game or terminal can use text expansions without accidental Vietnamese.
-- Builds for x64, x86 and ARM64 use the static MSVC runtime, so the target machine does not need the VC++ Redistributable.
-- The UI scales per monitor from 100% to 200%; tabs, preset buttons, popups and dialogs fit at the minimum window width.
-- Press a shortcut to record the settings or converter hotkey. You can also type it by hand.
-- The update check runs only when you ask. It reads a release manifest with the changelog and separate x64/x86/ARM64 installers.
-- The engine supports Telex, VNI and VIQR, modern tone placement, free marking, macros with `@date`, `@time` and `@clipboard`, and custom tray icons.
+## Feature Comparison
+
+| Feature / Capability | VietFlow | EVKey | OpenKey | UniKey 4.3 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Language & Architecture** | Rust std (Memory-safe) | C++ Hook + C#/.NET UI | C++ Win32 | C++ MFC / Win32 |
+| **Input Delivery Modes** | Hybrid: TSF TIP + Low-Level Hook | Low-Level Hook only | Low-Level Hook only | Low-Level Hook only |
+| **Daemon Memory Footprint** | ~2.9 MB Private Bytes | ~15–25 MB (.NET runtime) | ~5–8 MB | ~2–4 MB |
+| **UI Isolation** | Out-of-process DirectX 11 + ImGui | In-process Form | Monolithic Win32 Dialog | Monolithic MFC Dialog |
+| **Game Movement (WASD)** | 0ms Native Passthrough + Auto-Repeat | Heuristic passthrough | vDoNothing passthrough | Frequent key locks |
+| **In-Game Hotkey Lock** | Automatic lock in excluded apps | Manual switch only | None | None |
+| **Per-App Profile Overrides** | Yes (Engine, Charset, Macro, Mode) | Basic E/V switch list | Registry E/V toggle list | None |
+| **Browser URL Bar Conflict** | Native in TSF / Minimal diffing | Temporary char hack | Narrow space hack (0x202F) | Freezes / suggestion collision |
+| **Windows on ARM (ARM64)** | Native ARM64, x64, x86 | Emulated x86 | Emulated x86/x64 | Emulated x86 |
+| **High-DPI Scaling** | Native vector rendering (100%–200%) | Fair (WinForms DPI issues) | Blurry GDI controls | Blurry bitmap icons |
+| **Dynamic Macro Tokens** | `@date`, `@time`, `@clipboard`, CSV/TSV | Static text only | Static text only | Static text only |
+| **License & Auditing** | Open Source (GPLv3, audited) | Closed Source | Open Source (GPLv3) | Closed Source (v4.3) |
 
 ## Layout
 
 ```
 core/                  Vietnamese engine (Rust std, C ABI in ffi/vietflow_core.h)
 platforms/windows/     Win32 hook daemon, tray host, config watcher, updater
+platforms/windows_tsf/ Text Services Framework (TSF) TIP COM server
 ui_imgui/              Dear ImGui + DirectX 11 settings UI
-ui_imgui/third_party/  Git submodules: imgui, nlohmann_json
-assets/                Application icon and brand assets
-scripts/build.ps1      Release build and packaging script
-Cargo.toml             Rust workspace
+assets/                Application and tray icons
+scripts/               Build, packaging, and release scripts
 ```
 
 ## Build
 
-Requirements:
-
-- Rust 1.75+ (`x86_64-pc-windows-msvc`; add `i686-pc-windows-msvc` and `aarch64-pc-windows-msvc` for the other architectures)
-- CMake 3.20+ and Visual Studio Build Tools (Desktop development with C++)
-- Git
-- Optional: .NET SDK and Velopack CLI (`dotnet tool install -g vpk`) only for installer packaging
-
-Fetch the submodules:
+Requirements: Rust 1.75+, CMake 3.20+, and Visual Studio Desktop C++ Build Tools.
 
 ```powershell
+# Clone with submodules
 git clone --recurse-submodules https://github.com/KienPC1234/VietFlow.git
-# or, in an existing clone:
-git submodule update --init --recursive
-```
 
-`third_party/imgui` is pinned to `2fb554b` (1.93.1 WIP); `third_party/nlohmann_json` is pinned to `v3.11.3`.
+# Test workspace
+cargo test
 
-Build commands:
-
-```powershell
-cargo test --manifest-path Cargo.toml
-
-# Default: x64, static MSVC runtime (~1.7 MB)
+# Build release (x64, static CRT -> dist\VietFlow.exe)
 .\scripts\build.ps1
 
-# x64, x86 and ARM64, with Velopack installers
+# Build all architectures with Velopack installers
 .\scripts\build.ps1 -Arch All -Velopack
-
-# One architecture
-.\scripts\build.ps1 -Arch arm64
-
-# Also create installers for the current architecture
-.\scripts\build.ps1 -Velopack
-
-# Smaller x64 build that requires the VC++ 2015-2022 Redistributable (~1.23 MB)
-.\scripts\build.ps1 -DynamicCrt
 ```
-
-Output: `dist\VietFlow.exe` (x64), `dist\VietFlow-x86.exe` (x86), `dist\VietFlow-arm64.exe` (ARM64), plus `dist\latest.json`, `dist\version.txt` and `dist\CHANGELOG.md`. With `-Velopack`, installers are written to `releases\` as `VietFlow-win-x64-Setup.exe`, `VietFlow-win-x86-Setup.exe` and `VietFlow-win-arm64-Setup.exe`. The default static build imports neither `VCRUNTIME140` nor `MSVCP140`.
-
-## Release
-
-Releases are published only for a feature milestone, a breaking change or a critical security fix. Small fixes wait for the next milestone.
-
-`VERSION` and `CHANGELOG.md` are the single source of truth. Run `.\scripts\build.ps1 -Arch All -Velopack` to build the executables and installers. See [docs/RELEASING.md](docs/RELEASING.md) for the asset and updater checklist.
-
-## Issues and feedback
-
-Bug reports and feature requests go through GitHub Issues:
-
-- **Bug report**: include the exact keystrokes, the app, and what you expected. Open a [new bug report](https://github.com/KienPC1234/VietFlow/issues/new?template=bug_report.md).
-- **Feature request**: describe the typing method, shortcut or workflow you need. Open a [new feature request](https://github.com/KienPC1234/VietFlow/issues/new?template=feature_request.md).
-- **Community discussion**: ask questions and share setups in [GitHub Discussions](https://github.com/KienPC1234/VietFlow/discussions).
 
 ## Donation
 
-If VietFlow saves you time, you can support the author through a Vietnamese bank transfer (VietQR / Napas 247):
-
-| Detail | Value |
-| :--- | :--- |
-| **Bank** | Techcombank (Napas 247) |
-| **Account number** | `9978 5892 20` |
-| **Account holder** | HA TRI KIEN |
-| **Transfer note** | `Ung ho VietFlow` |
+If VietFlow saves you time, you can support the project via VietQR (Techcombank `9978 5892 20` - HA TRI KIEN):
 
 <p align="center">
-  <img src="https://img.vietqr.io/image/970407-9978589220-compact2.png?amount=0&addInfo=Ung%20ho%20VietFlow&accountName=HA%20TRI%20KIEN" alt="VietQR code for supporting VietFlow" width="320" />
+  <img src="https://img.vietqr.io/image/970407-9978589220-compact2.png?amount=0&addInfo=Ung%20ho%20VietFlow&accountName=HA%20TRI%20KIEN" alt="VietQR code for supporting VietFlow" width="220" />
 </p>
 
 ## License
 
-Released under the GNU General Public License v3.0 (GPLv3).
-The Vietnamese input algorithm is derived from UniKey (Pham Kim Long).
+GPLv3 License. Core Vietnamese input algorithm is derived from UniKey (Pham Kim Long).
