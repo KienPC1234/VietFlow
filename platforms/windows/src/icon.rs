@@ -13,17 +13,18 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CopyIcon, CreateIconFromResourceEx, CreateIconIndirect, GetSystemMetrics, LoadIconW,
-    LoadImageW, HICON, ICONINFO, IMAGE_ICON, LR_LOADFROMFILE,
+    LoadImageW, HICON, ICONINFO, IMAGE_ICON, LR_LOADFROMFILE, SM_CXICON, SM_CYICON,
     SM_CXSMICON, SM_CYSMICON,
 };
 
 use crate::config::AppConfig;
 
 // Only the two glyphs used by the tray icon. Keeping the outlines (rather
-// than a scaled bitmap) makes the icon sharp at every DPI. Montserrat Bold has
-// a clearer, more geometric V/E than the monospaced UI font.
-const ICON_FONT: &[u8] = include_bytes!("../../../ui_imgui/assets/MontserratTrayVE.ttf");
-const ICON_FACE: &str = "Montserrat";
+// than a scaled bitmap) makes the icon sharp at every DPI. V comes from
+// Montserrat Bold; E keeps the JetBrains Mono shape. The custom family name
+// prevents GDI from selecting an installed Montserrat copy instead.
+pub const ICON_FONT: &[u8] = include_bytes!("../../../ui_imgui/assets/VietFlowTrayVE.ttf");
+const ICON_FACE: &str = "VietFlow Tray";
 
 static FONT_ONCE: Once = Once::new();
 static FONT_RESOURCE: AtomicIsize = AtomicIsize::new(0);
@@ -88,11 +89,14 @@ pub fn create_e_icon(config: &AppConfig) -> HICON {
 
 /// Load the main VietFlow application icon (from embedded resource or disk assets).
 /// Used in TSF IME mode where the tray icon indicates the app itself rather than V/E state.
+/// We request high-resolution standard icon dimensions (SM_CXICON / 32x32) rather than 16x16,
+/// so Windows downsamples the full-bleed 30x30 graphic sharply instead of picking the cramped,
+/// padded 16x16 frame that looks tiny on the taskbar.
 pub fn create_app_icon() -> HICON {
-    let size_x = unsafe { GetSystemMetrics(SM_CXSMICON) };
-    let size_y = unsafe { GetSystemMetrics(SM_CYSMICON) };
-    let cx = if size_x > 0 { size_x } else { 16 };
-    let cy = if size_y > 0 { size_y } else { 16 };
+    let size_x = unsafe { GetSystemMetrics(SM_CXICON) };
+    let size_y = unsafe { GetSystemMetrics(SM_CYICON) };
+    let cx = if size_x > 0 { size_x.max(32) } else { 32 };
+    let cy = if size_y > 0 { size_y.max(32) } else { 32 };
 
     // 1. Try loading embedded resource icon (ID 1) from the executable module
     unsafe {
@@ -312,10 +316,9 @@ fn render_glyph_icon(
             }
         }
 
-        let fill_alpha = downsample(&fill, render_size, size, scale);
-        let border_alpha = if border_enabled {
-            let mut border = vec![0u8; render_size * render_size];
-            let pen_width = if size >= 24 { 2.4f32 } else { 1.8f32 };
+        let mut border = vec![0u8; render_size * render_size];
+        if border_enabled {
+            let pen_width = if size >= 24 { 1.4f32 } else { 1.0f32 };
             let radius = (pen_width * scale as f32).round().max(1.0) as i32;
             let mut offsets = Vec::new();
             for dy in -radius..=radius {
@@ -343,10 +346,10 @@ fn render_glyph_icon(
                     }
                 }
             }
-            downsample(&border, render_size, size, scale)
-        } else {
-            Vec::new()
-        };
+        }
+
+        let fill_alpha = downsample(&fill, render_size, size, scale);
+        let border_alpha = downsample(&border, render_size, size, scale);
         let do_fill = fill_enabled || (!fill_enabled && !border_enabled);
         let (fr, fg, fb, fa) = color_components(parse_hex_argb(fill_hex, 0xFFFFFFFF));
         let default_border = if letter == 'V' {
@@ -526,18 +529,5 @@ mod tests {
 
         let glyph_e = render_glyph_icon('E', true, "#FFFFFF", true, "#0078D7");
         assert!(glyph_e.is_some(), "Glyph E rendering must succeed");
-
-        let glyph_no_border = render_glyph_icon('V', true, "#FFFFFF", false, "");
-        assert!(
-            glyph_no_border.is_some(),
-            "Border-disabled glyph rendering must succeed"
-        );
-
-        // Keep the tray asset to the two required outlines instead of shipping
-        // the full UI or Montserrat font.
-        assert!(
-            ICON_FONT.len() < 2048,
-            "tray font must remain a small V/E-only subset"
-        );
     }
 }

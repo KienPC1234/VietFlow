@@ -190,19 +190,6 @@ pub unsafe fn register_server(hmodule: HMODULE) -> HRESULT {
         let _ = RegCloseKey(k);
     }
 
-    // Profile for Vietnamese (0x0000042a)
-    let path_042a = format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{tip_guid_str}\\LanguageProfile\\0x0000042a\\{prof_guid_str}");
-    if let Some(k) = reg_create(HKEY_LOCAL_MACHINE, &path_042a) {
-        reg_set_sz(k, Some("Description"), TEXT_SERVICE_PROFILE_NAME);
-        reg_set_sz(k, Some("Display Description"), TEXT_SERVICE_PROFILE_NAME);
-        reg_set_dword(k, "Enable", 1);
-        reg_set_dword(k, "SubstituteLayout", 0x04090409);
-        reg_set_sz(k, Some("IconFile"), &module_path_str);
-        reg_set_dword(k, "IconIndex", 0);
-        reg_set_dword(k, "ProfileFlags", 2);
-        let _ = RegCloseKey(k);
-    }
-
     // Category registrations (Category of TIP, Keyboard TIP, and capabilities)
     let categories: [(windows::core::GUID, windows::core::GUID); 8] = [
         (GUID_TFCAT_CATEGORY_OF_TIP, GUID_TFCAT_TIP_KEYBOARD),
@@ -238,7 +225,7 @@ pub unsafe fn register_server(hmodule: HMODULE) -> HRESULT {
         }
     }
 
-    // 4. Register Modern TSF Input Processor Profile via ITfInputProcessorProfileMgr
+    // 4. Register Modern TSF Input Processor Profile via ITfInputProcessorProfileMgr (English US only)
     let profile_mgr_v2: Result<ITfInputProcessorProfileMgr, _> =
         CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER);
 
@@ -251,19 +238,6 @@ pub unsafe fn register_server(hmodule: HMODULE) -> HRESULT {
         let _ = mgr_v2.RegisterProfile(
             &CLSID_VIETFLOW_TIP,
             LANGID_ENGLISH_US,
-            &GUID_VIETFLOW_PROFILE,
-            desc_slice,
-            icon_slice,
-            0,
-            hkl_us,
-            0,
-            true,
-            0,
-        );
-
-        let _ = mgr_v2.RegisterProfile(
-            &CLSID_VIETFLOW_TIP,
-            LANGID_VIETNAMESE,
             &GUID_VIETFLOW_PROFILE,
             desc_slice,
             icon_slice,
@@ -292,27 +266,17 @@ pub unsafe fn register_server(hmodule: HMODULE) -> HRESULT {
             0,
         );
         let _ = mgr.EnableLanguageProfile(&CLSID_VIETFLOW_TIP, LANGID_ENGLISH_US, &GUID_VIETFLOW_PROFILE, true);
-
-        // Register for Vietnamese (0x042A)
-        let _ = mgr.AddLanguageProfile(
-            &CLSID_VIETFLOW_TIP,
-            LANGID_VIETNAMESE,
-            &GUID_VIETFLOW_PROFILE,
-            desc_slice,
-            icon_slice,
-            0,
-        );
-        let _ = mgr.EnableLanguageProfile(&CLSID_VIETFLOW_TIP, LANGID_VIETNAMESE, &GUID_VIETFLOW_PROFILE, true);
     }
 
-    // 6. Register active layout in input.dll for current user
+    // 6. Register active layout in input.dll for current user (English US only)
     call_install_layout_or_tip(
         "0409:{7C2B5E10-9A31-4B8F-B623-192E48270101}{7C2B5E11-9A31-4B8F-B623-192E48270102}",
         false,
     );
+    // Explicitly uninstall 042a in case an older build registered it, preventing Windows from pulling in Vietnamese
     call_install_layout_or_tip(
         "042A:{7C2B5E10-9A31-4B8F-B623-192E48270101}{7C2B5E11-9A31-4B8F-B623-192E48270102}",
-        false,
+        true,
     );
 
     S_OK
@@ -340,11 +304,11 @@ unsafe fn call_install_layout_or_tip(layout: &str, uninstall: bool) {
 pub unsafe fn unregister_server() -> HRESULT {
     // 0. Remove active layout in input.dll
     call_install_layout_or_tip(
-        "0409:{7C2B5E10-9A31-4B8F-B623-192E48270101}{7C2B5E11-9A31-4B8F-B623-192E48270102}",
+        "0409:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
         true,
     );
     call_install_layout_or_tip(
-        "042A:{7C2B5E10-9A31-4B8F-B623-192E48270101}{7C2B5E11-9A31-4B8F-B623-192E48270102}",
+        "042a:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
         true,
     );
 

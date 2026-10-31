@@ -52,8 +52,9 @@ Findings and small changes:
 
 - Tray icons are no longer rebuilt when icon-related config fields did not
   change. This avoids two glyph renders on every save.
-- Tray glyphs are rasterized from the embedded Montserrat Bold subset through
-  GDI `GetGlyphOutline`, with no GDI+ startup or GDI+ image objects.
+- Tray glyphs are rasterized from the embedded custom `VietFlow Tray` font
+  (Montserrat V + JetBrains E) through GDI `GetGlyphOutline`, with no GDI+
+  startup or GDI+ image objects.
 - The settings UI releases its D3D11 device, swap chain and render target while
   minimized, then recreates them on restore.
 
@@ -77,15 +78,20 @@ to `DestroyIcon`.
 
 - `TrayIcon::set_icons` now destroys the previous private handles.
 - The system fallback icon is copied with `CopyIcon` so ownership is clear.
-- V/E glyphs now come from a 1.2 KB embedded **Montserrat Bold** subset
-  containing only those two outlines, rasterized at 8x through GDI
-  `GetGlyphOutline`; GDI+ is no longer initialized or linked.
+- V/E glyphs now come from a 1.3 KB embedded custom font: `V` from
+  **Montserrat Bold**, `E` from **JetBrains Mono SemiBold**, scaled slightly
+  taller than the V cap height so it reads at the same visual size and named
+  `VietFlow Tray`. The outlines are rasterized at 8x through GDI
+  `GetGlyphOutline`; the border is 1 px at 16 px, and GDI+ is no longer
+  initialized or linked.
+- The settings icon preview now uses the same embedded V/E font as the tray,
+  so its shapes and transparent-fill state match the real icon.
 - When the border is disabled, the renderer no longer allocates and downsamples
   an empty border mask.
 
-Verification (2026-10-31): 20 live config/icon-colour reloads with Montserrat
-Bold and the border-disabled path. GDI objects stayed at 12 and USER objects at
-15 before and after the loop.
+Verification (2026-10-31): 20 live config/icon-colour reloads with the custom
+V/E font and the border-disabled path. GDI objects stayed at 20 and USER objects
+at 13 before and after the loop.
 
 | Build | GDI objects before | GDI objects after |
 | --- | ---: | ---: |

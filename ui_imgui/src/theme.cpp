@@ -7,11 +7,41 @@ namespace vietflow {
 
 static const void* s_embedded_font_data = nullptr;
 static size_t s_embedded_font_size = 0;
+static const void* s_tray_font_data = nullptr;
+static size_t s_tray_font_size = 0;
+static ImFont* s_tray_font = nullptr;
 static float s_ui_scale = 1.0f;
 
 void SetEmbeddedFontData(const void* data, size_t size) {
     s_embedded_font_data = data;
     s_embedded_font_size = size;
+}
+
+void SetTrayFontData(const void* data, size_t size) {
+    s_tray_font_data = data;
+    s_tray_font_size = size;
+}
+
+ImFont* TrayFont() {
+    return s_tray_font;
+}
+
+static void AddTrayFont(ImGuiIO& io, float dpi_scale) {
+    s_tray_font = nullptr;
+    if (!s_tray_font_data || s_tray_font_size == 0) return;
+
+    void* font_copy = malloc(s_tray_font_size);
+    if (!font_copy) return;
+    memcpy(font_copy, s_tray_font_data, s_tray_font_size);
+
+    ImFontConfig cfg;
+    cfg.FontDataOwnedByAtlas = true;
+    cfg.OversampleH = 1;
+    cfg.OversampleV = 1;
+    cfg.PixelSnapH = true;
+    static const ImWchar tray_ranges[] = { 0x45, 0x45, 0x56, 0x56, 0 };
+    s_tray_font = io.Fonts->AddFontFromMemoryTTF(
+        font_copy, (int)s_tray_font_size, 42.0f * dpi_scale, &cfg, tray_ranges);
 }
 
 float UiScale() {
@@ -64,6 +94,7 @@ void SetupFonts(ImGuiIO& io, float dpi_scale) {
             memcpy(font_copy, s_embedded_font_data, s_embedded_font_size);
             font_cfg.FontDataOwnedByAtlas = true;
             io.Fonts->AddFontFromMemoryTTF(font_copy, (int)s_embedded_font_size, font_size, &font_cfg, full_ranges.Data);
+            AddTrayFont(io, dpi_scale);
             return;
         }
     }
@@ -75,6 +106,7 @@ void SetupFonts(ImGuiIO& io, float dpi_scale) {
     } else {
         io.Fonts->AddFontDefault(&font_cfg);
     }
+    AddTrayFont(io, dpi_scale);
 }
 
 void ApplyTheme(float dpi_scale) {

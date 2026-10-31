@@ -16,11 +16,15 @@ the injected keys.
 - [x] `dumpbin /dependents` shows no `VCRUNTIME140` or `MSVCP140`.
 - [x] `VietFlow.exe --settings` and `VietFlow.exe --convert` start and stay alive.
 - [x] Daemon starts with a temporary config containing `lock_hotkeys_in_excluded_apps=false` and an app profile.
-- [x] Tray glyphs use a 1,196-byte Montserrat Bold subset containing only `V`
-      and `E`; `GetTextFaceW` resolves the embedded family as `Montserrat`.
+- [x] Tray glyphs use a 1,312-byte custom font containing only `V` (Montserrat
+      Bold) and `E` (JetBrains Mono SemiBold); `GetTextFaceW` resolves the
+      embedded family as `VietFlow Tray`.
+- [x] Tray border uses a 1 px pen at the 16 px icon size.
+- [x] The settings icon preview uses that same custom font instead of the UI
+      font, and the border-only/fill-off states match the native renderer.
 - [x] Glyph masks are crisp at 16 px; no bitmap scaling or GDI+ path is used.
 - [x] GDI/USER objects stay stable over 20 live icon-colour reloads with the
-      border-disabled path (GDI 12 -> 12, USER 15 -> 15).
+      merged font and border-disabled path (GDI 20 -> 20, USER 13 -> 13).
 - [x] Startup registry verified: enabling writes the quoted executable path;
       disabling removes the value. The test restored the original registry state.
 - [x] Minimizing the settings UI releases D3D11 resources and restores normally
@@ -134,7 +138,7 @@ DirectInput game.
 - [ ] 100%, 150% and 200% DPI; no clipped tabs or buttons.
 - [ ] Minimum window 760×560; popups stay inside the window.
 - [ ] Long macro and exclusion lists scroll inside the page.
-- [x] Tray V/E glyphs render from the two-glyph Montserrat Bold subset; no
+- [x] Tray V/E glyphs render from the two-glyph `VietFlow Tray` font; no
       missing-glyph fallback.
 - [ ] Tray icons for V/E and custom colors.
 - [ ] Sound preview and V/E notification.

@@ -1073,8 +1073,17 @@ void UiManager::PageTyping() {
     if (ImGui::Checkbox("Tự khôi phục từ gõ sai / tiếng Anh", &config_.auto_restore)) SaveConfig();
 
     SectionHeader("Bàn phím");
+    ImGui::BeginDisabled(config_.use_tsf);
     if (ImGui::Checkbox("Chống dính Shift", &config_.fix_shift_lag)) SaveConfig();
+    if (config_.use_tsf) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(Không cần thiết trong TSF: xử lý in-process)");
+    }
+    ImGui::EndDisabled();
+
     if (ImGui::Checkbox("Gõ tắt phụ âm đầu", &config_.consonant_shortcuts)) SaveConfig();
+
+    ImGui::BeginDisabled(config_.use_tsf);
     if (ImGui::Checkbox("Viết hoa đầu câu", &config_.auto_capitalize)) SaveConfig();
     ImGui::SameLine();
     ImGui::SetNextItemWidth(Px(150.0f));
@@ -1082,19 +1091,35 @@ void UiManager::PageTyping() {
         config_.auto_capitalize_chars = auto_capitalize_buf_;
         SaveConfig();
     }
-    if (ImGui::IsItemHovered()) {
+    if (config_.use_tsf) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(Chưa áp dụng trong TSF)");
+    } else if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Ký tự kết thúc câu (mặc định . ! ? xuống dòng).");
     }
+    ImGui::EndDisabled();
+
+    ImGui::BeginDisabled(config_.use_tsf);
     if (ImGui::Checkbox("Tắt khi bàn phím không phải US", &config_.disable_on_non_us_layout)) SaveConfig();
-    if (ImGui::IsItemHovered()) {
+    if (config_.use_tsf) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(Không áp dụng trong TSF: gắn với layout US)");
+    } else if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Tránh gõ sai khi dùng layout khác.");
     }
+    ImGui::EndDisabled();
+
+    ImGui::BeginDisabled(config_.use_tsf);
     if (ImGui::Checkbox("Tắt trong cửa sổ không hỗ trợ Unicode", &config_.disable_on_non_unicode_window)) {
         SaveConfig();
     }
-    if (ImGui::IsItemHovered()) {
+    if (config_.use_tsf) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(Không áp dụng trong TSF: chỉ chạy trên Text Services)");
+    } else if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Ví dụ VBA IDE. Bỏ chọn nếu app vẫn nhận tiếng Việt qua clipboard.");
     }
+    ImGui::EndDisabled();
 
     SectionHeader("Gửi phím");
     static const char* injection_modes[] = {
@@ -1552,12 +1577,17 @@ void UiManager::PageMacros() {
 
 void UiManager::PageExclusions() {
     SectionHeader("Phím tắt trong app loại trừ");
+    ImGui::BeginDisabled(config_.use_tsf);
     if (ImGui::Checkbox("Khóa phím tắt khi mới vào app loại trừ", &config_.lock_hotkeys_in_excluded_apps)) {
         SaveConfig();
     }
-    if (ImGui::IsItemHovered()) {
+    if (config_.use_tsf) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(Không áp dụng trong TSF: Windows quản lý riêng)");
+    } else if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Sau khi bật tạm bằng icon khay, V/E đổi qua lại được trong app đó.");
     }
+    ImGui::EndDisabled();
 
     SectionHeader("Cấu hình theo app");
     ImGui::TextDisabled("Ghi đè kiểu gõ, bảng mã, gửi phím, gõ tắt. Để trống = dùng chung.");
@@ -1635,10 +1665,12 @@ void UiManager::PageExclusions() {
                 }
                 ImGui::TableSetColumnIndex(3);
                 ImGui::SetNextItemWidth(-FLT_MIN);
+                ImGui::BeginDisabled(config_.use_tsf);
                 if (ImGui::Combo("##PInject", &injection, profile_injections, IM_ARRAYSIZE(profile_injections))) {
                     profile.injection_mode = profile_injection_values[injection];
                     SaveConfig();
                 }
+                ImGui::EndDisabled();
 
                 int macro = std::clamp(profile.allow_macro, -1, 1) + 1;
                 ImGui::TableSetColumnIndex(4);
@@ -2048,14 +2080,19 @@ static void DrawTrayIconPreview(const char* letter, bool fill, const ImVec4& fil
     draw_list->AddRectFilled(p0, p1, IM_COL32(48, 50, 56, 255), 6.0f);
     draw_list->AddRect(p0, p1, IM_COL32(80, 84, 94, 255), 6.0f, 0, 1.0f);
 
-    // Large centered letter 'E' or 'V'
-    ImFont* font = ImGui::GetFont();
+    // Use the same merged V/E font as the native tray renderer. The normal UI
+    // font is JetBrains Mono, so its V would not match the Montserrat V.
+    ImFont* font = TrayFont();
+    if (!font) font = ImGui::GetFont();
     float font_size = Px(42.0f);
     ImVec2 text_size = font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, letter);
     ImVec2 text_pos(p0.x + (size - text_size.x) * 0.5f, p0.y + (size - text_size.y) * 0.5f);
 
+    // Match the native renderer: with both options off it still draws the
+    // fill; when only the border is on, the centre is transparent.
+    const bool draw_fill = fill || !border;
     ImU32 col_border = border ? ImGui::ColorConvertFloat4ToU32(border_col) : IM_COL32(0, 0, 0, 0);
-    ImU32 col_fill = fill ? ImGui::ColorConvertFloat4ToU32(fill_col) : (border ? IM_COL32(48, 50, 56, 255) : IM_COL32(200, 200, 200, 255));
+    ImU32 col_fill = draw_fill ? ImGui::ColorConvertFloat4ToU32(fill_col) : IM_COL32(0, 0, 0, 0);
 
     if (border) {
         const int radius = (int)(Px(2.0f) + 0.5f);
@@ -2074,6 +2111,13 @@ static void DrawTrayIconPreview(const char* letter, bool fill, const ImVec4& fil
 
 void UiManager::PageAdvanced() {
     SectionHeader("Biểu tượng khay");
+
+    if (config_.use_tsf) {
+        ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), "Chế độ TSF IME đang bật: Khay hệ thống hiển thị biểu tượng chính của ứng dụng.");
+        ImGui::Spacing();
+    }
+
+    ImGui::BeginDisabled(config_.use_tsf);
 
     ImVec4 e_fill_col = HexToImVec4(config_.tray_icon_e_fill_color, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
     ImVec4 e_border_col = HexToImVec4(config_.tray_icon_e_border_color, ImVec4(0.0f, 0.47f, 0.84f, 1.0f));
@@ -2183,6 +2227,7 @@ void UiManager::PageAdvanced() {
         v_border_col = ImVec4(1.0f, 0.0f, 0.5f, 1.0f);
         SaveConfig();
     }
+    ImGui::EndDisabled();
 
     SectionHeader("Thời gian chốt từ");
     int timeout = (int)config_.typing_timeout_ms;

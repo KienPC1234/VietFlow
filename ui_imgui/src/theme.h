@@ -21,6 +21,8 @@
 namespace vietflow {
 
 void SetEmbeddedFontData(const void* data, size_t size);
+void SetTrayFontData(const void* data, size_t size);
+ImFont* TrayFont();
 void ApplyTheme(float dpi_scale = 1.0f);
 void SetupFonts(ImGuiIO& io, float dpi_scale = 1.0f);
 

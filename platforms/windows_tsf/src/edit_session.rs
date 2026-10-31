@@ -63,11 +63,12 @@ impl ITfEditSession_Impl for CompositionEditSession_Impl {
                         if let Ok(range) = comp.GetRange() {
                             let _ = range.SetText(ec, 0, &[]);
                             let _ = range.Collapse(ec, TF_ANCHOR_END);
-                            let new_sel = [TF_SELECTION {
+                            let mut new_sel = [TF_SELECTION {
                                 range: core::mem::ManuallyDrop::new(Some(range)),
                                 style: TF_SELECTIONSTYLE::default(),
                             }];
                             let _ = self.context.SetSelection(ec, &new_sel);
+                            core::mem::ManuallyDrop::drop(&mut new_sel[0].range);
                         }
                         let _ = comp.EndComposition(ec);
                     }
@@ -87,26 +88,53 @@ impl ITfEditSession_Impl for CompositionEditSession_Impl {
                                 if let Ok(comp) = comp_mgr.StartComposition(ec, range, &self.sink) {
                                     let _ = range.SetText(ec, 0, &self.text);
                                     let _ = range.Collapse(ec, TF_ANCHOR_END);
-                                    let new_sel = [TF_SELECTION {
+                                    let mut new_sel = [TF_SELECTION {
                                         range: core::mem::ManuallyDrop::new(Some(range.clone())),
                                         style: TF_SELECTIONSTYLE::default(),
                                     }];
                                     let _ = self.context.SetSelection(ec, &new_sel);
+                                    core::mem::ManuallyDrop::drop(&mut new_sel[0].range);
                                     *holder = Some(comp);
                                 }
                             }
                         }
+                        core::mem::ManuallyDrop::drop(&mut selections[0].range);
                     }
                 } else if let Some(comp) = holder.as_ref() {
                     // Update existing composition text
                     if let Ok(range) = comp.GetRange() {
                         let _ = range.SetText(ec, 0, &self.text);
                         let _ = range.Collapse(ec, TF_ANCHOR_END);
-                        let new_sel = [TF_SELECTION {
+                        let mut new_sel = [TF_SELECTION {
                             range: core::mem::ManuallyDrop::new(Some(range)),
                             style: TF_SELECTIONSTYLE::default(),
                         }];
                         let _ = self.context.SetSelection(ec, &new_sel);
+                        core::mem::ManuallyDrop::drop(&mut new_sel[0].range);
+                    } else {
+                        // Stale composition handle: reset holder and restart fresh composition
+                        *holder = None;
+                        let mut selections = [TF_SELECTION::default(); 1];
+                        let mut fetched = 0;
+                        if self.context.GetSelection(ec, 0, &mut selections, &mut fetched).is_ok() && fetched > 0 {
+                            if let Some(range) = selections[0].range.as_ref() {
+                                let comp_ctx: Result<ITfContextComposition> = self.context.cast();
+                                if let Ok(comp_mgr) = comp_ctx {
+                                    if let Ok(comp) = comp_mgr.StartComposition(ec, range, &self.sink) {
+                                        let _ = range.SetText(ec, 0, &self.text);
+                                        let _ = range.Collapse(ec, TF_ANCHOR_END);
+                                        let mut new_sel = [TF_SELECTION {
+                                            range: core::mem::ManuallyDrop::new(Some(range.clone())),
+                                            style: TF_SELECTIONSTYLE::default(),
+                                        }];
+                                        let _ = self.context.SetSelection(ec, &new_sel);
+                                        core::mem::ManuallyDrop::drop(&mut new_sel[0].range);
+                                        *holder = Some(comp);
+                                    }
+                                }
+                            }
+                            core::mem::ManuallyDrop::drop(&mut selections[0].range);
+                        }
                     }
                 }
             }

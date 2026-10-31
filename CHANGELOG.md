@@ -37,7 +37,8 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 - Hộp thoại kiểm tra cập nhật luôn hiện trên cửa sổ cài đặt thay vì nằm phía sau.
 - Sửa rò GDI icon khay khi lưu cấu hình nhiều lần; sau 20 lần reload, GDI objects giữ nguyên 12 thay vì tăng lên 132.
 - Chỉ tạo lại icon khay khi cấu hình icon thay đổi.
-- Icon khay V/E dùng subset **Montserrat Bold** chỉ chứa đúng 2 chữ V/E (~1,2 KB), nét rõ hơn; bỏ GDI+ để giảm khởi tạo và rò tài nguyên, đồng thời giữ nét sắc ở mọi DPI.
+- Icon khay V/E dùng font riêng `VietFlow Tray` (~1,3 KB): V lấy từ **Montserrat Bold**, E lấy từ **JetBrains Mono SemiBold**, tăng nhẹ chiều cao để cân với V; viền mỏng hơn (1 px ở cỡ 16 px); bỏ GDI+ để giảm khởi tạo và rò tài nguyên, đồng thời giữ nét sắc ở mọi DPI.
+- Preview icon trong tab Giao diện dùng đúng font V/E của tray và đúng trạng thái tô/viền, không còn vẽ bằng font UI.
 - Ổn định âm thanh thông báo V/E: nhúng sẵn chime IMA ADPCM ngắn (~0,16 giây, ~2,1 KB), âm lượng thấp, tần số mềm; phát bằng một worker tuần tự, gộp các lần bấm nhanh, có fallback `%SystemRoot%\Media`/alias/beep và bỏ việc UI + daemon cùng phát một tiếng.
 - UI giải phóng D3D11 device/swap chain khi minimize và tạo lại khi mở, giảm khoảng 10 MB working set / 6,5 MB private bytes.
 - Bỏ chế độ gửi phím Clipboard; cấu hình cũ dùng Clipboard tự chuyển về Tự động, tránh lỗi và nhận diện nhầm.

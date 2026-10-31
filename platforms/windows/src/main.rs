@@ -37,7 +37,7 @@ pub mod constants;
 use crate::config::AppConfig;
 use crate::constants::*;
 use crate::hook::{apply_config, install_hook, uninstall_hook, STATE};
-use crate::icon::{create_app_icon, create_e_icon, create_v_icon};
+use crate::icon::{create_app_icon, create_e_icon, create_v_icon, ICON_FONT};
 use crate::startup::set_start_with_windows;
 use crate::tray::{to_wide, TrayIcon};
 
@@ -187,6 +187,7 @@ const EMBEDDED_FONT: &[u8] = include_bytes!("../../../ui_imgui/assets/JetBrainsM
 
 extern "C" {
     fn SetEmbeddedFontData(data: *const u8, size: usize);
+    fn SetTrayFontData(data: *const u8, size: usize);
     fn ShowSettingsGui(config_path: *const std::ffi::c_char, on_saved: Option<extern "C" fn()>) -> i32;
     fn ShowConverterGui(config_path: *const std::ffi::c_char) -> i32;
 }
@@ -201,6 +202,7 @@ fn run_native_gui(convert_mode: bool) {
             return;
         }
         SetEmbeddedFontData(EMBEDDED_FONT.as_ptr(), EMBEDDED_FONT.len());
+        SetTrayFontData(ICON_FONT.as_ptr(), ICON_FONT.len());
         if convert_mode {
             ShowConverterGui(std::ptr::null());
         } else {

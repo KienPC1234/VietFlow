@@ -83,13 +83,24 @@ impl VietFlowTip {
         engine.options.spell_check = cfg.spell_check != 0;
         engine.options.free_marking = cfg.free_marking != 0;
         engine.options.auto_non_vn_restore = cfg.auto_restore != 0;
+        engine.options.consonant_shortcuts = cfg.consonant_shortcuts != 0;
     }
 
     pub fn is_modifier_pressed() -> bool {
         unsafe {
             let ctrl = (GetKeyState(VK_CONTROL.0 as i32) as u16 & 0x8000) != 0;
             let alt = (GetKeyState(VK_MENU.0 as i32) as u16 & 0x8000) != 0;
-            ctrl || alt
+            let win = (GetKeyState(0x5B) as u16 & 0x8000) != 0 || (GetKeyState(0x5C) as u16 & 0x8000) != 0;
+            ctrl || alt || win
+        }
+    }
+}
+
+fn request_edit_session_rw(context: &ITfContext, client_id: u32, session: &ITfEditSession) {
+    unsafe {
+        let hr = context.RequestEditSession(client_id, session, TF_ES_READWRITE | TF_ES_SYNC);
+        if hr.is_err() {
+            let _ = context.RequestEditSession(client_id, session, TF_ES_READWRITE);
         }
     }
 }
@@ -102,42 +113,30 @@ impl Drop for VietFlowTip {
 
 impl VietFlowTip_Impl {
     fn end_active_composition(&self, context: &ITfContext) {
-        unsafe {
-            let session: ITfEditSession = CompositionEditSession::new(
-                context.clone(),
-                self.to_object().to_interface(),
-                self.active_composition.as_ptr(),
-                "",
-                EditAction::EndComposition,
-            )
-            .into();
+        let session: ITfEditSession = CompositionEditSession::new(
+            context.clone(),
+            self.to_object().to_interface(),
+            self.active_composition.as_ptr(),
+            "",
+            EditAction::EndComposition,
+        )
+        .into();
 
-            let _ = context.RequestEditSession(
-                self.client_id.get(),
-                &session,
-                TF_ES_READWRITE | TF_ES_SYNC,
-            );
-        }
+        request_edit_session_rw(context, self.client_id.get(), &session);
         self.engine.borrow_mut().reset();
     }
 
     fn clear_and_end_active_composition(&self, context: &ITfContext) {
-        unsafe {
-            let session: ITfEditSession = CompositionEditSession::new(
-                context.clone(),
-                self.to_object().to_interface(),
-                self.active_composition.as_ptr(),
-                "",
-                EditAction::ClearAndEndComposition,
-            )
-            .into();
+        let session: ITfEditSession = CompositionEditSession::new(
+            context.clone(),
+            self.to_object().to_interface(),
+            self.active_composition.as_ptr(),
+            "",
+            EditAction::ClearAndEndComposition,
+        )
+        .into();
 
-            let _ = context.RequestEditSession(
-                self.client_id.get(),
-                &session,
-                TF_ES_READWRITE | TF_ES_SYNC,
-            );
-        }
+        request_edit_session_rw(context, self.client_id.get(), &session);
         self.engine.borrow_mut().reset();
     }
 }
@@ -201,13 +200,14 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
             return Ok(BOOL(0));
         }
 
+        // Modifiers (Ctrl, Alt, Win) always take precedence so system and app shortcuts pass immediately
+        if VietFlowTip::is_modifier_pressed() {
+            return Ok(BOOL(0));
+        }
+
         // When a composition is active, intercept all keys to either update or finalize
         if self.active_composition.borrow().is_some() {
             return Ok(BOOL(1));
-        }
-
-        if VietFlowTip::is_modifier_pressed() {
-            return Ok(BOOL(0));
         }
 
         let vk = wparam.0 as u16;
@@ -234,6 +234,11 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
     ) -> Result<BOOL> {
         let cfg = self.config_reader.get();
         if cfg.enabled == 0 {
+            if self.active_composition.borrow().is_some() {
+                if let Some(context) = pic.as_ref() {
+                    self.end_active_composition(context);
+                }
+            }
             return Ok(BOOL(0));
         }
 
@@ -262,21 +267,15 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
                 if word.is_empty() {
                     self.clear_and_end_active_composition(context);
                 } else {
-                    unsafe {
-                        let session: ITfEditSession = CompositionEditSession::new(
-                            context.clone(),
-                            self.to_object().to_interface(),
-                            self.active_composition.as_ptr(),
-                            &word,
-                            EditAction::StartOrUpdate,
-                        )
-                        .into();
-                        let _ = context.RequestEditSession(
-                            self.client_id.get(),
-                            &session,
-                            TF_ES_READWRITE | TF_ES_SYNC,
-                        );
-                    }
+                    let session: ITfEditSession = CompositionEditSession::new(
+                        context.clone(),
+                        self.to_object().to_interface(),
+                        self.active_composition.as_ptr(),
+                        &word,
+                        EditAction::StartOrUpdate,
+                    )
+                    .into();
+                    request_edit_session_rw(context, self.client_id.get(), &session);
                 }
                 return Ok(BOOL(1));
             }
@@ -375,22 +374,15 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
         let word = self.engine.borrow().current_word();
 
         // Start or update TSF composition range with current word
-        unsafe {
-            let session: ITfEditSession = CompositionEditSession::new(
-                context.clone(),
-                self.to_object().to_interface(),
-                self.active_composition.as_ptr(),
-                &word,
-                EditAction::StartOrUpdate,
-            )
-            .into();
-
-            let _ = context.RequestEditSession(
-                self.client_id.get(),
-                &session,
-                TF_ES_READWRITE | TF_ES_SYNC,
-            );
-        }
+        let session: ITfEditSession = CompositionEditSession::new(
+            context.clone(),
+            self.to_object().to_interface(),
+            self.active_composition.as_ptr(),
+            &word,
+            EditAction::StartOrUpdate,
+        )
+        .into();
+        request_edit_session_rw(context, self.client_id.get(), &session);
 
         Ok(BOOL(1))
     }

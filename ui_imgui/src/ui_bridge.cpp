@@ -11,6 +11,10 @@ void SetEmbeddedFontData(const void* data, size_t size) {
     vietflow::SetEmbeddedFontData(data, size);
 }
 
+void SetTrayFontData(const void* data, size_t size) {
+    vietflow::SetTrayFontData(data, size);
+}
+
 int ShowSettingsGui(const char* config_path, void (*on_saved)()) {
     std::string path = config_path ? config_path : "";
     return vietflow::RunAppWindow(path, false, on_saved);

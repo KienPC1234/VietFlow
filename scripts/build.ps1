@@ -226,13 +226,16 @@ foreach ($a in $archs) {
         if (Test-Path $tsfDll) {
             $destTip = Join-Path $DistDir "vietflow_tip.dll"
             try {
-                Copy-Item $tsfDll $destTip -Force
+                Copy-Item $tsfDll $destTip -Force -ErrorAction Stop
             } catch {
-                # In-process COM DLL may be loaded in Windows CTF. Rename locked file then copy.
-                $tempOld = Join-Path $DistDir "vietflow_tip.dll.old"
-                if (Test-Path $tempOld) { Remove-Item $tempOld -Force -ErrorAction SilentlyContinue }
-                Move-Item $destTip $tempOld -Force -ErrorAction SilentlyContinue
+                # In-process COM DLL may be loaded in Windows CTF. Move locked file with unique name then copy.
+                $tempOld = Join-Path $DistDir "vietflow_tip.dll.$([System.Guid]::NewGuid().ToString('N')).old"
+                Move-Item -LiteralPath $destTip -Destination $tempOld -Force -ErrorAction SilentlyContinue
                 Copy-Item $tsfDll $destTip -Force
+            }
+            # Best-effort purge of stale old DLLs
+            Get-ChildItem -Path $DistDir -Filter "vietflow_tip.dll.*.old" -File -ErrorAction SilentlyContinue | ForEach-Object {
+                Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
             }
             Write-Host "      TSF: $($tsfDll) -> $($destTip)" -ForegroundColor Green
         }
