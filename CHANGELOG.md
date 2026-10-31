@@ -8,6 +8,9 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
 ### Added
 
+- Nút "Cài lại TSF TIP" trong cài đặt chế độ TSF IME để tự động unregister và re-register TIP COM server sạch sẽ vào hệ thống.
+- Xử lý bộ gõ TSF theo kiến trúc Linux IME (IBus/Fcitx): tách biệt trạng thái preedit qua `current_preedit_text()`, tự động mở rộng macro và khôi phục tiếng Anh (`finish_composition_on_break`) ngay tại ranh giới từ (Space, Enter, Tab, ký tự ngắt từ) thông qua action `ReplaceAndEndComposition` trước khi kết thúc composition.
+- Đồng bộ `enable_macro` qua IPC bộ nhớ dùng chung `TsfSharedConfig`.
 - Phím tắt riêng cho mở bảng điều khiển và mở công cụ chuyển mã (mặc định `Ctrl + Shift + F5` / `Ctrl + Shift + F9`).
 - Hướng dẫn ngắn ở trang Gõ tắt và Chuyển mã.
 - Không tự loại trừ cửa sổ VietFlow, để người dùng soạn macro/nguồn chuyển mã ngay trong app.
@@ -37,7 +40,7 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 - Hộp thoại kiểm tra cập nhật luôn hiện trên cửa sổ cài đặt thay vì nằm phía sau.
 - Sửa rò GDI icon khay khi lưu cấu hình nhiều lần; sau 20 lần reload, GDI objects giữ nguyên 12 thay vì tăng lên 132.
 - Chỉ tạo lại icon khay khi cấu hình icon thay đổi.
-- Icon khay V/E dùng font riêng `VietFlow Tray` (~1,3 KB): V lấy từ **Montserrat Bold**, E lấy từ **JetBrains Mono SemiBold**, tăng nhẹ chiều cao để cân với V; viền mỏng hơn (1 px ở cỡ 16 px); bỏ GDI+ để giảm khởi tạo và rò tài nguyên, đồng thời giữ nét sắc ở mọi DPI.
+- Icon khay V/E dùng font riêng `VietFlow Tray` (~2,2 KB): V lấy từ **Roboto SemiBold**, E lấy từ **JetBrains Mono SemiBold**, cân cùng chiều cao thị giác; viền mỏng hơn (1 px ở cỡ 16 px); bỏ GDI+ để giảm khởi tạo và rò tài nguyên, đồng thời giữ nét sắc ở mọi DPI.
 - Preview icon trong tab Giao diện dùng đúng font V/E của tray và đúng trạng thái tô/viền, không còn vẽ bằng font UI.
 - Ổn định âm thanh thông báo V/E: nhúng sẵn chime IMA ADPCM ngắn (~0,16 giây, ~2,1 KB), âm lượng thấp, tần số mềm; phát bằng một worker tuần tự, gộp các lần bấm nhanh, có fallback `%SystemRoot%\Media`/alias/beep và bỏ việc UI + daemon cùng phát một tiếng.
 - UI giải phóng D3D11 device/swap chain khi minimize và tạo lại khi mở, giảm khoảng 10 MB working set / 6,5 MB private bytes.

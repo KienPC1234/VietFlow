@@ -45,6 +45,7 @@ impl VietFlowTip {
                 free_marking: true,
                 spell_check: true,
                 auto_non_vn_restore: true,
+                enable_macro: true,
                 ..Default::default()
             },
             CharsetId::Unicode,
@@ -84,6 +85,7 @@ impl VietFlowTip {
         engine.options.free_marking = cfg.free_marking != 0;
         engine.options.auto_non_vn_restore = cfg.auto_restore != 0;
         engine.options.consonant_shortcuts = cfg.consonant_shortcuts != 0;
+        engine.options.enable_macro = cfg.enable_macro != 0;
     }
 
     pub fn is_modifier_pressed() -> bool {
@@ -124,6 +126,29 @@ impl VietFlowTip_Impl {
 
         request_edit_session_rw(context, self.client_id.get(), &session);
         self.engine.borrow_mut().reset();
+    }
+
+    fn replace_and_end_active_composition(&self, context: &ITfContext, replacement: &str) {
+        let session: ITfEditSession = CompositionEditSession::new(
+            context.clone(),
+            self.to_object().to_interface(),
+            self.active_composition.as_ptr(),
+            replacement,
+            EditAction::ReplaceAndEndComposition,
+        )
+        .into();
+
+        request_edit_session_rw(context, self.client_id.get(), &session);
+        self.engine.borrow_mut().reset();
+    }
+
+    fn finish_composition(&self, context: &ITfContext, break_char: char) {
+        let replacement = self.engine.borrow_mut().finish_composition_on_break(break_char);
+        if let Some(rep) = replacement {
+            self.replace_and_end_active_composition(context, &rep);
+        } else {
+            self.end_active_composition(context);
+        }
     }
 
     fn clear_and_end_active_composition(&self, context: &ITfContext) {
@@ -262,7 +287,7 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
         if vk == VK_BACK.0 {
             if self.active_composition.borrow().is_some() {
                 let (_, _) = self.engine.borrow_mut().process_key('\x08');
-                let word = self.engine.borrow().current_word();
+                let word = self.engine.borrow().current_preedit_text();
 
                 if word.is_empty() {
                     self.clear_and_end_active_composition(context);
@@ -285,7 +310,14 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
         // 2. Word break keys commit composition and pass through to app
         if vk == VK_SPACE.0 || vk == VK_RETURN.0 || vk == VK_TAB.0 {
             if self.active_composition.borrow().is_some() {
-                self.end_active_composition(context);
+                let break_char = if vk == VK_SPACE.0 {
+                    ' '
+                } else if vk == VK_RETURN.0 {
+                    '\n'
+                } else {
+                    '\t'
+                };
+                self.finish_composition(context, break_char);
             }
             return Ok(BOOL(0)); // Allow Space/Enter/Tab to pass to app
         }
@@ -302,7 +334,7 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
         // 4. Navigation keys (arrows, home, end, pgup, pgdn, delete) commit composition
         if (0x21..=0x28).contains(&vk) || vk == 0x2E {
             if self.active_composition.borrow().is_some() {
-                self.end_active_composition(context);
+                self.finish_composition(context, ' ');
             }
             return Ok(BOOL(0));
         }
@@ -321,7 +353,7 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
 
         if !is_letter && !is_digit && !is_bracket && !is_viqr_mark {
             if self.active_composition.borrow().is_some() {
-                self.end_active_composition(context);
+                self.finish_composition(context, ' ');
             }
             return Ok(BOOL(0));
         }
@@ -329,7 +361,7 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
         if is_digit && shift {
             // Shift + number is a symbol (!@#$%), not a VNI tone mark
             if self.active_composition.borrow().is_some() {
-                self.end_active_composition(context);
+                self.finish_composition(context, ' ');
             }
             return Ok(BOOL(0));
         }
@@ -337,7 +369,7 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
         if is_digit && cfg.method != 1 && cfg.method != 5 {
             // Numbers in Telex/VIQR are not tone marks
             if self.active_composition.borrow().is_some() {
-                self.end_active_composition(context);
+                self.finish_composition(context, ' ');
             }
             return Ok(BOOL(0));
         }
@@ -371,18 +403,22 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
 
         // Process through VietFlow core engine
         let _ = self.engine.borrow_mut().process_key(ch);
-        let word = self.engine.borrow().current_word();
+        let word = self.engine.borrow().current_preedit_text();
 
-        // Start or update TSF composition range with current word
-        let session: ITfEditSession = CompositionEditSession::new(
-            context.clone(),
-            self.to_object().to_interface(),
-            self.active_composition.as_ptr(),
-            &word,
-            EditAction::StartOrUpdate,
-        )
-        .into();
-        request_edit_session_rw(context, self.client_id.get(), &session);
+        if word.is_empty() {
+            self.clear_and_end_active_composition(context);
+        } else {
+            // Start or update TSF composition range with current word
+            let session: ITfEditSession = CompositionEditSession::new(
+                context.clone(),
+                self.to_object().to_interface(),
+                self.active_composition.as_ptr(),
+                &word,
+                EditAction::StartOrUpdate,
+            )
+            .into();
+            request_edit_session_rw(context, self.client_id.get(), &session);
+        }
 
         Ok(BOOL(1))
     }

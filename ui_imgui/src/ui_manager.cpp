@@ -22,6 +22,7 @@ extern "C" bool vf_is_tsf_present();
 extern "C" bool vf_is_tsf_registered();
 extern "C" bool vf_register_tsf();
 extern "C" bool vf_unregister_tsf();
+extern "C" bool vf_reinstall_tsf();
 extern "C" size_t vf_english_keywords(uint8_t* out, size_t out_cap);
 extern "C" size_t vf_convert_charset(const unsigned char* input, size_t input_len,
                                      unsigned char source, unsigned char target,
@@ -1173,6 +1174,14 @@ void UiManager::PageTyping() {
         }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Đăng ký hoặc gỡ bỏ VietFlow TIP COM Server vào hệ thống Windows.");
+        }
+
+        ImGui::SameLine(0.0f, Px(8.0f));
+        if (ImGui::Button("Cài lại TSF TIP", ImVec2(0.0f, Px(26.0f)))) {
+            vf_reinstall_tsf();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Gỡ bỏ và cài đặt lại sạch sẽ VietFlow TIP COM Server vào hệ thống Windows.");
         }
 
         if (tsf_registered) {

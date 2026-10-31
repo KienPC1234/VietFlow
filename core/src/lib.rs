@@ -208,6 +208,44 @@ mod tests {
     }
 
     #[test]
+    fn test_ime_preedit_and_break_resolution() {
+        let mut engine = VietFlowEngine::new(
+            EngineOptions {
+                method: InputMethod::Telex,
+                modern_style: true,
+                free_marking: true,
+                spell_check: true,
+                auto_non_vn_restore: true,
+                enable_macro: true,
+                ..Default::default()
+            },
+            CharsetId::Unicode,
+        );
+        engine.macros.insert("vn", "Việt Nam");
+
+        // 1. Valid Vietnamese syllable composition
+        for c in "vieetj".chars() {
+            let _ = engine.process_key(c);
+        }
+        assert_eq!(engine.current_preedit_text(), "việt");
+        assert_eq!(engine.finish_composition_on_break(' '), None);
+
+        // 2. English word auto-restore on break
+        for c in "word".chars() {
+            let _ = engine.process_key(c);
+        }
+        assert_eq!(engine.current_preedit_text(), "ưởd");
+        assert_eq!(engine.finish_composition_on_break(' '), Some("word".to_string()));
+
+        // 3. Macro expansion on break
+        for c in "vn".chars() {
+            let _ = engine.process_key(c);
+        }
+        assert_eq!(engine.current_preedit_text(), "vn");
+        assert_eq!(engine.finish_composition_on_break(' '), Some("Việt Nam".to_string()));
+    }
+
+    #[test]
     fn test_macro_expansion() {
         let mut engine = VietFlowEngine::new(
             EngineOptions {

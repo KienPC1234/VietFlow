@@ -38,6 +38,7 @@ pub struct TsfSharedConfig {
     pub free_marking: u32,
     pub auto_restore: u32,
     pub consonant_shortcuts: u32,
+    pub enable_macro: u32,
     pub version: u32,
     pub last_active_tick: u64,
 }
@@ -53,6 +54,7 @@ impl Default for TsfSharedConfig {
             free_marking: 1,
             auto_restore: 1,
             consonant_shortcuts: 0,
+            enable_macro: 1,
             version: 1,
             last_active_tick: 0,
         }
@@ -153,6 +155,7 @@ pub fn sync_tsf_config(config: &AppConfig, enabled: bool) {
             free_marking: if config.free_marking { 1 } else { 0 },
             auto_restore: if config.auto_restore { 1 } else { 0 },
             consonant_shortcuts: if config.consonant_shortcuts { 1 } else { 0 },
+            enable_macro: if config.enable_macro { 1 } else { 0 },
             version: 1,
             last_active_tick: prev_tick,
         };
@@ -368,6 +371,15 @@ pub fn unregister_tsf() -> Result<(), String> {
     Ok(())
 }
 
+/// Reinstalls (unregisters and re-registers) the VietFlow TSF COM TIP DLL.
+pub fn reinstall_tsf() -> Result<(), String> {
+    let _ = unregister_tsf();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    register_tsf()?;
+    set_tsf_profile_active(true);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,6 +391,7 @@ mod tests {
         assert_eq!(cfg.enabled, 1);
         assert_eq!(cfg.method, 0);
         assert_eq!(cfg.consonant_shortcuts, 0);
+        assert_eq!(cfg.enable_macro, 1);
         assert_eq!(cfg.version, 1);
     }
 

@@ -53,7 +53,7 @@ Findings and small changes:
 - Tray icons are no longer rebuilt when icon-related config fields did not
   change. This avoids two glyph renders on every save.
 - Tray glyphs are rasterized from the embedded custom `VietFlow Tray` font
-  (Montserrat V + JetBrains E) through GDI `GetGlyphOutline`, with no GDI+
+  (Roboto V + JetBrains E) through GDI `GetGlyphOutline`, with no GDI+
   startup or GDI+ image objects.
 - The settings UI releases its D3D11 device, swap chain and render target while
   minimized, then recreates them on restore.
@@ -78,12 +78,11 @@ to `DestroyIcon`.
 
 - `TrayIcon::set_icons` now destroys the previous private handles.
 - The system fallback icon is copied with `CopyIcon` so ownership is clear.
-- V/E glyphs now come from a 1.3 KB embedded custom font: `V` from
-  **Montserrat Bold**, `E` from **JetBrains Mono SemiBold**, scaled slightly
-  taller than the V cap height so it reads at the same visual size and named
-  `VietFlow Tray`. The outlines are rasterized at 8x through GDI
-  `GetGlyphOutline`; the border is 1 px at 16 px, and GDI+ is no longer
-  initialized or linked.
+- V/E glyphs now come from a 2.2 KB embedded custom font: `V` from
+  **Roboto SemiBold**, `E` from **JetBrains Mono SemiBold**, both scaled to the
+  same visual height and named `VietFlow Tray`. The outlines are rasterized at
+  8x through GDI `GetGlyphOutline`; the border is 1 px at 16 px, and GDI+ is no
+  longer initialized or linked.
 - The settings icon preview now uses the same embedded V/E font as the tray,
   so its shapes and transparent-fill state match the real icon.
 - When the border is disabled, the renderer no longer allocates and downsamples

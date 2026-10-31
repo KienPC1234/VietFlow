@@ -106,6 +106,49 @@ impl VietFlowEngine {
         self.display_shadow.iter().collect()
     }
 
+    /// Returns the exact preedit text of the current word being composed.
+    /// If the syllable buffer has valid slots, it encodes them to the configured charset.
+    /// Falls back to display_shadow if the syllable buffer is empty.
+    pub fn current_preedit_text(&self) -> String {
+        if !self.buffer.is_empty() {
+            self.encode_range(0, self.buffer.len()).as_str().to_string()
+        } else {
+            self.display_shadow.iter().collect()
+        }
+    }
+
+    /// Evaluates word-break actions (macro expansion, English auto-restore) for IME preedit.
+    /// Returns Some(replacement) if the word was expanded or restored.
+    /// Resets the engine word buffer in all cases.
+    pub fn finish_composition_on_break(&mut self, _break_char: char) -> Option<String> {
+        // 1. Check macro expansion
+        if self.options.enable_macro
+            && !self.macros.is_empty()
+            && (!self.buffer.is_empty() || !self.raw_chars.is_empty())
+        {
+            let trigger: String = self.raw_chars.iter().collect();
+            if let Some(replacement) = self.macros.get(&trigger) {
+                self.reset_word();
+                return Some(replacement);
+            }
+        }
+
+        // 2. Check English auto-restore on invalid Vietnamese syllable
+        if !self.buffer.is_empty()
+            && self.options.spell_check
+            && self.options.auto_non_vn_restore
+            && self.has_any_vietnamese_mark()
+            && !self.is_valid_vietnamese_word()
+        {
+            let raw: String = self.raw_chars.iter().collect();
+            self.reset_word();
+            return Some(raw);
+        }
+
+        self.reset_word();
+        None
+    }
+
     fn reset_word(&mut self) {
         self.buffer.clear();
         self.raw_chars.clear();

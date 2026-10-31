@@ -16,8 +16,8 @@ the injected keys.
 - [x] `dumpbin /dependents` shows no `VCRUNTIME140` or `MSVCP140`.
 - [x] `VietFlow.exe --settings` and `VietFlow.exe --convert` start and stay alive.
 - [x] Daemon starts with a temporary config containing `lock_hotkeys_in_excluded_apps=false` and an app profile.
-- [x] Tray glyphs use a 1,312-byte custom font containing only `V` (Montserrat
-      Bold) and `E` (JetBrains Mono SemiBold); `GetTextFaceW` resolves the
+- [x] Tray glyphs use a 2,280-byte custom font containing only `V` (Roboto
+      SemiBold) and `E` (JetBrains Mono SemiBold); `GetTextFaceW` resolves the
       embedded family as `VietFlow Tray`.
 - [x] Tray border uses a 1 px pen at the 16 px icon size.
 - [x] The settings icon preview uses that same custom font instead of the UI

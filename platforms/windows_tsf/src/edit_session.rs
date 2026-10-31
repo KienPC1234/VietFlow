@@ -12,6 +12,7 @@ pub enum EditAction {
     StartOrUpdate,
     EndComposition,
     ClearAndEndComposition,
+    ReplaceAndEndComposition,
 }
 
 #[implement(ITfEditSession)]
@@ -62,6 +63,25 @@ impl ITfEditSession_Impl for CompositionEditSession_Impl {
                     if let Some(comp) = holder.take() {
                         if let Ok(range) = comp.GetRange() {
                             let _ = range.SetText(ec, 0, &[]);
+                            let _ = range.Collapse(ec, TF_ANCHOR_END);
+                            let mut new_sel = [TF_SELECTION {
+                                range: core::mem::ManuallyDrop::new(Some(range)),
+                                style: TF_SELECTIONSTYLE::default(),
+                            }];
+                            let _ = self.context.SetSelection(ec, &new_sel);
+                            core::mem::ManuallyDrop::drop(&mut new_sel[0].range);
+                        }
+                        let _ = comp.EndComposition(ec);
+                    }
+                }
+                return Ok(());
+            }
+
+            if self.action == EditAction::ReplaceAndEndComposition {
+                if let Some(holder) = self.composition_holder.as_mut() {
+                    if let Some(comp) = holder.take() {
+                        if let Ok(range) = comp.GetRange() {
+                            let _ = range.SetText(ec, 0, &self.text);
                             let _ = range.Collapse(ec, TF_ANCHOR_END);
                             let mut new_sel = [TF_SELECTION {
                                 range: core::mem::ManuallyDrop::new(Some(range)),

@@ -199,6 +199,11 @@ pub extern "C" fn vf_unregister_tsf() -> bool {
     crate::tsf::unregister_tsf().is_ok()
 }
 
+#[no_mangle]
+pub extern "C" fn vf_reinstall_tsf() -> bool {
+    crate::tsf::reinstall_tsf().is_ok()
+}
+
 use crate::config::{normalize_injection_mode, AppConfig, AppProfile};
 use crate::inject::{send_atomic_batch_with_mode, VIETFLOW_MAGIC};
 use crate::process::{get_process_name_for_window, is_app_excluded, profile_for_app};

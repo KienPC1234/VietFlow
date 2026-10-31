@@ -22,6 +22,7 @@ pub struct TsfSharedConfig {
     pub free_marking: u32,
     pub auto_restore: u32,
     pub consonant_shortcuts: u32,
+    pub enable_macro: u32,
     pub version: u32,
     pub last_active_tick: u64,
 }
@@ -37,6 +38,7 @@ impl Default for TsfSharedConfig {
             free_marking: 1,
             auto_restore: 1,
             consonant_shortcuts: 0,
+            enable_macro: 1,
             version: 1,
             last_active_tick: 0,
         }

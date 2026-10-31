@@ -9,7 +9,7 @@ use windows_sys::Win32::Graphics::Gdi::{
     AddFontMemResourceEx, CreateBitmap, CreateCompatibleDC, CreateDIBSection, CreateFontW,
     DeleteDC, DeleteObject, GetGlyphOutlineW, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
     CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DIB_RGB_COLORS, FF_DONTCARE, FIXED,
-    FW_BOLD, GGO_BITMAP, GLYPHMETRICS, MAT2, OUT_TT_PRECIS,
+    FW_SEMIBOLD, GGO_BITMAP, GLYPHMETRICS, MAT2, OUT_TT_PRECIS,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CopyIcon, CreateIconFromResourceEx, CreateIconIndirect, GetSystemMetrics, LoadIconW,
@@ -21,8 +21,8 @@ use crate::config::AppConfig;
 
 // Only the two glyphs used by the tray icon. Keeping the outlines (rather
 // than a scaled bitmap) makes the icon sharp at every DPI. V comes from
-// Montserrat Bold; E keeps the JetBrains Mono shape. The custom family name
-// prevents GDI from selecting an installed Montserrat copy instead.
+// Roboto SemiBold; E keeps the JetBrains Mono SemiBold shape. The custom
+// family name prevents GDI from selecting an installed copy instead.
 pub const ICON_FONT: &[u8] = include_bytes!("../../../ui_imgui/assets/VietFlowTrayVE.ttf");
 const ICON_FACE: &str = "VietFlow Tray";
 
@@ -226,7 +226,7 @@ fn render_glyph_icon(
             0,
             0,
             0,
-            FW_BOLD as i32,
+            FW_SEMIBOLD as i32,
             0,
             0,
             0,
@@ -529,5 +529,15 @@ mod tests {
 
         let glyph_e = render_glyph_icon('E', true, "#FFFFFF", true, "#0078D7");
         assert!(glyph_e.is_some(), "Glyph E rendering must succeed");
+
+        let no_border = render_glyph_icon('V', true, "#FFFFFF", false, "");
+        assert!(no_border.is_some(), "Border-disabled rendering must succeed");
+
+        // Keep the tray asset to the two required outlines instead of shipping
+        // a full Roboto/JetBrains font.
+        assert!(
+            ICON_FONT.len() < 4096,
+            "tray font must remain a small V/E-only subset"
+        );
     }
 }
