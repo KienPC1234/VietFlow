@@ -21,13 +21,14 @@ static UINT                    g_ResizeWidth = 0, g_ResizeHeight = 0;
 static float                   g_dpi_scale = 1.0f;
 static bool                    g_ui_ready = false;
 
-static void CreateRenderTarget() {
+static bool CreateRenderTarget() {
     ID3D11Texture2D* pBackBuffer = nullptr;
-    g_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
-    if (pBackBuffer) {
-        g_pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, &g_mainRenderTargetView);
-        pBackBuffer->Release();
-    }
+    HRESULT hr = g_pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
+    if (FAILED(hr) || !pBackBuffer) return false;
+
+    hr = g_pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, &g_mainRenderTargetView);
+    pBackBuffer->Release();
+    return SUCCEEDED(hr) && g_mainRenderTargetView;
 }
 
 static void CleanupRenderTarget() {
@@ -36,6 +37,8 @@ static void CleanupRenderTarget() {
         g_mainRenderTargetView = nullptr;
     }
 }
+
+static void CleanupDeviceD3D();
 
 static bool CreateDeviceD3D(HWND hWnd) {
     DXGI_SWAP_CHAIN_DESC sd;
@@ -67,7 +70,10 @@ static bool CreateDeviceD3D(HWND hWnd) {
     }
     if (res != S_OK) return false;
 
-    CreateRenderTarget();
+    if (!CreateRenderTarget()) {
+        CleanupDeviceD3D();
+        return false;
+    }
     return true;
 }
 
@@ -280,9 +286,13 @@ int RunAppWindow(const std::string& config_path, bool convert_mode, void (*on_sa
 
         if (g_ResizeWidth != 0 && g_ResizeHeight != 0 && !device_released) {
             CleanupRenderTarget();
-            g_pSwapChain->ResizeBuffers(0, g_ResizeWidth, g_ResizeHeight, DXGI_FORMAT_UNKNOWN, 0);
+            HRESULT resize_hr = g_pSwapChain->ResizeBuffers(
+                0, g_ResizeWidth, g_ResizeHeight, DXGI_FORMAT_UNKNOWN, 0);
             g_ResizeWidth = g_ResizeHeight = 0;
-            CreateRenderTarget();
+            if (FAILED(resize_hr) || !CreateRenderTarget()) {
+                done = true;
+                break;
+            }
         }
 
         // While minimized there is no visible swap chain. Release the D3D11

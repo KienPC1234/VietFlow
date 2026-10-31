@@ -214,7 +214,7 @@ pub unsafe fn register_server(hmodule: HMODULE) -> HRESULT {
         CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER);
 
     if let Ok(mgr) = profile_mgr {
-        let desc_wide: Vec<u16> = format!("{TEXT_SERVICE_PROFILE_NAME}\0").encode_utf16().collect();
+        let desc_wide: Vec<u16> = TEXT_SERVICE_PROFILE_NAME.encode_utf16().collect();
         let _ = mgr.Register(&CLSID_VIETFLOW_TIP);
 
         // Register for English US (0x0409)
@@ -273,10 +273,49 @@ pub unsafe fn register_server(hmodule: HMODULE) -> HRESULT {
         let _ = RegCloseKey(k);
     }
 
+    // 6. Register active layout in input.dll for current user
+    call_install_layout_or_tip(
+        "0409:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        false,
+    );
+    call_install_layout_or_tip(
+        "042a:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        false,
+    );
+
     S_OK
 }
 
+unsafe fn call_install_layout_or_tip(layout: &str, uninstall: bool) {
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    use windows::Win32::Foundation::FreeLibrary;
+    use windows::core::BOOL;
+
+    let input_name: Vec<u16> = "input.dll\0".encode_utf16().collect();
+    if let Ok(mod_handle) = LoadLibraryW(PCWSTR(input_name.as_ptr())) {
+        let fn_name = std::ffi::CString::new("InstallLayoutOrTip").unwrap();
+        if let Some(proc) = GetProcAddress(mod_handle, windows::core::PCSTR(fn_name.as_ptr() as *const u8)) {
+            type FnType = unsafe extern "system" fn(*const u16, u32) -> BOOL;
+            let func: FnType = std::mem::transmute(proc);
+            let wide: Vec<u16> = format!("{layout}\0").encode_utf16().collect();
+            let flags = if uninstall { 1 } else { 0 };
+            let _ = func(wide.as_ptr(), flags);
+        }
+        let _ = FreeLibrary(mod_handle);
+    }
+}
+
 pub unsafe fn unregister_server() -> HRESULT {
+    // 0. Remove active layout in input.dll
+    call_install_layout_or_tip(
+        "0409:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        true,
+    );
+    call_install_layout_or_tip(
+        "042a:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        true,
+    );
+
     // 1. Unregister TSF Categories via COM
     let cat_mgr: Result<ITfCategoryMgr, _> =
         CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER);

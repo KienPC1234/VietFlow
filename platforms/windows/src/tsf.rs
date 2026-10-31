@@ -5,7 +5,11 @@ use crate::config::AppConfig;
 use crate::tray::to_wide;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, FreeLibrary, GetLastError, ERROR_CANCELLED, HANDLE, INVALID_HANDLE_VALUE,
+    WAIT_OBJECT_0,
+};
+use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows_sys::Win32::System::Memory::{
     CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
     MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READWRITE,
@@ -13,6 +17,13 @@ use windows_sys::Win32::System::Memory::{
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ,
 };
+use windows_sys::Win32::System::Threading::{
+    GetExitCodeProcess, WaitForSingleObject,
+};
+use windows_sys::Win32::UI::Shell::{
+    ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 const SHARED_MEM_NAME: &str = "Local\\VietFlow_TSF_Config\0";
 
@@ -232,34 +243,107 @@ pub fn set_tsf_profile_active(active: bool) {
     let _ = active;
 }
 
-/// Registers the VietFlow TSF in-process COM DLL via regsvr32.
-pub fn register_tsf() -> Result<(), String> {
-    let dll = tsf_dll_path().ok_or_else(|| "vietflow_tip.dll không tồn tại.".to_string())?;
-    let status = std::process::Command::new("regsvr32.exe")
-        .args(["/s", &dll.to_string_lossy()])
-        .status()
-        .map_err(|e| format!("Không thể thực thi regsvr32: {e}"))?;
+const ILOT_UNINSTALL: u32 = 0x00000001;
 
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("regsvr32 kết thúc với mã lỗi {:?}", status.code()))
+pub fn call_install_layout_or_tip(layout_str: &str, uninstall: bool) -> bool {
+    unsafe {
+        let input_mod = LoadLibraryW(to_wide("input.dll\0").as_ptr());
+        if input_mod.is_null() {
+            return false;
+        }
+        let proc = GetProcAddress(input_mod, b"InstallLayoutOrTip\0".as_ptr() as *const _);
+        let mut ok = false;
+        if let Some(func) = proc {
+            type FnInstallLayoutOrTip = unsafe extern "system" fn(*const u16, u32) -> windows_sys::core::BOOL;
+            let func: FnInstallLayoutOrTip = std::mem::transmute(func);
+            let wide = to_wide(&format!("{layout_str}\0"));
+            let flags = if uninstall { ILOT_UNINSTALL } else { 0 };
+            ok = func(wide.as_ptr(), flags) != 0;
+        }
+        FreeLibrary(input_mod);
+        ok
     }
 }
 
-/// Unregisters the VietFlow TSF in-process COM DLL via regsvr32.
-pub fn unregister_tsf() -> Result<(), String> {
-    let dll = tsf_dll_path().ok_or_else(|| "vietflow_tip.dll không tồn tại.".to_string())?;
-    let status = std::process::Command::new("regsvr32.exe")
-        .args(["/u", "/s", &dll.to_string_lossy()])
-        .status()
-        .map_err(|e| format!("Không thể thực thi regsvr32: {e}"))?;
+fn run_elevated_wait(file: &str, params: &str) -> Result<(), String> {
+    unsafe {
+        let file_wide = to_wide(&format!("{file}\0"));
+        let params_wide = to_wide(&format!("{params}\0"));
+        let verb_wide = to_wide("runas\0");
 
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("regsvr32 kết thúc với mã lỗi {:?}", status.code()))
+        let mut sei: SHELLEXECUTEINFOW = std::mem::zeroed();
+        sei.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+        sei.lpVerb = verb_wide.as_ptr();
+        sei.lpFile = file_wide.as_ptr();
+        sei.lpParameters = params_wide.as_ptr();
+        sei.nShow = SW_HIDE;
+
+        let ret = ShellExecuteExW(&mut sei);
+        if ret == 0 {
+            let err = GetLastError();
+            if err == ERROR_CANCELLED {
+                return Err("Thao tác bị hủy bởi người dùng (yêu cầu quyền Administrator).".to_string());
+            }
+            return Err(format!("ShellExecuteExW thất bại (mã lỗi: {err})"));
+        }
+
+        if !sei.hProcess.is_null() && sei.hProcess != INVALID_HANDLE_VALUE {
+            let wait_res = WaitForSingleObject(sei.hProcess, 30_000);
+            let mut exit_code: u32 = 0;
+            GetExitCodeProcess(sei.hProcess, &mut exit_code);
+            CloseHandle(sei.hProcess);
+
+            if wait_res == WAIT_OBJECT_0 && exit_code == 0 {
+                Ok(())
+            } else {
+                Err(format!("Tiến trình hoàn tất với mã lỗi: {exit_code}"))
+            }
+        } else {
+            Ok(())
+        }
     }
+}
+
+/// Registers the VietFlow TSF in-process COM DLL via regsvr32 with elevation.
+pub fn register_tsf() -> Result<(), String> {
+    let dll = tsf_dll_path().ok_or_else(|| "vietflow_tip.dll không tồn tại.".to_string())?;
+
+    // 1. Run elevated regsvr32 to register COM server and HKLM CTF TIP entries
+    let params = format!("/s \"{}\"", dll.to_string_lossy());
+    run_elevated_wait("regsvr32.exe", &params)?;
+
+    // 2. Add layout to active user keyboard layout list via input.dll
+    call_install_layout_or_tip(
+        "0409:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        false,
+    );
+    call_install_layout_or_tip(
+        "042a:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        false,
+    );
+
+    Ok(())
+}
+
+/// Unregisters the VietFlow TSF in-process COM DLL via regsvr32 with elevation.
+pub fn unregister_tsf() -> Result<(), String> {
+    // 1. Remove layout from active user keyboard layout list so Windows immediately deactivates it
+    call_install_layout_or_tip(
+        "0409:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        true,
+    );
+    call_install_layout_or_tip(
+        "042a:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        true,
+    );
+
+    // 2. Run elevated regsvr32 /u to wipe COM and HKLM CTF TIP registrations
+    let dll = tsf_dll_path().ok_or_else(|| "vietflow_tip.dll không tồn tại.".to_string())?;
+    let params = format!("/u /s \"{}\"", dll.to_string_lossy());
+    run_elevated_wait("regsvr32.exe", &params)?;
+
+    Ok(())
 }
 
 #[cfg(test)]
