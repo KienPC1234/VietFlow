@@ -40,18 +40,19 @@ pub static ENGLISH_KEYWORDS: &[&str] = &[
     "word", "work", "world", "wrap", "write", "wrong", "yield", "zero", "zone", "zoom",
 ];
 
-/// Everyday English words that are also valid unmarked Vietnamese syllables
-/// live here only as *custom* keywords. They are intentionally not enabled by
-/// default: typing "test"/"reset"/"me" can be a valid Vietnamese keystroke
-/// sequence, so forcing English would make Vietnamese words impossible to type.
+// Everyday English words that are also valid unmarked Vietnamese syllables
+// live here only as *custom* keywords. They are intentionally not enabled by
+// default: typing "test"/"reset"/"me" can be a valid Vietnamese keystroke
+// sequence, so forcing English would make Vietnamese words impossible to type.
 
+/// Returns true if the string is in the built-in default English keyword dictionary.
 pub fn is_english_keyword(s: &str) -> bool {
     ENGLISH_KEYWORDS.binary_search(&s).is_ok()
 }
 
 /// Sorted, de-duplicated list used by the settings UI to edit defaults.
 pub fn default_english_keywords() -> Vec<&'static str> {
-    let mut words: Vec<&'static str> = ENGLISH_KEYWORDS.iter().copied().collect();
+    let mut words: Vec<&'static str> = ENGLISH_KEYWORDS.to_vec();
     words.sort_unstable();
     words.dedup();
     words

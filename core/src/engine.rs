@@ -362,10 +362,11 @@ impl VietFlowEngine {
         let is_vowel = is_vowel_lexi(lexi);
         self.update_form_after_append(is_vowel);
 
-        if self.current_tone != VnLexiTone::None && self.word_form != WordForm::NonVn {
-            if self.refresh_tone_position() {
-                return self.rebuild_from_index(self.vowel_start);
-            }
+        if self.current_tone != VnLexiTone::None
+            && self.word_form != WordForm::NonVn
+            && self.refresh_tone_position()
+        {
+            return self.rebuild_from_index(self.vowel_start);
         }
 
         let out = self.encode_slot_str(&slot);
@@ -488,14 +489,17 @@ impl VietFlowEngine {
         }
 
         // Auto fix Shift key sticking on 2nd letter (e.g. "VIệt" -> "Việt")
-        if self.options.fix_shift_lag && self.buffer.len() >= 3 {
-            if self.buffer[0].is_upper && self.buffer[1].is_upper && !is_upper {
-                self.buffer[1].is_upper = false;
-                self.buffer[1].raw_char = to_lower_ascii(self.buffer[1].raw_char);
-                self.buffer[1].lexi = self.buffer[1].lexi.to_lower();
-                self.refresh_tone_position();
-                return self.rebuild_current_word();
-            }
+        if self.options.fix_shift_lag
+            && self.buffer.len() >= 3
+            && self.buffer[0].is_upper
+            && self.buffer[1].is_upper
+            && !is_upper
+        {
+            self.buffer[1].is_upper = false;
+            self.buffer[1].raw_char = to_lower_ascii(self.buffer[1].raw_char);
+            self.buffer[1].lexi = self.buffer[1].lexi.to_lower();
+            self.refresh_tone_position();
+            return self.rebuild_current_word();
         }
 
         if let Some(up_idx) = upgrade_from {
@@ -503,10 +507,11 @@ impl VietFlowEngine {
             return self.rebuild_from_index(up_idx);
         }
 
-        if self.current_tone != VnLexiTone::None && self.word_form != WordForm::NonVn {
-            if self.refresh_tone_position() {
-                return self.rebuild_from_index(self.vowel_start);
-            }
+        if self.current_tone != VnLexiTone::None
+            && self.word_form != WordForm::NonVn
+            && self.refresh_tone_position()
+        {
+            return self.rebuild_from_index(self.vowel_start);
         }
 
         let out = match self.buffer.last() {

@@ -5,8 +5,12 @@ use crate::edit_session::{CompositionEditSession, EditAction};
 use crate::ipc::SharedConfigReader;
 use crate::DLL_REF_COUNT;
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
+use std::ptr::null_mut;
 use std::sync::atomic::Ordering;
-use vietflow_core::models::{CharsetId, EngineOptions, InputMethod};
+use std::time::{Duration, Instant, SystemTime};
+use vietflow_core::macro_table::CLIPBOARD_PLACEHOLDER;
+use vietflow_core::models::{CharsetId, CustomKeymap, EngineOptions, InputMethod};
 use vietflow_core::VietFlowEngine;
 use windows::core::{implement, Interface, IUnknownImpl, Ref, Result, BOOL, GUID};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
@@ -20,6 +24,48 @@ use windows::Win32::UI::TextServices::{
     ITfTextInputProcessorEx_Impl, ITfTextInputProcessor_Impl, ITfThreadMgr,
     TF_ES_READWRITE, TF_ES_SYNC,
 };
+use windows_sys::Win32::Foundation::HGLOBAL;
+use windows_sys::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+
+const CF_UNICODETEXT: u32 = 13;
+const MAX_CLIPBOARD_CHARS: usize = 1_048_576;
+
+fn read_clipboard_text() -> String {
+    unsafe {
+        if OpenClipboard(null_mut()) == 0 {
+            return String::new();
+        }
+        let result = (|| {
+            let handle = GetClipboardData(CF_UNICODETEXT);
+            if handle.is_null() {
+                return String::new();
+            }
+            let ptr = GlobalLock(handle as HGLOBAL) as *const u16;
+            if ptr.is_null() {
+                return String::new();
+            }
+            let mut len = 0usize;
+            while len < MAX_CLIPBOARD_CHARS && *ptr.add(len) != 0 {
+                len += 1;
+            }
+            let text = String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len));
+            GlobalUnlock(handle as HGLOBAL);
+            text
+        })();
+        CloseClipboard();
+        result
+    }
+}
+
+/// Core leaves a private placeholder for the platform host. TSF runs in the
+/// target process, so it can resolve the clipboard at composition time.
+fn expand_clipboard(text: String) -> String {
+    if !text.contains(CLIPBOARD_PLACEHOLDER) {
+        return text;
+    }
+    text.replace(CLIPBOARD_PLACEHOLDER, &read_clipboard_text())
+}
 
 #[implement(
     ITfTextInputProcessor,
@@ -33,6 +79,115 @@ pub struct VietFlowTip {
     engine: RefCell<VietFlowEngine>,
     config_reader: SharedConfigReader,
     active_composition: RefCell<Option<ITfComposition>>,
+    last_config_check: Cell<Instant>,
+    config_mtime: Cell<Option<SystemTime>>,
+}
+
+fn user_config_path() -> Option<PathBuf> {
+    let appdata = std::env::var_os("APPDATA")?;
+    Some(PathBuf::from(appdata).join("VietFlow").join("vietflow_config.json"))
+}
+
+fn normalized_words(value: Option<&serde_json::Value>) -> Vec<String> {
+    let mut words: Vec<String> = value
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    words.sort();
+    words.dedup();
+    words
+}
+
+fn normalized_initials(text: &str) -> Vec<char> {
+    let mut initials = Vec::new();
+    for c in text.chars().filter(|c| c.is_alphabetic()) {
+        let lower = c.to_ascii_lowercase();
+        if !initials.contains(&lower) {
+            initials.push(lower);
+            if initials.len() == 26 {
+                break;
+            }
+        }
+    }
+    if initials.is_empty() {
+        vec!['f', 'j', 'w', 'z']
+    } else {
+        initials
+    }
+}
+
+/// Load the fields that are not part of the small shared-memory struct. The
+/// file is read at most once per 750 ms and only reparsed when it changes, so
+/// normal keystrokes still stay on the in-memory path.
+fn apply_user_config(engine: &mut VietFlowEngine, json: &serde_json::Value) {
+    if let Some(macros) = json.get("macros").and_then(serde_json::Value::as_object) {
+        engine.macros.clear();
+        for (trigger, value) in macros {
+            if let Some(value) = value.as_str() {
+                engine.macros.insert(trigger, value);
+            }
+        }
+    }
+
+    if let Some(ck) = json.get("custom_keymap").and_then(serde_json::Value::as_object) {
+        let mut custom = CustomKeymap::default();
+        let read = |key: &str| ck.get(key).and_then(serde_json::Value::as_str);
+        if let Some(v) = read("acute") { custom.acute = v.to_string(); }
+        if let Some(v) = read("grave") { custom.grave = v.to_string(); }
+        if let Some(v) = read("hook") { custom.hook = v.to_string(); }
+        if let Some(v) = read("tilde") { custom.tilde = v.to_string(); }
+        if let Some(v) = read("dot") { custom.dot = v.to_string(); }
+        if let Some(v) = read("remove_tone") { custom.remove_tone = v.to_string(); }
+        if let Some(v) = read("circumflex") { custom.circumflex = v.to_string(); }
+        if let Some(v) = read("horn") { custom.horn = v.to_string(); }
+        if let Some(v) = read("breve") { custom.breve = v.to_string(); }
+        if let Some(v) = read("d_mark") { custom.d_mark = v.to_string(); }
+        if let Some(v) = read("hook_all") { custom.hook_all = v.to_string(); }
+        if let Some(v) = read("roof_a") { custom.roof_a = v.to_string(); }
+        if let Some(v) = read("roof_e") { custom.roof_e = v.to_string(); }
+        if let Some(v) = read("roof_o") { custom.roof_o = v.to_string(); }
+        if let Some(v) = read("horn_o") { custom.horn_o = v.to_string(); }
+        if let Some(v) = read("horn_u") { custom.horn_u = v.to_string(); }
+        if let Some(v) = read("breve_a") { custom.breve_a = v.to_string(); }
+        if let Some(v) = read("d_lower") { custom.d_lower = v.to_string(); }
+        if let Some(v) = ck.get("telex_double_keys").and_then(serde_json::Value::as_bool) {
+            custom.telex_double_keys = v;
+        }
+        if let Some(v) = ck.get("lone_w").and_then(serde_json::Value::as_bool) {
+            custom.lone_w = v;
+        }
+        engine.options.custom_keymap = custom;
+    }
+
+    if let Some(v) = json.get("foreign_initials").and_then(serde_json::Value::as_str) {
+        engine.options.foreign_initials = normalized_initials(v);
+    }
+    if json.get("english_keywords").is_some() {
+        engine.options.custom_english_keywords = normalized_words(json.get("english_keywords"));
+    }
+    if json.get("english_keywords_removed").is_some() {
+        engine.options.removed_english_keywords =
+            normalized_words(json.get("english_keywords_removed"));
+    }
+    if let Some(v) = json.get("typing_timeout_ms").and_then(serde_json::Value::as_u64) {
+        engine.options.typing_timeout_ms = v.clamp(500, 5000);
+    }
+    if let Some(v) = json.get("auto_capitalize").and_then(serde_json::Value::as_bool) {
+        engine.options.auto_capitalize = v;
+    }
+    if let Some(v) = json.get("auto_capitalize_chars").and_then(serde_json::Value::as_str) {
+        engine.options.auto_capitalize_chars = v.to_string();
+    }
+    if let Some(v) = json.get("fix_shift_lag").and_then(serde_json::Value::as_bool) {
+        engine.options.fix_shift_lag = v;
+    }
 }
 
 impl VietFlowTip {
@@ -51,13 +206,31 @@ impl VietFlowTip {
             CharsetId::Unicode,
         );
 
-        Self {
+        let tip = Self {
             client_id: Cell::new(0),
             thread_mgr: RefCell::new(None),
             engine: RefCell::new(engine),
             config_reader: SharedConfigReader::new(),
             active_composition: RefCell::new(None),
+            last_config_check: Cell::new(Instant::now() - Duration::from_secs(2)),
+            config_mtime: Cell::new(None),
+        };
+        tip.load_user_config(&mut tip.engine.borrow_mut());
+        tip
+    }
+
+    fn load_user_config(&self, engine: &mut VietFlowEngine) {
+        let Some(path) = user_config_path() else { return; };
+        let mtime = std::fs::metadata(&path).ok().and_then(|m| m.modified().ok());
+        if mtime.is_some() && mtime == self.config_mtime.get() {
+            return;
         }
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                apply_user_config(engine, &json);
+            }
+        }
+        self.config_mtime.set(mtime);
     }
 
     fn sync_config(&self) {
@@ -86,6 +259,11 @@ impl VietFlowTip {
         engine.options.auto_non_vn_restore = cfg.auto_restore != 0;
         engine.options.consonant_shortcuts = cfg.consonant_shortcuts != 0;
         engine.options.enable_macro = cfg.enable_macro != 0;
+
+        if self.last_config_check.get().elapsed() >= Duration::from_millis(750) {
+            self.last_config_check.set(Instant::now());
+            self.load_user_config(&mut engine);
+        }
     }
 
     pub fn is_modifier_pressed() -> bool {
@@ -145,6 +323,7 @@ impl VietFlowTip_Impl {
     fn finish_composition(&self, context: &ITfContext, break_char: char) {
         let replacement = self.engine.borrow_mut().finish_composition_on_break(break_char);
         if let Some(rep) = replacement {
+            let rep = expand_clipboard(rep);
             self.replace_and_end_active_composition(context, &rep);
         } else {
             self.end_active_composition(context);
@@ -236,12 +415,16 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
         }
 
         let vk = wparam.0 as u16;
+        let shift = unsafe { (GetKeyState(0x10) as u16 & 0x8000) != 0 };
 
         // Test if key is an alphabetic, VNI number, bracket, or VIQR mark
         let is_letter = (0x41..=0x5A).contains(&vk);
-        let is_digit = (0x30..=0x39).contains(&vk) && (cfg.method == 1 || cfg.method == 5);
-        let is_bracket = (vk == 0xDB || vk == 0xDD) && (cfg.method == 0 || cfg.method == 3 || cfg.method == 4);
-        let is_viqr_mark = cfg.method == 2
+        let is_digit = (0x30..=0x39).contains(&vk)
+            && !shift
+            && (cfg.method == 1 || cfg.method == 5 || cfg.method == 6);
+        let is_bracket = (vk == 0xDB || vk == 0xDD)
+            && (cfg.method == 0 || cfg.method == 3 || cfg.method == 4 || cfg.method == 6);
+        let is_viqr_mark = (cfg.method == 2 || cfg.method == 6)
             && (vk == 0xDE || vk == 0xC0 || vk == 0xBF || vk == 0xBE || vk == 0xBB || vk == 0x36 || vk == 0x39);
 
         if is_letter || is_digit || is_bracket || is_viqr_mark {
@@ -287,7 +470,7 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
         if vk == VK_BACK.0 {
             if self.active_composition.borrow().is_some() {
                 let (_, _) = self.engine.borrow_mut().process_key('\x08');
-                let word = self.engine.borrow().current_preedit_text();
+                let word = expand_clipboard(self.engine.borrow().current_preedit_text());
 
                 if word.is_empty() {
                     self.clear_and_end_active_composition(context);
@@ -347,7 +530,7 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
         let caps = unsafe { (GetKeyState(0x14) & 1) != 0 };
         let upper = shift ^ caps;
 
-        let is_viqr_mark = cfg.method == 2
+        let is_viqr_mark = (cfg.method == 2 || cfg.method == 6)
             && (vk == 0xDE || vk == 0xC0 || vk == 0xBF || vk == 0xBE || vk == 0xBB
                 || (vk == 0x36 && shift) || (vk == 0x39 && shift));
 
@@ -366,7 +549,7 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
             return Ok(BOOL(0));
         }
 
-        if is_digit && cfg.method != 1 && cfg.method != 5 {
+        if is_digit && cfg.method != 1 && cfg.method != 5 && cfg.method != 6 {
             // Numbers in Telex/VIQR are not tone marks
             if self.active_composition.borrow().is_some() {
                 self.finish_composition(context, ' ');
@@ -403,7 +586,7 @@ impl ITfKeyEventSink_Impl for VietFlowTip_Impl {
 
         // Process through VietFlow core engine
         let _ = self.engine.borrow_mut().process_key(ch);
-        let word = self.engine.borrow().current_preedit_text();
+        let word = expand_clipboard(self.engine.borrow().current_preedit_text());
 
         if word.is_empty() {
             self.clear_and_end_active_composition(context);

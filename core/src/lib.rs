@@ -747,15 +747,17 @@ mod tests {
         }
 
         // 3. Fully customized keys
-        let mut custom_keys = CustomKeymap::default();
-        custom_keys.acute = "z".to_string();
-        custom_keys.grave = "q".to_string();
-        custom_keys.circumflex = "9".to_string();
-        custom_keys.horn = "8".to_string();
-        custom_keys.breve = "7".to_string();
-        custom_keys.d_mark = "6".to_string();
-        custom_keys.telex_double_keys = false;
-        custom_keys.lone_w = false;
+        let custom_keys = CustomKeymap {
+            acute: "z".to_string(),
+            grave: "q".to_string(),
+            circumflex: "9".to_string(),
+            horn: "8".to_string(),
+            breve: "7".to_string(),
+            d_mark: "6".to_string(),
+            telex_double_keys: false,
+            lone_w: false,
+            ..Default::default()
+        };
 
         let mut custom_engine = VietFlowEngine::new(
             EngineOptions {
@@ -782,11 +784,13 @@ mod tests {
         }
 
         // 4. Individual modify keys
-        let mut individual_keys = CustomKeymap::default();
-        individual_keys.acute = "s".to_string();
-        individual_keys.roof_a = "3".to_string();
-        individual_keys.roof_e = "4".to_string();
-        individual_keys.telex_double_keys = false;
+        let individual_keys = CustomKeymap {
+            acute: "s".to_string(),
+            roof_a: "3".to_string(),
+            roof_e: "4".to_string(),
+            telex_double_keys: false,
+            ..Default::default()
+        };
 
         let mut ind_engine = VietFlowEngine::new(
             EngineOptions {

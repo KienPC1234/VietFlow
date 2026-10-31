@@ -22,6 +22,10 @@ fn charset_from_id(id: u8) -> CharsetId {
 /// Returns the number of bytes required for the converted output. When `out` is
 /// null (or `out_cap` is smaller than the output) nothing beyond `out_cap` bytes
 /// is written, allowing callers to query the size first and then allocate.
+///
+/// # Safety
+/// Caller must ensure `input` points to at least `input_len` readable bytes,
+/// and `out` (if non-null) points to at least `out_cap` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn vf_convert_charset(
     input: *const u8,
@@ -54,6 +58,10 @@ pub unsafe extern "C" fn vf_convert_charset(
 /// Convert raw bytes between Unicode, TCVN3 and VNI Windows. Unlike
 /// `vf_convert_charset`, this function does not require UTF-8 input and returns
 /// the raw bytes expected by legacy applications. Same size-query contract.
+///
+/// # Safety
+/// Caller must ensure `input` points to at least `input_len` readable bytes,
+/// and `out` (if non-null) points to at least `out_cap` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn vf_convert_charset_bytes(
     input: *const u8,
@@ -79,6 +87,10 @@ pub unsafe extern "C" fn vf_convert_charset_bytes(
 
 /// Strip Vietnamese diacritics from a UTF-8 string (same size-query contract as
 /// `vf_convert_charset`).
+///
+/// # Safety
+/// Caller must ensure `input` points to at least `input_len` readable bytes,
+/// and `out` (if non-null) points to at least `out_cap` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn vf_strip_accents(
     input: *const u8,
@@ -109,6 +121,9 @@ pub unsafe extern "C" fn vf_strip_accents(
 /// Newline-separated default English keyword list (UTF-8). Same size-query
 /// contract as `vf_convert_charset`, so the settings UI can fetch it for the
 /// keyword editor without duplicating the list in C++.
+///
+/// # Safety
+/// Caller must ensure `out` (if non-null) points to at least `out_cap` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn vf_english_keywords(out: *mut u8, out_cap: usize) -> usize {
     let mut text = default_english_keywords().join("\n");
@@ -129,6 +144,10 @@ pub extern "C" fn vf_engine_create() -> *mut c_void {
     Box::into_raw(engine) as *mut c_void
 }
 
+/// Destroy an engine instance created via `vf_engine_create`.
+///
+/// # Safety
+/// `engine` must be a valid pointer returned by `vf_engine_create` or null.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_destroy(engine: *mut c_void) {
     if !engine.is_null() {
@@ -136,6 +155,10 @@ pub unsafe extern "C" fn vf_engine_destroy(engine: *mut c_void) {
     }
 }
 
+/// Reset the engine word buffer and state.
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_reset(engine: *mut c_void) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
@@ -143,6 +166,10 @@ pub unsafe extern "C" fn vf_engine_reset(engine: *mut c_void) {
     }
 }
 
+/// Configure the input method (0: Telex, 1: VNI, 2: VIQR, 3: Simple, 4: Simple 2, 5: Hybrid, 6: Custom).
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_set_method(engine: *mut c_void, method: u8) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
@@ -160,6 +187,10 @@ pub unsafe extern "C" fn vf_engine_set_method(engine: *mut c_void, method: u8) {
     }
 }
 
+/// Configure the output charset (0: Unicode, 1: Composite, 2: TCVN3, 3: VNI Windows, 4: VIQR).
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_set_charset(engine: *mut c_void, charset: u8) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
@@ -175,6 +206,10 @@ pub unsafe extern "C" fn vf_engine_set_charset(engine: *mut c_void, charset: u8)
     }
 }
 
+/// Enable or disable spell-checking rules.
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_set_spell_check(engine: *mut c_void, enabled: bool) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
@@ -183,6 +218,10 @@ pub unsafe extern "C" fn vf_engine_set_spell_check(engine: *mut c_void, enabled:
     }
 }
 
+/// Enable or disable modern orthography tone placement.
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_set_modern_style(engine: *mut c_void, enabled: bool) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
@@ -191,6 +230,10 @@ pub unsafe extern "C" fn vf_engine_set_modern_style(engine: *mut c_void, enabled
     }
 }
 
+/// Enable or disable auto-restoration of non-Vietnamese syllables.
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_set_auto_restore(engine: *mut c_void, enabled: bool) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
@@ -203,6 +246,9 @@ pub unsafe extern "C" fn vf_engine_set_auto_restore(engine: *mut c_void, enabled
 /// Output is UTF-8 encoded into `out_utf8`.
 /// Returns true if a key was processed, writes output byte length to `out_len`
 /// and number of backspaces to `out_backspaces`.
+///
+/// # Safety
+/// `engine` must be a valid engine pointer. Output buffers and pointers must be valid if non-null.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_process_key(
     engine: *mut c_void,

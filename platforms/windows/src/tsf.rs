@@ -254,7 +254,7 @@ pub fn call_set_default_layout_or_tip(layout_str: &str) -> bool {
         if input_mod.is_null() {
             return false;
         }
-        let proc = GetProcAddress(input_mod, b"SetDefaultLayoutOrTip\0".as_ptr() as *const _);
+        let proc = GetProcAddress(input_mod, c"SetDefaultLayoutOrTip".as_ptr() as *const _);
         let mut ok = false;
         if let Some(func) = proc {
             type FnSetDefaultLayoutOrTip = unsafe extern "system" fn(*const u16, u32) -> windows_sys::core::BOOL;
@@ -275,7 +275,7 @@ pub fn call_install_layout_or_tip(layout_str: &str, uninstall: bool) -> bool {
         if input_mod.is_null() {
             return false;
         }
-        let proc = GetProcAddress(input_mod, b"InstallLayoutOrTip\0".as_ptr() as *const _);
+        let proc = GetProcAddress(input_mod, c"InstallLayoutOrTip".as_ptr() as *const _);
         let mut ok = false;
         if let Some(func) = proc {
             type FnInstallLayoutOrTip = unsafe extern "system" fn(*const u16, u32) -> windows_sys::core::BOOL;

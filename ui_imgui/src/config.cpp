@@ -89,7 +89,6 @@ bool Config::Load(const std::string& custom_path) {
         NormalizeWordList(english_keywords);
         NormalizeWordList(english_keywords_removed);
         foreign_initials = j.value("foreign_initials", foreign_initials);
-        tray_icon_theme = j.value("tray_icon_theme", tray_icon_theme);
         custom_icon_v = j.value("custom_icon_v", custom_icon_v);
         custom_icon_e = j.value("custom_icon_e", custom_icon_e);
 
@@ -205,7 +204,6 @@ bool Config::Save(const std::string& custom_path) const {
         j["english_keywords"] = english_keywords;
         j["english_keywords_removed"] = english_keywords_removed;
         j["foreign_initials"] = foreign_initials;
-        j["tray_icon_theme"] = tray_icon_theme;
         j["custom_icon_v"] = custom_icon_v;
         j["custom_icon_e"] = custom_icon_e;
 

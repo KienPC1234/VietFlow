@@ -67,7 +67,6 @@ struct Config {
     std::vector<std::string> english_keywords;
     std::vector<std::string> english_keywords_removed;
     std::string foreign_initials = "fjwz";
-    std::string tray_icon_theme = "modern";
     std::string custom_icon_v;
     std::string custom_icon_e;
 
@@ -81,10 +80,19 @@ struct Config {
     bool tray_icon_e_border = true;
     std::string tray_icon_e_border_color = "#0078D7";
 
-    std::vector<std::string> excluded_apps;
+    // Keep these defaults in sync with platforms/windows/src/config.rs.
+    // They also make the UI safe to launch (and reset) before the daemon has
+    // created the first config file.
+    std::vector<std::string> excluded_apps = {
+        "valorant.exe", "cs2.exe", "league of legends.exe", "overwatch.exe", "dota2.exe"
+    };
     bool lock_hotkeys_in_excluded_apps = true;
     std::map<std::string, AppProfile> app_profiles;
-    std::map<std::string, std::string> macros;
+    std::map<std::string, std::string> macros = {
+        {"vf", "VietFlow"},
+        {"vn", "Việt Nam"},
+        {"chxhcnvn", "Cộng hòa Xã hội Chủ nghĩa Việt Nam"}
+    };
     CustomKeymap custom_keymap;
 
     static std::string GetDefaultConfigPath();

@@ -126,6 +126,7 @@ version = "0.1.1"
 name = "vietflow-tsf"
 version = "0.1.1"
 dependencies = [
+ "serde_json",
  "vietflow-core",
  "windows",
  "windows-core",

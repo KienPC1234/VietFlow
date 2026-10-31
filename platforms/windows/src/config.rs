@@ -88,8 +88,6 @@ pub struct AppConfig {
     pub english_keywords_removed: Vec<String>,
     #[serde(default = "default_foreign_initials")]
     pub foreign_initials: String,
-    #[serde(default = "default_tray_theme")]
-    pub tray_icon_theme: String,
     #[serde(default)]
     pub custom_icon_v: String,
     #[serde(default)]
@@ -147,9 +145,6 @@ fn default_hotkey_converter() -> String {
 }
 fn default_foreign_initials() -> String {
     "fjwz".to_string()
-}
-fn default_tray_theme() -> String {
-    "modern".to_string()
 }
 fn default_white() -> String {
     "#FFFFFF".to_string()
@@ -321,7 +316,6 @@ impl Default for AppConfig {
             english_keywords: Vec::new(),
             english_keywords_removed: Vec::new(),
             foreign_initials: default_foreign_initials(),
-            tray_icon_theme: default_tray_theme(),
             custom_icon_v: String::new(),
             custom_icon_e: String::new(),
             tray_icon_v_fill: true,
@@ -426,8 +420,7 @@ impl AppConfig {
     /// True when a config reload needs to rebuild the tray HICONs. Keeping the
     /// existing icons avoids two glyph renders on every save.
     pub fn icon_settings_differ(&self, other: &Self) -> bool {
-        self.tray_icon_theme != other.tray_icon_theme
-            || self.custom_icon_v != other.custom_icon_v
+        self.custom_icon_v != other.custom_icon_v
             || self.custom_icon_e != other.custom_icon_e
             || self.tray_icon_v_fill != other.tray_icon_v_fill
             || self.tray_icon_v_fill_color != other.tray_icon_v_fill_color

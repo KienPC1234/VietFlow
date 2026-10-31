@@ -26,7 +26,6 @@ public:
     UiManager(const std::string& config_path, bool convert_mode = false, void* hwnd = nullptr);
 
     void Render();
-    bool IsDirty() const { return dirty_; }
     void SaveConfig();
     void ResetToDefaults();
     void SetOnSavedCallback(std::function<void()> cb) { on_saved_cb_ = cb; }
@@ -44,7 +43,7 @@ private:
     std::string config_path_;
     void* hwnd_ = nullptr;
     Page initial_page_ = Page::Overview;
-    bool dirty_ = false;
+    long long last_config_mtime_ = 0;
     float saved_toast_timer_ = 0.0f;
     std::function<void()> on_saved_cb_;
 
@@ -61,7 +60,6 @@ private:
     char new_profile_app_[128] = {0};
     char app_search_filter_[128] = {0};
     std::vector<RunningApp> running_apps_list_;
-    std::string profile_status_;
 
     // English keyword editor
     char english_keyword_filter_[128] = {0};
@@ -113,6 +111,7 @@ private:
 
     void SyncCustomKeymapBuffersFromConfig();
     void SyncCustomKeymapBuffersToConfig();
+    void SyncTextBuffersFromConfig();
     void LoadCustomKeymapPreset(int preset_id);
 
     // Hotkey recording state

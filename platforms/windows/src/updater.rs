@@ -283,7 +283,7 @@ fn fetch_url(url: &str) -> Result<String, FetchError> {
 fn normalize_version(value: &str) -> String {
     value
         .trim()
-        .trim_start_matches(|c: char| c == 'v' || c == 'V')
+        .trim_start_matches(['v', 'V'])
         .to_string()
 }
 

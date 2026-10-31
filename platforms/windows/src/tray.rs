@@ -147,6 +147,8 @@ impl TrayIcon {
         spell_check: bool,
         start_with_windows: bool,
         hotkey_mode: &str,
+        hotkey_settings: &str,
+        hotkey_converter: &str,
         tsf_present: bool,
         use_tsf: bool,
         tsf_registered: bool,
@@ -166,6 +168,16 @@ impl TrayIcon {
             "CapsLock" => "Caps Lock",
             "WinSpace" => "Win + Space",
             other => other,
+        };
+        let settings_hint = if hotkey_settings.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", hotkey_settings)
+        };
+        let converter_hint = if hotkey_converter.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", hotkey_converter)
         };
 
         // Toggle item
@@ -313,13 +325,13 @@ impl TrayIcon {
             hmenu,
             MF_STRING,
             IDM_CONVERT_TOOL,
-            to_wide("Công cụ chuyển mã... [Ctrl+Shift+F9]").as_ptr(),
+            to_wide(&format!("Công cụ chuyển mã...{converter_hint}")).as_ptr(),
         );
         AppendMenuW(
             hmenu,
             MF_STRING,
             IDM_SETTINGS,
-            to_wide("Bảng điều khiển... [Ctrl+Shift+F5]").as_ptr(),
+            to_wide(&format!("Bảng điều khiển...{settings_hint}")).as_ptr(),
         );
         AppendMenuW(hmenu, MF_SEPARATOR, 0, null_mut());
         AppendMenuW(

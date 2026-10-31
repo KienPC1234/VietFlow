@@ -9,10 +9,6 @@ pub const WM_SETTINGS: u32 = WM_USER + 102;
 pub const WM_CONVERT: u32 = WM_USER + 103;
 pub const WM_RELOAD_CONFIG: u32 = WM_USER + 104;
 
-// Global System Hotkey IDs
-pub const HOTKEY_ID_SETTINGS: i32 = 2001;
-pub const HOTKEY_ID_CONVERT: i32 = 2002;
-
 // Tray Context Menu Action IDs
 pub const IDM_TOGGLE: usize = 1001;
 
@@ -48,6 +44,8 @@ pub const IDM_TSF_REGISTER: usize = 1081;
 pub const WINDOW_CLASS_DAEMON: &str = "VietFlowMessageWindowClass";
 pub const WINDOW_TITLE_DAEMON: &str = "VietFlowDaemon";
 pub const WINDOW_CLASS_UI: &str = "VietFlowImGuiWindow";
+pub const WINDOW_TITLE_SETTINGS: &str = "VietFlow - Bảng điều khiển bộ gõ tiếng Việt";
+pub const WINDOW_TITLE_CONVERT: &str = "VietFlow - Chuyển mã văn bản";
 pub const MUTEX_SINGLE_INSTANCE: &str = "Global\\VietFlowSingleInstanceMutex";
 
 // App and Config Path Identifiers

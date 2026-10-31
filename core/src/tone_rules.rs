@@ -256,11 +256,10 @@ pub fn is_valid_ending_consonant(ending: &[char]) -> bool {
     for (i, &c) in ending.iter().take(2).enumerate() {
         lower[i] = c.to_ascii_lowercase();
     }
-    match &lower[..ending.len().min(2)] {
-        ['c'] | ['m'] | ['n'] | ['p'] | ['t'] => true,
-        ['c', 'h'] | ['n', 'g'] | ['n', 'h'] => true,
-        _ => false,
-    }
+    matches!(
+        &lower[..ending.len().min(2)],
+        ['c'] | ['m'] | ['n'] | ['p'] | ['t'] | ['c', 'h'] | ['n', 'g'] | ['n', 'h']
+    )
 }
 
 pub fn is_stop_coda(ending: &[char]) -> bool {
@@ -268,11 +267,10 @@ pub fn is_stop_coda(ending: &[char]) -> bool {
     for (i, &c) in ending.iter().take(2).enumerate() {
         lower[i] = c.to_ascii_lowercase();
     }
-    match &lower[..ending.len().min(2)] {
-        ['c'] | ['p'] | ['t'] => true,
-        ['c', 'h'] => true,
-        _ => false,
-    }
+    matches!(
+        &lower[..ending.len().min(2)],
+        ['c'] | ['p'] | ['t'] | ['c', 'h']
+    )
 }
 
 pub fn is_valid_initial(initial: &[char]) -> bool {
@@ -280,14 +278,14 @@ pub fn is_valid_initial(initial: &[char]) -> bool {
     for (i, &c) in initial.iter().take(3).enumerate() {
         lower[i] = c.to_ascii_lowercase();
     }
-    match &lower[..initial.len().min(3)] {
+    matches!(
+        &lower[..initial.len().min(3)],
         ['b'] | ['c'] | ['d'] | ['g'] | ['h'] | ['k'] | ['l'] | ['m'] | ['n'] | ['p'] | ['r']
-        | ['s'] | ['t'] | ['v'] | ['x'] => true,
-        ['c', 'h'] | ['g', 'h'] | ['g', 'i'] | ['k', 'h'] | ['n', 'g'] | ['n', 'h'] | ['p', 'h']
-        | ['q', 'u'] | ['t', 'h'] | ['t', 'r'] => true,
-        ['n', 'g', 'h'] => true,
-        _ => false,
-    }
+            | ['s'] | ['t'] | ['v'] | ['x']
+            | ['c', 'h'] | ['g', 'h'] | ['g', 'i'] | ['k', 'h'] | ['n', 'g'] | ['n', 'h'] | ['p', 'h']
+            | ['q', 'u'] | ['t', 'h'] | ['t', 'r']
+            | ['n', 'g', 'h']
+    )
 }
 
 pub fn is_valid_initial_with_vowel(initial: &[char], first_vowel: VnLexiName) -> bool {

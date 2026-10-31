@@ -157,7 +157,7 @@ impl VnLexiName {
         if val < 0 {
             self
         } else if (val & 1) == 0 {
-            unsafe { std::mem::transmute(val + 1) }
+            unsafe { std::mem::transmute::<i16, VnLexiName>(val + 1) }
         } else {
             self
         }
@@ -169,7 +169,7 @@ impl VnLexiName {
         if val < 0 {
             self
         } else if (val & 1) != 0 {
-            unsafe { std::mem::transmute(val - 1) }
+            unsafe { std::mem::transmute::<i16, VnLexiName>(val - 1) }
         } else {
             self
         }

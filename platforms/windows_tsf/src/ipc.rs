@@ -94,6 +94,12 @@ impl SharedConfigReader {
     }
 }
 
+impl Default for SharedConfigReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for SharedConfigReader {
     fn drop(&mut self) {
         unsafe {

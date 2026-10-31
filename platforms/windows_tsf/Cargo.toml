@@ -12,6 +12,7 @@ name = "vietflow_tip"
 crate-type = ["cdylib"]
 
 [dependencies]
+serde_json = "1.0"
 vietflow-core = { path = "../../core" }
 winreg = "0.55"
 windows-core = "0.62"
@@ -35,6 +36,7 @@ features = [
 version = "0.61.2"
 features = [
     "Win32_Foundation",
+    "Win32_System_DataExchange",
     "Win32_System_Memory",
     "Win32_System_SystemInformation",
 ]

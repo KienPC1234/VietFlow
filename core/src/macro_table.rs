@@ -3,6 +3,11 @@
 
 use std::collections::HashMap;
 
+/// Host-side placeholder for the clipboard. Core stays platform-neutral; the
+/// Windows host replaces this sentinel with the current clipboard text before
+/// sending the macro output.
+pub const CLIPBOARD_PLACEHOLDER: char = '\u{E000}';
+
 #[derive(Debug, Clone)]
 pub struct MacroTable {
     macros: HashMap<String, String>,
@@ -114,6 +119,7 @@ impl MacroTable {
             "date" => Some(format_date(&self.date_format)),
             "time" => Some(format_date(&self.time_format)),
             "datetime" | "now" => Some(format_date(&self.datetime_format)),
+            "clipboard" => Some(CLIPBOARD_PLACEHOLDER.to_string()),
             _ => None,
         }
     }
@@ -122,6 +128,7 @@ impl MacroTable {
 #[cfg(windows)]
 fn get_local_date_time() -> (i32, u32, u32, u32, u32, u32) {
     #[repr(C)]
+    #[allow(non_camel_case_types)]
     struct SYSTEMTIME {
         w_year: u16,
         w_month: u16,
@@ -206,4 +213,19 @@ fn format_date(fmt: &str) -> String {
     res = res.replace("mm", &format!("{:02}", minute));
     res = res.replace("ss", &format!("{:02}", second));
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clipboard_variable_is_left_for_the_host() {
+        let mut table = MacroTable::new();
+        table.insert("clip", "prefix-@clipboard-suffix");
+        assert_eq!(
+            table.get("clip").unwrap(),
+            format!("prefix-{CLIPBOARD_PLACEHOLDER}-suffix")
+        );
+    }
 }

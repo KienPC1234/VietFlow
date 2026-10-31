@@ -20,6 +20,10 @@ use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 static mut MODULE_HANDLE: HMODULE = HMODULE(std::ptr::null_mut());
 pub static DLL_REF_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+/// Standard in-process COM DLL entry point.
+///
+/// # Safety
+/// Called by Windows OS loader when loading or unloading this library module.
 #[no_mangle]
 pub unsafe extern "system" fn DllMain(
     hinstance: HINSTANCE,
@@ -32,6 +36,10 @@ pub unsafe extern "system" fn DllMain(
     BOOL(1)
 }
 
+/// Retrieves the class object from a DLL object handler or object application.
+///
+/// # Safety
+/// Caller must pass valid pointers for `rclsid`, `riid`, and an allocated destination `ppv`.
 #[no_mangle]
 pub unsafe extern "system" fn DllGetClassObject(
     rclsid: *const GUID,
@@ -47,9 +55,13 @@ pub unsafe extern "system" fn DllGetClassObject(
 
     let factory = class_factory::VietFlowClassFactory;
     let unk: windows::core::IUnknown = factory.into();
-    unk.query(riid, ppv).into()
+    unk.query(riid, ppv)
 }
 
+/// Determines whether the DLL is in use and can be unloaded.
+///
+/// # Safety
+/// Standard COM export called by OLE/COM subsystem.
 #[no_mangle]
 pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
     if DLL_REF_COUNT.load(Ordering::SeqCst) == 0 {
@@ -59,11 +71,19 @@ pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
     }
 }
 
+/// Instructs an in-process server to create its registry entries.
+///
+/// # Safety
+/// Modifies HKLM/HKCR registry settings; requires administrative privileges.
 #[no_mangle]
 pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
     registry::register_server(MODULE_HANDLE)
 }
 
+/// Instructs an in-process server to remove only those entries created through `DllRegisterServer`.
+///
+/// # Safety
+/// Modifies HKLM/HKCR registry settings; requires administrative privileges.
 #[no_mangle]
 pub unsafe extern "system" fn DllUnregisterServer() -> HRESULT {
     registry::unregister_server()

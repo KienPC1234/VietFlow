@@ -29,15 +29,20 @@ const ICON_FACE: &str = "VietFlow Tray";
 static FONT_ONCE: Once = Once::new();
 static FONT_RESOURCE: AtomicIsize = AtomicIsize::new(0);
 
+#[inline]
+const fn make_int_resource(id: u16) -> *const u16 {
+    id as usize as *const u16
+}
+
 fn ensure_icon_font() -> bool {
     FONT_ONCE.call_once(|| {
-        let mut count = 0u32;
+        let count = 0u32;
         let handle = unsafe {
             AddFontMemResourceEx(
                 ICON_FONT.as_ptr() as *const c_void,
                 ICON_FONT.len() as u32,
                 null_mut(),
-                &mut count,
+                &count,
             )
         };
         FONT_RESOURCE.store(handle as isize, Ordering::SeqCst);
@@ -99,7 +104,7 @@ pub fn create_app_icon() -> HICON {
     // 1. Try loading embedded resource icon (ID 1) from the executable module
     unsafe {
         let hinstance = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(null_mut());
-        let hicon = LoadImageW(hinstance, 1 as *const u16, IMAGE_ICON, cx, cy, 0);
+        let hicon = LoadImageW(hinstance, make_int_resource(1), IMAGE_ICON, cx, cy, 0);
         if !hicon.is_null() {
             return hicon as HICON;
         }
@@ -134,7 +139,7 @@ pub fn create_tsf_icon() -> HICON {
     // 1. Try loading embedded resource icon (ID 2) from the executable module
     unsafe {
         let hinstance = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(null_mut());
-        let hicon = LoadImageW(hinstance, 2 as *const u16, IMAGE_ICON, cx, cy, 0);
+        let hicon = LoadImageW(hinstance, make_int_resource(2), IMAGE_ICON, cx, cy, 0);
         if !hicon.is_null() {
             return hicon as HICON;
         }
@@ -440,7 +445,7 @@ fn render_glyph_icon(
         }
         std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits as *mut u8, pixels.len());
 
-        let mask_stride = (size + 15) / 16 * 2;
+        let mask_stride = size.div_ceil(16) * 2;
         let mut mask = vec![0u8; mask_stride * size];
         for y in 0..size {
             for x in 0..size {

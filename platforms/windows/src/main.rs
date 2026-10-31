@@ -2,6 +2,7 @@
 // VietFlow Windows - Native Daemon Host
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
+mod clipboard;
 mod config;
 mod hook;
 mod icon;
@@ -23,14 +24,16 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, WPARAM,
 };
 
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
+use windows_sys::Win32::System::DataExchange::{
+    AddClipboardFormatListener, RemoveClipboardFormatListener,
+};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetMessageW, MessageBoxW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetMessageW, MessageBoxW,
     PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer, ShowWindow,
     TranslateMessage, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_SETFOREGROUND,
-    MB_TOPMOST, MSG, SW_RESTORE, SW_SHOWNORMAL, WNDCLASSW, WM_CLOSE, WM_COMMAND, WM_DESTROY,
-    WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER,
+    MB_TOPMOST, MSG, SW_RESTORE, SW_SHOWNORMAL, WNDCLASSW, WM_CLOSE, WM_CLIPBOARDUPDATE,
+    WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER,
 };
 
 pub mod constants;
@@ -77,9 +80,22 @@ fn spawn_gui(convert_mode: bool) {
         let class_name = to_wide(WINDOW_CLASS_UI);
         let existing = FindWindowW(class_name.as_ptr(), null_mut());
         if !existing.is_null() {
-            ShowWindow(existing, SW_RESTORE);
-            SetForegroundWindow(existing);
-            return;
+            if convert_mode {
+                let converter_title = to_wide(WINDOW_TITLE_CONVERT);
+                let converter = FindWindowW(class_name.as_ptr(), converter_title.as_ptr());
+                if !converter.is_null() {
+                    ShowWindow(converter, SW_RESTORE);
+                    SetForegroundWindow(converter);
+                    return;
+                }
+                // Settings is open, converter is not. Close settings first so
+                // the converter hotkey actually opens the converter page.
+                terminate_all_ui();
+            } else {
+                ShowWindow(existing, SW_RESTORE);
+                SetForegroundWindow(existing);
+                return;
+            }
         }
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -233,50 +249,6 @@ fn relaunch_as_admin() -> bool {
     result as isize > 32
 }
 
-fn parse_hotkey_str(s: &str) -> Option<(u32, u32)> {
-    let mut mods = 0x4000u32; // MOD_NOREPEAT
-    let mut vk = 0u32;
-    for part in s.split('+').map(|p| p.trim()) {
-        if part.eq_ignore_ascii_case("Ctrl") || part.eq_ignore_ascii_case("Control") {
-            mods |= 0x0002; // MOD_CONTROL
-        } else if part.eq_ignore_ascii_case("Alt") {
-            mods |= 0x0001; // MOD_ALT
-        } else if part.eq_ignore_ascii_case("Shift") {
-            mods |= 0x0004; // MOD_SHIFT
-        } else if part.eq_ignore_ascii_case("Win") || part.eq_ignore_ascii_case("Windows") {
-            mods |= 0x0008; // MOD_WIN
-        } else if part.starts_with('F') && part.len() >= 2 {
-            if let Ok(num) = part[1..].parse::<u32>() {
-                if (1..=12).contains(&num) {
-                    vk = 0x70 + num - 1; // VK_F1..VK_F12
-                }
-            }
-        } else if part.len() == 1 {
-            let ch = part.as_bytes()[0];
-            if ch.is_ascii_alphanumeric() {
-                vk = ch.to_ascii_uppercase() as u32;
-            }
-        }
-    }
-    if vk != 0 {
-        Some((mods, vk))
-    } else {
-        None
-    }
-}
-
-unsafe fn update_registered_hotkeys(hwnd: HWND, config: &AppConfig) {
-    UnregisterHotKey(hwnd, HOTKEY_ID_SETTINGS);
-    UnregisterHotKey(hwnd, HOTKEY_ID_CONVERT);
-
-    if let Some((mods, vk)) = parse_hotkey_str(&config.hotkey_settings) {
-        RegisterHotKey(hwnd, HOTKEY_ID_SETTINGS, mods, vk);
-    }
-    if let Some((mods, vk)) = parse_hotkey_str(&config.hotkey_converter) {
-        RegisterHotKey(hwnd, HOTKEY_ID_CONVERT, mods, vk);
-    }
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -397,7 +369,8 @@ fn main() {
 
         TRAY_PTR = &mut tray;
 
-        update_registered_hotkeys(hwnd, &config);
+        AddClipboardFormatListener(hwnd);
+        crate::clipboard::refresh();
         install_hook(hwnd, config);
 
         *CONFIG_MTIME.lock().unwrap() = config_mtime();
@@ -444,6 +417,8 @@ unsafe extern "system" fn wnd_proc(
                                 state.config.spell_check,
                                 state.config.start_with_windows,
                                 &state.config.hotkey_mode,
+                                &state.config.hotkey_settings,
+                                &state.config.hotkey_converter,
                                 crate::tsf::is_tsf_dll_present(),
                                 state.config.use_tsf,
                                 crate::tsf::is_tsf_registered(),
@@ -491,13 +466,8 @@ unsafe extern "system" fn wnd_proc(
             reload_runtime_config(hwnd);
             0
         }
-        WM_HOTKEY => {
-            let id = w_param as i32;
-            if id == HOTKEY_ID_SETTINGS {
-                spawn_gui(false);
-            } else if id == HOTKEY_ID_CONVERT {
-                spawn_gui(true);
-            }
+        WM_CLIPBOARDUPDATE => {
+            crate::clipboard::refresh();
             0
         }
         WM_CONVERT => {
@@ -505,7 +475,7 @@ unsafe extern "system" fn wnd_proc(
             0
         }
         WM_COMMAND => {
-            let id = w_param as usize;
+            let id = w_param;
             match id {
                 IDM_TOGGLE => {
                     toggle_mode(hwnd);
@@ -636,6 +606,7 @@ unsafe extern "system" fn wnd_proc(
                                 state.config.save();
                             }
                         }
+                        reload_runtime_config(hwnd);
                     }
                 }
                 IDM_TSF_REGISTER => {
@@ -667,27 +638,18 @@ unsafe extern "system" fn wnd_proc(
                                 Err(e) => show_error(&format!("Lỗi đăng ký TSF: {e}")),
                             }
                         }
+                        reload_runtime_config(hwnd);
                     }
                 }
                 IDM_EXIT => {
-                    UnregisterHotKey(hwnd, HOTKEY_ID_SETTINGS);
-                    UnregisterHotKey(hwnd, HOTKEY_ID_CONVERT);
-                    terminate_all_ui();
-                    uninstall_hook();
-                    if !TRAY_PTR.is_null() {
-                        let tray = TRAY_PTR;
-                        TRAY_PTR = null_mut();
-                        std::ptr::drop_in_place(tray);
-                    }
-                    std::process::exit(0);
+                    DestroyWindow(hwnd);
                 }
                 _ => {}
             }
             0
         }
         WM_DESTROY => {
-            UnregisterHotKey(hwnd, HOTKEY_ID_SETTINGS);
-            UnregisterHotKey(hwnd, HOTKEY_ID_CONVERT);
+            RemoveClipboardFormatListener(hwnd);
             terminate_all_ui();
             uninstall_hook();
             PostQuitMessage(0);
@@ -697,9 +659,8 @@ unsafe extern "system" fn wnd_proc(
     }
 }
 
-unsafe fn reload_runtime_config(hwnd: HWND) {
+unsafe fn reload_runtime_config(_hwnd: HWND) {
     let config = AppConfig::load();
-    update_registered_hotkeys(hwnd, &config);
     if !TRAY_PTR.is_null() {
         let is_tsf_mode = config.use_tsf && crate::tsf::is_tsf_dll_present() && crate::tsf::is_tsf_registered();
         (*TRAY_PTR).set_tsf_mode(is_tsf_mode);

@@ -220,6 +220,35 @@ static bool ParseMacroLine(const std::string& raw, std::string& key, std::string
     return !key.empty() && !value.empty();
 }
 
+static long long ConfigMtime(const std::string& path) {
+    std::error_code ec;
+    const auto t = std::filesystem::last_write_time(path, ec);
+    if (ec) return 0;
+    return static_cast<long long>(t.time_since_epoch().count());
+}
+
+static std::string PickIconFile(const std::string& current) {
+    OPENFILENAMEW ofn = { sizeof(ofn) };
+    wchar_t file[MAX_PATH] = { 0 };
+    if (!current.empty()) {
+        MultiByteToWideChar(CP_UTF8, 0, current.c_str(), -1, file, MAX_PATH);
+    }
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFilter = L"Biểu tượng (*.ico;*.png)\0*.ico;*.png\0Tất cả tập tin (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.lpstrDefExt = L"ico";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) return {};
+
+    const int len = WideCharToMultiByte(CP_UTF8, 0, file, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1) return {};
+    std::string path((size_t)len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, file, -1, &path[0], len, nullptr, nullptr);
+    path.resize((size_t)len - 1);
+    return path;
+}
+
 static std::string PickMacroFile(bool save) {
     OPENFILENAMEW ofn = { sizeof(ofn) };
     wchar_t file[MAX_PATH] = { 0 };
@@ -394,12 +423,10 @@ UiManager::UiManager(const std::string& config_path, bool convert_mode, void* hw
     if (convert_mode) {
         initial_page_ = Page::Converter;
     }
-    strncpy_s(foreign_initials_buf_, config_.foreign_initials.c_str(), sizeof(foreign_initials_buf_) - 1);
-    strncpy_s(hotkey_settings_buf_, config_.hotkey_settings.c_str(), sizeof(hotkey_settings_buf_) - 1);
-    strncpy_s(hotkey_converter_buf_, config_.hotkey_converter.c_str(), sizeof(hotkey_converter_buf_) - 1);
-    strncpy_s(auto_capitalize_buf_, config_.auto_capitalize_chars.c_str(), sizeof(auto_capitalize_buf_) - 1);
+    SyncTextBuffersFromConfig();
     english_defaults_ = LoadDefaultEnglishKeywords();
     SyncCustomKeymapBuffersFromConfig();
+    last_config_mtime_ = ConfigMtime(config_path_);
 }
 
 void UiManager::SyncCustomKeymapBuffersFromConfig() {
@@ -449,6 +476,13 @@ void UiManager::SyncCustomKeymapBuffersToConfig() {
     config_.custom_keymap.horn_u = custom_horn_u_;
     config_.custom_keymap.breve_a = custom_breve_a_;
     config_.custom_keymap.d_lower = custom_d_lower_;
+}
+
+void UiManager::SyncTextBuffersFromConfig() {
+    strncpy_s(foreign_initials_buf_, sizeof(foreign_initials_buf_), config_.foreign_initials.c_str(), sizeof(foreign_initials_buf_) - 1);
+    strncpy_s(hotkey_settings_buf_, sizeof(hotkey_settings_buf_), config_.hotkey_settings.c_str(), sizeof(hotkey_settings_buf_) - 1);
+    strncpy_s(hotkey_converter_buf_, sizeof(hotkey_converter_buf_), config_.hotkey_converter.c_str(), sizeof(hotkey_converter_buf_) - 1);
+    strncpy_s(auto_capitalize_buf_, sizeof(auto_capitalize_buf_), config_.auto_capitalize_chars.c_str(), sizeof(auto_capitalize_buf_) - 1);
 }
 
 void UiManager::LoadCustomKeymapPreset(int preset_id) {
@@ -547,7 +581,7 @@ void UiManager::SaveConfig() {
     config_.hotkey_settings = hotkey_settings_buf_;
     config_.hotkey_converter = hotkey_converter_buf_;
     config_.Save(config_path_);
-    dirty_ = false;
+    last_config_mtime_ = ConfigMtime(config_path_);
     saved_toast_timer_ = 2.0f;
     if (on_saved_cb_) {
         on_saved_cb_();
@@ -580,10 +614,71 @@ static void EndPageScroll() {
     ImGui::EndChild();
 }
 
+// TSF is only active when the user enabled it, the TIP DLL is present, and the
+// Windows registration actually exists. The config flag alone is not enough:
+// unregistering TSF must immediately restore the normal hook controls in the UI.
+static bool IsTsfActive(const Config& config) {
+    return config.use_tsf && vf_is_tsf_present() && vf_is_tsf_registered();
+}
+
+// Small, consistent help marker used when a label needs more context than the
+// space available on the row. Keep the visible label short; put the detail here.
+static void HelpMarker(const char* text) {
+    ImGui::TextDisabled("(?)");
+    const ImGuiHoveredFlags hover_flags =
+        ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled;
+    if (ImGui::IsItemHovered(hover_flags)) {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 26.0f);
+        ImGui::TextUnformatted(text);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+}
+
+static void SameLineHelp(const char* text) {
+    ImGui::SameLine(0.0f, Px(6.0f));
+    HelpMarker(text);
+}
+
+static bool CheckboxHelp(const char* label, bool* value, const char* help) {
+    const bool changed = ImGui::Checkbox(label, value);
+    SameLineHelp(help);
+    return changed;
+}
+
+static void LabelHelp(const char* label, const char* help) {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    SameLineHelp(help);
+}
+
+static void SectionHeaderHelp(const char* title, const char* help) {
+    ImGui::Spacing();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(title);
+    SameLineHelp(help);
+    ImGui::Separator();
+}
+
 void UiManager::Render() {
     ImGuiIO& io = ImGui::GetIO();
     if (saved_toast_timer_ > 0.0f) {
         saved_toast_timer_ -= io.DeltaTime;
+    }
+
+    // The daemon can change the same JSON file (hotkey/tray). Reload external
+    // changes so an open settings window cannot silently overwrite them.
+    const long long mtime = ConfigMtime(config_path_);
+    if (mtime != 0 && last_config_mtime_ != 0 && mtime != last_config_mtime_ &&
+        !recording_hotkey_ && recording_hotkey_target_ == 0) {
+        Config fresh;
+        if (fresh.Load(config_path_)) {
+            config_ = std::move(fresh);
+            SyncTextBuffersFromConfig();
+            SyncCustomKeymapBuffersFromConfig();
+            last_config_mtime_ = mtime;
+        }
     }
 
     ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -742,11 +837,11 @@ static std::string FormatHotkeyLabel(const std::string& mode) {
 void UiManager::PageOverview() {
     SectionHeader("Bộ gõ & Bảng mã");
 
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Trạng thái hiện tại:");
+    LabelHelp("Chế độ chung:",
+              "Áp dụng cho app không bị loại trừ. App đang focus có thể tạm tắt V/E theo danh sách Loại trừ.");
     ImGui::SameLine(0.0f, Px(16.0f));
 
-    const char* status_text = config_.enabled ? "[V] Đang bật tiếng Việt" : "[E] Tạm dừng tiếng Việt";
+    const char* status_text = config_.enabled ? "[V] Đang bật tiếng Việt" : "[E] Đang tắt tiếng Việt";
     ImVec4 status_col = config_.enabled ? ImVec4(0.18f, 0.55f, 0.28f, 1.0f) : ImVec4(0.35f, 0.38f, 0.45f, 1.0f);
     ImGui::PushStyleColor(ImGuiCol_Button, status_col);
     if (ImGui::Button(status_text, ImVec2(0.0f, Px(28.0f)))) {
@@ -793,25 +888,30 @@ void UiManager::PageOverview() {
 
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
-        ImGui::TextUnformatted("Kiểu gõ chính:");
+        LabelHelp("Kiểu gõ chính:",
+                  "Telex dùng chữ cái (aa → â). VNI dùng số (a1 → á). "
+                  "VIQR dùng dấu câu. Telex cơ bản/2 ít tính năng hơn. "
+                  "Telex + VNI dùng được cả hai.");
         ImGui::SetNextItemWidth(-Px(10.0f));
         const char* methods[] = {
-            "Telex (Chuẩn)", "VNI", "VIQR", "Simple Telex", "Simple Telex 2", "Telex + VNI (Hỗn hợp)", "Tự định nghĩa"
+            "Telex", "VNI", "VIQR", "Telex cơ bản", "Telex cơ bản 2", "Telex + VNI", "Tự định nghĩa"
         };
         if (ImGui::Combo("##MethodCombo", &config_.method, methods, IM_ARRAYSIZE(methods))) {
             SaveConfig();
         }
         if (config_.method == 6) {
             ImGui::Spacing();
-            ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), "Đang dùng kiểu gõ Tự định nghĩa.");
-            ImGui::TextDisabled("Vào tab [Gõ] để tùy chỉnh chi tiết từng phím gõ.");
+            ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), "Đang dùng kiểu gõ tự định nghĩa.");
+            ImGui::TextDisabled("Vào tab [Gõ] để chỉnh từng phím.");
         }
 
         ImGui::TableSetColumnIndex(1);
-        ImGui::TextUnformatted("Bảng mã xuất:");
+        LabelHelp("Bảng mã xuất:",
+                  "Unicode cho hầu hết ứng dụng hiện đại. "
+                  "TCVN3/VNI dành cho phần mềm cũ.");
         ImGui::SetNextItemWidth(-Px(10.0f));
         const char* charsets[] = {
-            "Unicode (Dựng sẵn)", "Unicode Tổ hợp", "TCVN3 (ABC)", "VNI Windows"
+            "Unicode", "Unicode tổ hợp", "TCVN3", "VNI Windows"
         };
         if (ImGui::Combo("##CharsetCombo", &config_.charset, charsets, IM_ARRAYSIZE(charsets))) {
             SaveConfig();
@@ -873,7 +973,7 @@ void UiManager::PageOverview() {
 
     ImGui::Spacing();
     ImGui::Spacing();
-    ImGui::TextDisabled("Tự gán:");
+    ImGui::TextDisabled("Gán tổ hợp khác:");
     ImGui::Spacing();
 
     // Section 2A: Interactive Key Recorder
@@ -948,7 +1048,7 @@ void UiManager::PageOverview() {
         }
         ImGui::PopStyleColor(2);
     } else {
-        const char* start_record_label = NF_COG "  Bấm để gán phím tự động";
+        const char* start_record_label = NF_COG "  Ghi tổ hợp phím";
         float btn_w = ImGui::CalcTextSize(start_record_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(20.0f);
         if (ImGui::Button(start_record_label, ImVec2(btn_w, Px(28.0f)))) {
             recording_hotkey_ = true;
@@ -970,7 +1070,7 @@ void UiManager::PageOverview() {
     };
 
     ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("Hoặc tự phối:");
+    ImGui::TextDisabled("Hoặc chọn tổ hợp:");
     ImGui::SameLine(0.0f, Px(8.0f));
     ImGui::Checkbox("Ctrl", &custom_ctrl);
     ImGui::SameLine(0.0f, Px(8.0f));
@@ -987,7 +1087,7 @@ void UiManager::PageOverview() {
     ImGui::Combo("##CustomKeySelect", &custom_key_idx, custom_keys, IM_ARRAYSIZE(custom_keys));
 
     ImGui::SameLine(0.0f, Px(10.0f));
-    const char* assign_label = NF_SAVE " Gán tổ hợp này";
+    const char* assign_label = NF_SAVE " Áp dụng";
     float assign_w = ImGui::CalcTextSize(assign_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(16.0f);
     if (ImGui::Button(assign_label, ImVec2(assign_w, Px(26.0f)))) {
         std::string res;
@@ -1053,79 +1153,78 @@ void UiManager::PageOverview() {
     }
 
     SectionHeader("Hệ thống");
-    if (ImGui::Checkbox("Khởi động cùng Windows khi bật máy", &config_.start_with_windows)) SaveConfig();
+    if (CheckboxHelp("Khởi động cùng Windows", &config_.start_with_windows,
+                     "Tự chạy VietFlow khi đăng nhập Windows.")) {
+        SaveConfig();
+    }
     ImGui::Spacing();
-    if (ImGui::Checkbox("Phát âm thanh thông báo nhẹ khi chuyển chế độ V/E", &config_.notification_sound)) {
+    if (CheckboxHelp("Âm thanh khi chuyển V/E", &config_.notification_sound,
+                     "Phát tiếng nhẹ khi chuyển V/E bằng phím tắt hoặc biểu tượng khay.")) {
         SaveConfig();
         if (config_.notification_sound) {
             vf_play_notification_sound();
         }
     }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Phát âm thanh khi chuyển V/E bằng phím tắt hoặc biểu tượng khay. Mặc định tắt.");
-    }
 }
 
 void UiManager::PageTyping() {
-    SectionHeader("Bỏ dấu tiếng Việt");
-    if (ImGui::Checkbox("Bỏ dấu tự do", &config_.free_marking)) SaveConfig();
-    if (ImGui::Checkbox("Dấu thanh kiểu mới (oà, uỳ)", &config_.modern_style)) SaveConfig();
-    if (ImGui::Checkbox("Kiểm tra chính tả", &config_.spell_check)) SaveConfig();
-    if (ImGui::Checkbox("Tự khôi phục từ gõ sai / tiếng Anh", &config_.auto_restore)) SaveConfig();
+    const bool tsf_active = IsTsfActive(config_);
+
+    SectionHeader("Dấu tiếng Việt");
+    if (CheckboxHelp("Đặt dấu tự do", &config_.free_marking,
+                     "Cho phép gõ dấu thanh ở vị trí bất kỳ trong từ, không chỉ sau nguyên âm.")) {
+        SaveConfig();
+    }
+    if (CheckboxHelp("Dấu thanh kiểu mới (oà, uỳ)", &config_.modern_style,
+                     "Bật: oà, uỳ. Tắt: òa, ủy (kiểu cũ).")) {
+        SaveConfig();
+    }
+    if (CheckboxHelp("Kiểm tra chính tả", &config_.spell_check,
+                     "Tự bỏ dấu khi từ không giống tiếng Việt.")) {
+        SaveConfig();
+    }
+    if (CheckboxHelp("Tự sửa từ gõ sai / tiếng Anh", &config_.auto_restore,
+                     "Khôi phục từ gốc khi gõ sai dấu hoặc khi gõ tiếng Anh.")) {
+        SaveConfig();
+    }
 
     SectionHeader("Bàn phím");
-    ImGui::BeginDisabled(config_.use_tsf);
-    if (ImGui::Checkbox("Chống dính Shift", &config_.fix_shift_lag)) SaveConfig();
-    if (config_.use_tsf) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(Không cần thiết trong TSF: xử lý in-process)");
+    if (CheckboxHelp("Sửa lỗi dính Shift", &config_.fix_shift_lag,
+                     "Tự sửa chữ hoa sai do phím Shift bị kẹt (VIệt → Việt).")) {
+        SaveConfig();
     }
-    ImGui::EndDisabled();
 
-    if (ImGui::Checkbox("Gõ tắt phụ âm đầu", &config_.consonant_shortcuts)) SaveConfig();
+    if (CheckboxHelp("Gõ tắt phụ âm đầu", &config_.consonant_shortcuts,
+                     "Gõ f/j/w ở đầu từ thành ph/gi/qu.")) {
+        SaveConfig();
+    }
 
-    ImGui::BeginDisabled(config_.use_tsf);
-    if (ImGui::Checkbox("Viết hoa đầu câu", &config_.auto_capitalize)) SaveConfig();
+    if (CheckboxHelp("Viết hoa đầu câu", &config_.auto_capitalize,
+                     "Tự viết hoa chữ đầu tiên sau dấu kết thúc câu.")) {
+        SaveConfig();
+    }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(Px(150.0f));
     if (ImGui::InputTextWithHint("##AutoCapChars", ".!?", auto_capitalize_buf_, sizeof(auto_capitalize_buf_))) {
         config_.auto_capitalize_chars = auto_capitalize_buf_;
         SaveConfig();
     }
-    if (config_.use_tsf) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(Chưa áp dụng trong TSF)");
-    } else if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Ký tự kết thúc câu (mặc định . ! ? xuống dòng).");
-    }
-    ImGui::EndDisabled();
+    ImGui::SameLine();
+    HelpMarker("Ký tự kết thúc câu (mặc định . ! ? và xuống dòng).");
 
-    ImGui::BeginDisabled(config_.use_tsf);
-    if (ImGui::Checkbox("Tắt khi bàn phím không phải US", &config_.disable_on_non_us_layout)) SaveConfig();
-    if (config_.use_tsf) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(Không áp dụng trong TSF: gắn với layout US)");
-    } else if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Tránh gõ sai khi dùng layout khác.");
-    }
-    ImGui::EndDisabled();
-
-    ImGui::BeginDisabled(config_.use_tsf);
-    if (ImGui::Checkbox("Tắt trong cửa sổ không hỗ trợ Unicode", &config_.disable_on_non_unicode_window)) {
+    if (CheckboxHelp("Tắt với bàn phím không phải US", &config_.disable_on_non_us_layout,
+                     "Tạm tắt tiếng Việt khi layout bàn phím không phải US để tránh gõ sai.")) {
         SaveConfig();
     }
-    if (config_.use_tsf) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(Không áp dụng trong TSF: chỉ chạy trên Text Services)");
-    } else if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Ví dụ VBA IDE. Bỏ chọn nếu app vẫn nhận tiếng Việt qua clipboard.");
-    }
-    ImGui::EndDisabled();
 
-    SectionHeader("Gửi phím");
+    if (CheckboxHelp("Tắt trong app không hỗ trợ Unicode", &config_.disable_on_non_unicode_window,
+                     "Ví dụ VBA IDE. Bỏ chọn nếu app vẫn hiển thị tiếng Việt tốt.")) {
+        SaveConfig();
+    }
+
+    SectionHeader("Cách gửi phím");
     static const char* injection_modes[] = {
-        "Tự động (khuyến nghị)", "Unicode", "Scan-code (game DirectInput)",
-        "An toàn (chậm, chống mất ký tự)"
+        "Tự động", "Unicode", "Scan-code (game)", "An toàn (chậm)"
     };
     static const int injection_values[] = {0, 1, 2, 4};
     int injection_index = 0;
@@ -1135,23 +1234,29 @@ void UiManager::PageTyping() {
             break;
         }
     }
-    ImGui::BeginDisabled(config_.use_tsf);
+    ImGui::BeginDisabled(tsf_active);
+    LabelHelp("Cách gửi:",
+              "Tự động là tốt nhất cho hầu hết app. Scan-code dành cho game. "
+              "An toàn gửi chậm hơn khi app hay mất chữ.");
     ImGui::SetNextItemWidth(Px(340.0f));
     if (ImGui::Combo("##InjectionMode", &injection_index, injection_modes, IM_ARRAYSIZE(injection_modes))) {
         config_.injection_mode = injection_values[injection_index];
         SaveConfig();
     }
-    if (config_.use_tsf) {
-        ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), "Chế độ TSF IME đang bật: Soạn thảo văn bản trực tiếp in-process (không dùng cơ chế gửi phím SendInput).");
+    if (tsf_active) {
+        ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), "TSF đang bật: gõ trực tiếp, không dùng gửi phím.");
     } else {
-        ImGui::TextDisabled("Tự động: Unicode (SendInput nhanh), tự động fallback gửi chậm nếu ứng dụng phản hồi trễ.");
+        ImGui::TextDisabled("Tự động dùng Unicode nhanh và chuyển sang gửi chậm khi cần.");
     }
     ImGui::EndDisabled();
 
-    SectionHeader("Chế độ TSF IME (Text Services Framework)");
+    SectionHeaderHelp("Chế độ TSF",
+                      "Chỉ dùng cho app hỗ trợ TSF. Game và app không hỗ trợ TSF sẽ không nhận tiếng Việt khi bật.");
     if (vf_is_tsf_present()) {
         bool tsf_registered = vf_is_tsf_registered();
-        if (ImGui::Checkbox("Sử dụng chế độ gõ TSF", &config_.use_tsf)) {
+        if (CheckboxHelp("Bật chế độ TSF", &config_.use_tsf,
+                         "Gõ trực tiếp trong app hỗ trợ TSF (Word, trình duyệt, Notepad). "
+                         "Không dùng cho game hoặc app không hỗ trợ TSF.")) {
             if (config_.use_tsf && !tsf_registered) {
                 if (vf_register_tsf()) {
                     tsf_registered = true;
@@ -1159,64 +1264,65 @@ void UiManager::PageTyping() {
             }
             SaveConfig();
         }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Xử lý gõ trực tiếp qua Text Services Framework in-process bên trong ứng dụng đích (Word, trình duyệt, Notepad), không cần gửi phím xóa backspace.");
-        }
 
         ImGui::SameLine(0.0f, Px(16.0f));
-        const char* reg_btn_text = tsf_registered ? "Hủy đăng ký TSF TIP" : "Cài đặt / Đăng ký TSF TIP";
+        const char* reg_btn_text = tsf_registered ? "Gỡ TSF" : "Cài TSF";
         if (ImGui::Button(reg_btn_text, ImVec2(0.0f, Px(26.0f)))) {
             if (tsf_registered) {
                 vf_unregister_tsf();
+                // Unregistering makes the TIP inactive; do not leave the UI
+                // pretending that TSF still owns typing.
+                config_.use_tsf = false;
+                SaveConfig();
             } else {
                 vf_register_tsf();
             }
         }
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Đăng ký hoặc gỡ bỏ VietFlow TIP COM Server vào hệ thống Windows.");
+            ImGui::SetTooltip("Cài hoặc gỡ VietFlow khỏi Windows.");
         }
 
         ImGui::SameLine(0.0f, Px(8.0f));
-        if (ImGui::Button("Cài lại TSF TIP", ImVec2(0.0f, Px(26.0f)))) {
+        if (ImGui::Button("Cài lại TSF", ImVec2(0.0f, Px(26.0f)))) {
             vf_reinstall_tsf();
         }
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Gỡ bỏ và cài đặt lại sạch sẽ VietFlow TIP COM Server vào hệ thống Windows.");
+            ImGui::SetTooltip("Gỡ rồi cài lại TSF.");
         }
 
         if (tsf_registered) {
-            ImGui::TextColored(ImVec4(0.25f, 0.78f, 0.35f, 1.0f), "Trạng thái: Đã đăng ký TSF TIP trong Windows");
+            ImGui::TextColored(ImVec4(0.25f, 0.78f, 0.35f, 1.0f), "Đã cài TSF.");
         } else {
-            ImGui::TextColored(ImVec4(0.85f, 0.60f, 0.20f, 1.0f), "Trạng thái: Chưa đăng ký TSF TIP trong Windows (Bấm nút trên để cài đặt)");
+            ImGui::TextColored(ImVec4(0.85f, 0.60f, 0.20f, 1.0f), "Chưa cài TSF. Bấm Cài TSF.");
         }
     } else {
-        ImGui::TextDisabled("Không tìm thấy vietflow_tip.dll (Chế độ TSF không khả dụng).");
+        ImGui::TextDisabled("Chế độ TSF không khả dụng.");
     }
 
     SectionHeader("Ngoại lai & tiếng Anh");
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Phụ âm ngoại lai:");
-    ImGui::SameLine();
+    LabelHelp("Phụ âm ngoại lai:",
+              "Các phụ âm này ở đầu từ sẽ không bị thêm dấu. Mặc định: fjwz.");
     ImGui::SetNextItemWidth(Px(120.0f));
     if (ImGui::InputText("##ForeignInitials", foreign_initials_buf_, sizeof(foreign_initials_buf_))) {
         SaveConfig();
     }
-    ImGui::TextDisabled("Mặc định fjwz; bỏ dấu khi gặp ở đầu từ.");
+    ImGui::TextDisabled("Mặc định fjwz.");
 
     ImGui::Spacing();
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Từ tiếng Anh không bỏ dấu:");
+    LabelHelp("Từ tiếng Anh giữ nguyên:",
+              "Các từ này không bị thêm dấu khi gõ.");
     ImGui::SameLine();
-    if (ImGui::Button(NF_COG "  Chỉnh sửa danh sách...", ImVec2(0.0f, Px(26.0f)))) {
+    if (ImGui::Button(NF_COG "  Chỉnh sửa...", ImVec2(0.0f, Px(26.0f)))) {
         ImGui::OpenPopup("Từ tiếng Anh");
     }
-    ImGui::TextDisabled("Mặc định + từ bạn thêm; popup để thêm/xóa.");
+    ImGui::TextDisabled("Gồm từ mặc định và từ bạn thêm.");
 
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(Px(640.0f), Px(500.0f)), ImGuiCond_Appearing);
     if (ImGui::BeginPopupModal("Từ tiếng Anh", nullptr, ImGuiWindowFlags_NoResize)) {
-        ImGui::TextDisabled("Giữ nguyên, không bỏ dấu.");
+        ImGui::TextDisabled("Không thêm dấu cho các từ này.");
         ImGui::SetNextItemWidth(-Px(10.0f));
         ImGui::InputTextWithHint("##EngFilter", "Tìm từ...", english_keyword_filter_, sizeof(english_keyword_filter_));
         ImGui::Spacing();
@@ -1290,8 +1396,8 @@ void UiManager::PageTyping() {
     }
 
     bool is_custom_active = (config_.method == 6);
-    std::string header_title = std::string(NF_KEYBOARD " Kiểu gõ tự định nghĩa (Custom Keymap) ") +
-        (is_custom_active ? "[Đang kích hoạt]" : "[Bấm để mở rộng tùy biến]");
+    std::string header_title = std::string(NF_KEYBOARD " Kiểu gõ tự định nghĩa") +
+        (is_custom_active ? "  [Đang dùng]" : "");
 
     ImGui::Spacing();
     ImGui::AlignTextToFramePadding();
@@ -1304,7 +1410,7 @@ void UiManager::PageTyping() {
         ImGui::CollapsingHeader(header_title.c_str(), custom_header_flags);
     ImGui::PopStyleVar();
     if (custom_header_open) {
-        ImGui::TextDisabled("Gán phím dấu thanh/mũ/móc theo thói quen. Có thể gán nhiều phím (vd 's1').");
+        ImGui::TextDisabled("Gán phím dấu theo thói quen. Có thể nhập nhiều phím, ví dụ s1.");
         ImGui::Spacing();
 
         // Determine current matching preset for visual feedback
@@ -1409,12 +1515,19 @@ void UiManager::PageTyping() {
         }
 
         ImGui::Spacing();
-        if (ImGui::Checkbox("Cho phép gõ lặp mũ kiểu Telex (aa -> â, ee -> ê, oo -> ô, dd -> đ)", &config_.custom_keymap.telex_double_keys)) SaveConfig();
-        if (ImGui::Checkbox("Gõ phím móc đứng độc lập thành chữ 'ư'", &config_.custom_keymap.lone_w)) SaveConfig();
+        if (CheckboxHelp("Gõ lặp để tạo dấu (aa → â, dd → đ)",
+                         &config_.custom_keymap.telex_double_keys,
+                         "Áp dụng cho Telex: aa, ee, oo, dd.")) {
+            SaveConfig();
+        }
+        if (CheckboxHelp("Phím móc đứng thành 'ư'", &config_.custom_keymap.lone_w,
+                         "Ví dụ gõ w một mình để ra ư.")) {
+            SaveConfig();
+        }
 
         ImGui::Spacing();
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Khung gõ thử nghiệm:");
+        ImGui::TextUnformatted("Gõ thử:");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(Px(280.0f));
         ImGui::InputTextWithHint("##TestCustomTyping", "Gõ thử tiếng Việt tại đây...", custom_test_buf_, sizeof(custom_test_buf_));
@@ -1425,21 +1538,36 @@ void UiManager::PageTyping() {
 
         ImGui::Spacing();
         if (config_.method != 6) {
-            if (ImGui::Button(NF_BOLT "  Kích hoạt sử dụng Kiểu gõ tự định nghĩa này làm kiểu gõ chính", ImVec2(0.0f, Px(28.0f)))) {
+            if (ImGui::Button(NF_BOLT "  Dùng kiểu gõ này", ImVec2(0.0f, Px(28.0f)))) {
                 config_.method = 6;
                 SaveConfig();
             }
+            ImGui::SameLine();
+            HelpMarker("Đặt kiểu gõ tự định nghĩa làm kiểu gõ chính.");
         } else {
-            ImGui::TextColored(ImVec4(0.25f, 0.85f, 0.40f, 1.0f), "Kiểu gõ tự định nghĩa đang được kích hoạt làm kiểu gõ chính.");
+            ImGui::TextColored(ImVec4(0.25f, 0.85f, 0.40f, 1.0f), "Đang dùng kiểu gõ này.");
         }
     }
 }
 
 void UiManager::PageMacros() {
+    const bool tsf_active = IsTsfActive(config_);
     SectionHeader("Gõ tắt");
-    if (ImGui::Checkbox("Bật tính năng gõ tắt", &config_.enable_macro)) SaveConfig();
-    ImGui::BeginDisabled(!config_.enable_macro);
-    if (ImGui::Checkbox("Cho phép gõ tắt ngay cả khi ở chế độ [E] / app loại trừ", &config_.allow_macro_when_disabled)) SaveConfig();
+    if (CheckboxHelp("Bật gõ tắt", &config_.enable_macro,
+                     "Thay từ tắt bằng nội dung đã định nghĩa khi gõ.")) {
+        SaveConfig();
+    }
+    ImGui::BeginDisabled(!config_.enable_macro || tsf_active);
+    if (CheckboxHelp("Bật gõ tắt trong chế độ [E] và app loại trừ",
+                     &config_.allow_macro_when_disabled,
+                     "Khi bật, từ tắt vẫn hoạt động dù tiếng Việt đang tắt hoặc app nằm trong danh sách loại trừ. "
+                     "TSF hiện chưa hỗ trợ chế độ này.")) {
+        SaveConfig();
+    }
+    if (tsf_active) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(Chưa hỗ trợ trong TSF)");
+    }
     ImGui::EndDisabled();
 
     if (ImGui::Button(NF_FOLDER "  Nhập từ file...", ImVec2(0.0f, Px(26.0f)))) {
@@ -1470,9 +1598,11 @@ void UiManager::PageMacros() {
             macro_status_ok_ ? ImVec4(0.30f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.45f, 0.35f, 1.0f),
             "%s", macro_status_msg_.c_str());
     }
-    ImGui::TextDisabled("Mỗi dòng: khóa<TAB>thay thế, khóa=thay thế hoặc khóa||thay thế.");
+    ImGui::TextDisabled("Mỗi dòng: từ tắt, Tab, nội dung thay thế.");
+    ImGui::SameLine();
+    HelpMarker("Cũng chấp nhận dấu = hoặc || thay cho Tab.");
 
-    SectionHeader("Thêm từ");
+    SectionHeader("Thêm từ tắt");
     ImGui::TextDisabled("Ví dụ 'vn' -> 'Việt Nam'; gõ 'vn' + Space/Enter.");
     ImGui::Spacing();
 
@@ -1504,10 +1634,12 @@ void UiManager::PageMacros() {
     }
 
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.60f, 0.70f, 1.00f));
-    ImGui::TextUnformatted("Hỗ trợ biến động: @date, @time, @datetime, @clipboard, @tab, @newline");
+    ImGui::TextUnformatted("Biến: @date, @time, @datetime, @clipboard, @tab, @newline");
     ImGui::PopStyleColor();
+    ImGui::SameLine();
+    HelpMarker("Các biến này được thay bằng giá trị tương ứng khi gõ tắt.");
 
-    SectionHeader("Danh sách");
+    SectionHeader("Danh sách từ tắt");
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("Tổng cộng: %zu từ gõ tắt", config_.macros.size());
     ImGui::SameLine(0.0f, Px(16.0f));
@@ -1585,25 +1717,28 @@ void UiManager::PageMacros() {
 }
 
 void UiManager::PageExclusions() {
-    SectionHeader("Phím tắt trong app loại trừ");
-    ImGui::BeginDisabled(config_.use_tsf);
-    if (ImGui::Checkbox("Khóa phím tắt khi mới vào app loại trừ", &config_.lock_hotkeys_in_excluded_apps)) {
+    const bool tsf_active = IsTsfActive(config_);
+    SectionHeaderHelp("Phím tắt khi dùng app loại trừ",
+                      "Áp dụng khi cửa sổ đang dùng là app trong danh sách loại trừ.");
+    if (CheckboxHelp("Khóa phím tắt trong app loại trừ",
+                     &config_.lock_hotkeys_in_excluded_apps,
+                     "Bật: phím tắt V/E và phím mở bảng điều khiển tạm thời không hoạt động trong app này. "
+                     "Bấm biểu tượng khay một lần để bật V cho riêng app; bấm lần nữa để khóa lại. "
+                     "Tắt: phím tắt luôn hoạt động.")) {
         SaveConfig();
     }
-    if (config_.use_tsf) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(Không áp dụng trong TSF: Windows quản lý riêng)");
-    } else if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Sau khi bật tạm bằng icon khay, V/E đổi qua lại được trong app đó.");
-    }
-    ImGui::EndDisabled();
 
-    SectionHeader("Cấu hình theo app");
-    ImGui::TextDisabled("Ghi đè kiểu gõ, bảng mã, gửi phím, gõ tắt. Để trống = dùng chung.");
+    SectionHeaderHelp("Thiết lập riêng cho từng app",
+                      "Chỉ áp dụng cho app đã thêm. Chọn 'Theo mặc định' để dùng cài đặt chung.");
+    if (tsf_active) {
+        ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.25f, 1.0f),
+                           "TSF đang bật: cấu hình theo app chưa được áp dụng.");
+    }
+    ImGui::TextDisabled("Chỉ áp dụng cho app được thêm. 'Theo mặc định' dùng cài đặt chung.");
     ImGui::SetNextItemWidth(Px(240.0f));
     ImGui::InputTextWithHint("##NewProfileApp", "vd: Code.exe, chrome.exe...", new_profile_app_, sizeof(new_profile_app_));
     ImGui::SameLine();
-    if (ImGui::Button(NF_PLUS "  Thêm profile", ImVec2(Px(130.0f), Px(26.0f)))) {
+    if (ImGui::Button(NF_PLUS "  Thêm app", ImVec2(Px(120.0f), Px(26.0f)))) {
         std::string app = new_profile_app_;
         LowerAsciiInPlace(app);
         if (!app.empty() && config_.app_profiles.find(app) == config_.app_profiles.end()) {
@@ -1612,12 +1747,8 @@ void UiManager::PageExclusions() {
         }
         new_profile_app_[0] = '\0';
     }
-    if (!profile_status_.empty()) {
-        ImGui::TextColored(ImVec4(0.55f, 0.70f, 0.90f, 1.0f), "%s", profile_status_.c_str());
-    }
-
     static const char* profile_methods[] = {
-        "Theo mặc định", "Telex", "VNI", "VIQR", "Telex đơn giản", "Telex đơn giản 2", "Telex + VNI", "Tự định nghĩa"
+        "Theo mặc định", "Telex", "VNI", "VIQR", "Telex cơ bản", "Telex cơ bản 2", "Telex + VNI", "Tự định nghĩa"
     };
     static const char* profile_charsets[] = {
         "Theo mặc định", "Unicode", "Unicode tổ hợp", "TCVN3", "VNI Windows"
@@ -1636,7 +1767,7 @@ void UiManager::PageExclusions() {
             ImGui::TableSetupColumn("Ứng dụng", ImGuiTableColumnFlags_WidthFixed, Px(150.0f));
             ImGui::TableSetupColumn("Kiểu gõ", ImGuiTableColumnFlags_WidthFixed, Px(130.0f));
             ImGui::TableSetupColumn("Bảng mã", ImGuiTableColumnFlags_WidthFixed, Px(130.0f));
-            ImGui::TableSetupColumn("Gửi phím", ImGuiTableColumnFlags_WidthFixed, Px(150.0f));
+            ImGui::TableSetupColumn("Cách gửi", ImGuiTableColumnFlags_WidthFixed, Px(150.0f));
             ImGui::TableSetupColumn("Gõ tắt", ImGuiTableColumnFlags_WidthFixed, Px(120.0f));
             ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, Px(55.0f));
             ImGui::TableHeadersRow();
@@ -1656,6 +1787,7 @@ void UiManager::PageExclusions() {
                     profile.method = method - 1;
                     SaveConfig();
                 }
+                ImGui::SetItemTooltip("Kiểu gõ riêng cho app này. 'Theo mặc định' dùng cài đặt chung.");
 
                 int charset = std::clamp(profile.charset, -1, 3) + 1;
                 ImGui::TableSetColumnIndex(2);
@@ -1664,6 +1796,7 @@ void UiManager::PageExclusions() {
                     profile.charset = charset - 1;
                     SaveConfig();
                 }
+                ImGui::SetItemTooltip("Bảng mã riêng cho app này. 'Theo mặc định' dùng cài đặt chung.");
 
                 int injection = 0;
                 for (int i = 0; i < IM_ARRAYSIZE(profile_injection_values); ++i) {
@@ -1674,11 +1807,12 @@ void UiManager::PageExclusions() {
                 }
                 ImGui::TableSetColumnIndex(3);
                 ImGui::SetNextItemWidth(-FLT_MIN);
-                ImGui::BeginDisabled(config_.use_tsf);
+                ImGui::BeginDisabled(tsf_active);
                 if (ImGui::Combo("##PInject", &injection, profile_injections, IM_ARRAYSIZE(profile_injections))) {
                     profile.injection_mode = profile_injection_values[injection];
                     SaveConfig();
                 }
+                ImGui::SetItemTooltip("Cách gửi ký tự cho app này. 'Theo mặc định' dùng cài đặt chung.");
                 ImGui::EndDisabled();
 
                 int macro = std::clamp(profile.allow_macro, -1, 1) + 1;
@@ -1688,6 +1822,7 @@ void UiManager::PageExclusions() {
                     profile.allow_macro = macro - 1;
                     SaveConfig();
                 }
+                ImGui::SetItemTooltip("Cho phép gõ tắt trong app này.");
 
                 ImGui::TableSetColumnIndex(5);
                 if (ImGui::SmallButton(NF_TRASH)) remove_profile = name;
@@ -1701,11 +1836,12 @@ void UiManager::PageExclusions() {
         SaveConfig();
     }
 
-    SectionHeader("Thêm app loại trừ");
-    ImGui::TextDisabled("App trong danh sách tắt tiếng Việt; icon khay đổi tay.");
+    SectionHeaderHelp("Thêm app",
+                      "App trong danh sách tự chuyển sang [E] khi là cửa sổ đang dùng. "
+                      "Bấm biểu tượng khay để bật [V] tạm thời cho riêng app đó.");
+    ImGui::TextDisabled("Các app này luôn bắt đầu ở [E].");
     ImGui::Spacing();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("App:");
+    LabelHelp("Tên file .exe:", "Chỉ cần tên file, không cần đường dẫn.");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(Px(210.0f));
     ImGui::InputTextWithHint("##NewExclApp", "vd: cs2.exe...", new_excluded_app_, sizeof(new_excluded_app_));
@@ -1724,7 +1860,7 @@ void UiManager::PageExclusions() {
     }
 
     ImGui::Spacing();
-    const char* file_btn_label = NF_FOLDER " Chọn file (.exe)...";
+    const char* file_btn_label = NF_FOLDER " Chọn file .exe...";
     float file_btn_w = ImGui::CalcTextSize(file_btn_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(20.0f);
     if (ImGui::Button(file_btn_label, ImVec2(file_btn_w, Px(28.0f)))) {
         OPENFILENAMEW ofn = { sizeof(ofn) };
@@ -1748,7 +1884,7 @@ void UiManager::PageExclusions() {
     }
 
     ImGui::SameLine(0.0f, Px(12.0f));
-    const char* app_btn_label = NF_GAMEPAD " Chọn từ app đang chạy...";
+    const char* app_btn_label = NF_GAMEPAD " Chọn app đang chạy";
     float app_btn_w = ImGui::CalcTextSize(app_btn_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(20.0f);
     if (ImGui::Button(app_btn_label, ImVec2(app_btn_w, Px(28.0f)))) {
         running_apps_list_ = GetRunningApps();
@@ -1757,7 +1893,7 @@ void UiManager::PageExclusions() {
     }
 
     ImGui::Spacing();
-    ImGui::TextDisabled("Thêm nhanh:");
+    ImGui::TextDisabled("Gợi ý:");
     ImGui::Spacing();
 
     struct QuickExcl { const char* label; const char* exe; const char* alt_exe; };
@@ -1860,7 +1996,11 @@ void UiManager::PageExclusions() {
         ImGui::EndPopup();
     }
 
-    SectionHeader("App không dùng tiếng Việt");
+    std::string exclusion_title = "Đang loại trừ (" + std::to_string(config_.excluded_apps.size()) + ")";
+    SectionHeader(exclusion_title.c_str());
+    if (config_.excluded_apps.empty()) {
+        ImGui::TextDisabled("Chưa có app nào.");
+    }
     int remove_idx = -1;
     for (size_t i = 0; i < config_.excluded_apps.size(); ++i) {
         ImGui::Text("  • %s", config_.excluded_apps[i].c_str());
@@ -1880,17 +2020,17 @@ void UiManager::PageExclusions() {
 void UiManager::PageConverter() {
     SectionHeader("Bảng mã");
     ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), NF_BOLT " Phím tắt chuyển nhanh Clipboard toàn hệ thống: ");
+    ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), NF_BOLT " Phím tắt chuyển mã nhanh: ");
     ImGui::SameLine(0.0f, Px(8.0f));
     HotkeyBadge(config_.hotkey_converter.empty() ? "Ctrl + Shift + F9" : config_.hotkey_converter.c_str());
     ImGui::Spacing();
 
-    ImGui::TextDisabled("Dán văn bản, chọn bảng mã, bấm Chuyển mã.");
-    ImGui::TextDisabled("TCVN3/VNI: Clipboard đọc/ghi byte gốc; hộp text là bản xem trước.");
+    ImGui::TextDisabled("Dán văn bản, chọn bảng mã rồi bấm Chuyển mã.");
+    ImGui::TextDisabled("TCVN3/VNI dùng dữ liệu gốc trong Clipboard.");
     ImGui::Spacing();
 
     const char* charsets[] = {
-        "Unicode (Dựng sẵn)", "Unicode Tổ hợp", "TCVN3 (ABC)", "VNI Windows"
+        "Unicode", "Unicode tổ hợp", "TCVN3", "VNI Windows"
     };
 
     if (ImGui::BeginTable("ConverterSelectors", 2, ImGuiTableFlags_SizingStretchProp)) {
@@ -1942,7 +2082,7 @@ void UiManager::PageConverter() {
             if (clip) input = clip;
         }
         if (legacy_missing) {
-            conv_status_msg_ = "Clipboard không có dữ liệu TCVN3/VNI (CF_TEXT). Hãy sao chép từ ứng dụng cũ.";
+            conv_status_msg_ = "Clipboard không có dữ liệu TCVN3/VNI. Hãy sao chép từ ứng dụng cũ.";
             conv_status_ok_ = false;
         } else if (input.empty()) {
             conv_status_msg_ = "Clipboard đang trống.";
@@ -2120,13 +2260,14 @@ static void DrawTrayIconPreview(const char* letter, bool fill, const ImVec4& fil
 
 void UiManager::PageAdvanced() {
     SectionHeader("Biểu tượng khay");
+    const bool tsf_active = IsTsfActive(config_);
 
-    if (config_.use_tsf) {
-        ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), "Chế độ TSF IME đang bật: Khay hệ thống hiển thị biểu tượng chính của ứng dụng.");
+    if (tsf_active) {
+        ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), "TSF đang bật: khay dùng biểu tượng TSF.");
         ImGui::Spacing();
     }
 
-    ImGui::BeginDisabled(config_.use_tsf);
+    ImGui::BeginDisabled(tsf_active);
 
     ImVec4 e_fill_col = HexToImVec4(config_.tray_icon_e_fill_color, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
     ImVec4 e_border_col = HexToImVec4(config_.tray_icon_e_border_color, ImVec4(0.0f, 0.47f, 0.84f, 1.0f));
@@ -2149,20 +2290,24 @@ void UiManager::PageAdvanced() {
             ImGui::Columns(2, "ECols", false);
             ImGui::SetColumnWidth(0, Px(180.0f));
 
-            if (ImGui::Checkbox("Màu tô##E", &config_.tray_icon_e_fill)) SaveConfig();
+            if (CheckboxHelp("Tô chữ##E", &config_.tray_icon_e_fill,
+                             "Bật màu tô bên trong chữ.")) {
+                SaveConfig();
+            }
             ImGui::SameLine(0.0f, Px(10.0f));
             if (ImGui::ColorEdit3("##EFillCol", (float*)&e_fill_col, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
                 config_.tray_icon_e_fill_color = ImVec4ToHex(e_fill_col);
-                config_.tray_icon_theme = "custom";
                 SaveConfig();
             }
 
             ImGui::Spacing();
-            if (ImGui::Checkbox("Màu viền##E", &config_.tray_icon_e_border)) SaveConfig();
+            if (CheckboxHelp("Viền chữ##E", &config_.tray_icon_e_border,
+                             "Bật viền mảnh quanh chữ.")) {
+                SaveConfig();
+            }
             ImGui::SameLine(0.0f, Px(10.0f));
             if (ImGui::ColorEdit3("##EBorderCol", (float*)&e_border_col, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
                 config_.tray_icon_e_border_color = ImVec4ToHex(e_border_col);
-                config_.tray_icon_theme = "custom";
                 SaveConfig();
             }
 
@@ -2183,20 +2328,24 @@ void UiManager::PageAdvanced() {
             ImGui::Columns(2, "VCols", false);
             ImGui::SetColumnWidth(0, Px(180.0f));
 
-            if (ImGui::Checkbox("Màu tô##V", &config_.tray_icon_v_fill)) SaveConfig();
+            if (CheckboxHelp("Tô chữ##V", &config_.tray_icon_v_fill,
+                             "Bật màu tô bên trong chữ.")) {
+                SaveConfig();
+            }
             ImGui::SameLine(0.0f, Px(10.0f));
             if (ImGui::ColorEdit3("##VFillCol", (float*)&v_fill_col, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
                 config_.tray_icon_v_fill_color = ImVec4ToHex(v_fill_col);
-                config_.tray_icon_theme = "custom";
                 SaveConfig();
             }
 
             ImGui::Spacing();
-            if (ImGui::Checkbox("Màu viền##V", &config_.tray_icon_v_border)) SaveConfig();
+            if (CheckboxHelp("Viền chữ##V", &config_.tray_icon_v_border,
+                             "Bật viền mảnh quanh chữ.")) {
+                SaveConfig();
+            }
             ImGui::SameLine(0.0f, Px(10.0f));
             if (ImGui::ColorEdit3("##VBorderCol", (float*)&v_border_col, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel)) {
                 config_.tray_icon_v_border_color = ImVec4ToHex(v_border_col);
-                config_.tray_icon_theme = "custom";
                 SaveConfig();
             }
 
@@ -2211,8 +2360,46 @@ void UiManager::PageAdvanced() {
     }
 
     ImGui::Spacing();
+    ImGui::TextDisabled("Icon riêng (tùy chọn):");
+    ImGui::SameLine();
+    HelpMarker("Chọn file .ico hoặc .png. Icon riêng sẽ thay cho chữ V/E và bỏ qua màu tô/viền của chữ đó.");
+    auto RenderCustomIcon = [this](const char* label, const char* id, std::string& path) {
+        ImGui::PushID(id);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(label);
+        ImGui::SameLine(Px(94.0f));
+        char path_buf[512] = {0};
+        strncpy_s(path_buf, sizeof(path_buf), path.c_str(), _TRUNCATE);
+        ImGui::SetNextItemWidth(Px(300.0f));
+        if (ImGui::InputTextWithHint(id, "Chưa chọn file...", path_buf, sizeof(path_buf))) {
+            path = path_buf;
+            SaveConfig();
+        }
+        ImGui::SameLine(0.0f, Px(6.0f));
+        if (ImGui::Button("Chọn...", ImVec2(Px(78.0f), Px(24.0f)))) {
+            const std::string picked = PickIconFile(path);
+            if (!picked.empty()) {
+                path = picked;
+                SaveConfig();
+            }
+        }
+        ImGui::SameLine(0.0f, Px(6.0f));
+        if (ImGui::Button("Bỏ", ImVec2(Px(48.0f), Px(24.0f)))) {
+            path.clear();
+            SaveConfig();
+        }
+        if (!path.empty()) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.35f, 0.75f, 1.0f, 1.0f), "Đang dùng");
+        }
+        ImGui::PopID();
+    };
+    RenderCustomIcon("Tiếng Anh [E]:", "##CustomIconE", config_.custom_icon_e);
+    RenderCustomIcon("Tiếng Việt [V]:", "##CustomIconV", config_.custom_icon_v);
+    ImGui::TextDisabled("Màu tô/viền chỉ áp dụng cho icon chữ V/E, không áp dụng cho icon riêng.");
+
+    ImGui::Spacing();
     if (ImGui::Button(NF_SAVE " Lưu & Áp dụng icon khay", ImVec2(0.0f, Px(28.0f)))) {
-        config_.tray_icon_theme = "custom";
         config_.tray_icon_e_fill_color = ImVec4ToHex(e_fill_col);
         config_.tray_icon_e_border_color = ImVec4ToHex(e_border_col);
         config_.tray_icon_v_fill_color = ImVec4ToHex(v_fill_col);
@@ -2221,7 +2408,8 @@ void UiManager::PageAdvanced() {
     }
     ImGui::SameLine(0.0f, Px(10.0f));
     if (ImGui::Button("Khôi phục mặc định", ImVec2(0.0f, Px(28.0f)))) {
-        config_.tray_icon_theme = "modern";
+        config_.custom_icon_v.clear();
+        config_.custom_icon_e.clear();
         config_.tray_icon_e_fill = true;
         config_.tray_icon_e_fill_color = "#FFFFFF";
         config_.tray_icon_e_border = true;
@@ -2238,7 +2426,8 @@ void UiManager::PageAdvanced() {
     }
     ImGui::EndDisabled();
 
-    SectionHeader("Thời gian chốt từ");
+    SectionHeaderHelp("Chốt từ",
+                      "Thời gian chờ giữa hai phím trước khi chốt từ. Mặc định 1500 ms.");
     int timeout = (int)config_.typing_timeout_ms;
     ImGui::SetNextItemWidth(Px(260.0f));
     if (ImGui::SliderInt("##TimeoutSlider", &timeout, 500, 5000, "%d ms")) {
@@ -2246,7 +2435,7 @@ void UiManager::PageAdvanced() {
         SaveConfig();
     }
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.58f, 0.67f, 1.00f));
-    ImGui::TextUnformatted("Chờ giữa 2 phím để chốt từ (mặc định 1500 ms).");
+    ImGui::TextUnformatted("Thời gian chờ giữa hai phím (mặc định 1500 ms).");
     ImGui::PopStyleColor();
 
     ImGui::Dummy(ImVec2(0.0f, Px(20.0f)));
@@ -2256,7 +2445,7 @@ void UiManager::PageAbout() {
     SectionHeader("VietFlow");
     ImGui::TextUnformatted("Bộ gõ tiếng Việt nhẹ, hiện đại");
     ImGui::TextUnformatted("Phiên bản: v" VIETFLOW_VERSION);
-    ImGui::TextUnformatted("Bản quyền: Giấy phép mã nguồn mở GPLv3");
+    ImGui::TextUnformatted("Giấy phép: GPLv3");
 
     ImGui::Spacing();
     ImGui::TextUnformatted("Trang chủ dự án:");

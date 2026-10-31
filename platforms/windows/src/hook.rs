@@ -247,6 +247,7 @@ pub struct HookState {
     pub hook_handle: HHOOK,
     pub mouse_hook_handle: HHOOK,
     pub win_event_hook: HWINEVENTHOOK,
+    pub tsf_registered: bool,
 }
 
 unsafe impl Send for HookState {}
@@ -359,7 +360,8 @@ impl HookState {
     #[inline]
     pub fn send_engine_output(&mut self, backspaces: usize, text: &str) {
         if backspaces > 0 || !text.is_empty() {
-            send_atomic_batch_with_mode(backspaces, text, self.injection_mode);
+            let text = crate::clipboard::expand_clipboard(text);
+            send_atomic_batch_with_mode(backspaces, text.as_ref(), self.injection_mode);
         }
     }
 
@@ -608,54 +610,12 @@ pub unsafe fn apply_config(config: AppConfig) {
 
     let tray_hwnd = state.tray_hwnd;
     let effective = state.effective_enabled();
+    state.tsf_registered = crate::tsf::is_tsf_registered();
     crate::tsf::sync_tsf_config(&state.config, effective);
-    let use_tsf = state.config.use_tsf && crate::tsf::is_tsf_registered();
-    if use_tsf {
+    if state.config.use_tsf && state.tsf_registered {
         crate::tsf::set_tsf_profile_active(true);
-        // In TSF mode: release all global low-level hooks so the daemon runs at minimum footprint
-        // without intercepting or delaying any typing keystrokes.
-        if !state.hook_handle.is_null() {
-            UnhookWindowsHookEx(state.hook_handle);
-            state.hook_handle = null_mut();
-        }
-        if !state.mouse_hook_handle.is_null() {
-            UnhookWindowsHookEx(state.mouse_hook_handle);
-            state.mouse_hook_handle = null_mut();
-        }
-        if !state.win_event_hook.is_null() {
-            UnhookWinEvent(state.win_event_hook);
-            state.win_event_hook = null_mut();
-        }
     } else {
         crate::tsf::set_tsf_profile_active(false);
-        // Non-TSF hook mode: restore low-level hooks if not currently active
-        if state.hook_handle.is_null() {
-            state.hook_handle = SetWindowsHookExW(
-                WH_KEYBOARD_LL,
-                Some(low_level_keyboard_proc),
-                0 as HMODULE,
-                0,
-            );
-        }
-        if state.mouse_hook_handle.is_null() {
-            state.mouse_hook_handle = SetWindowsHookExW(
-                WH_MOUSE_LL,
-                Some(low_level_mouse_proc),
-                0 as HMODULE,
-                0,
-            );
-        }
-        if state.win_event_hook.is_null() {
-            state.win_event_hook = SetWinEventHook(
-                EVENT_SYSTEM_FOREGROUND,
-                EVENT_SYSTEM_FOREGROUND,
-                null_mut(),
-                Some(win_event_proc),
-                0,
-                0,
-                WINEVENT_OUTOFCONTEXT,
-            );
-        }
     }
     drop(lock);
 
@@ -693,39 +653,35 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         engine.macros.insert(k, v);
     }
 
-    let use_tsf = config.use_tsf && crate::tsf::is_tsf_registered();
-
-    // In TSF mode: run daemon at minimum footprint with no keyboard/mouse hooks installed.
-    let (hook_handle, mouse_hook_handle, win_event_hook) = if use_tsf {
-        (null_mut(), null_mut(), null_mut())
-    } else {
-        let hk = SetWindowsHookExW(
-            WH_KEYBOARD_LL,
-            Some(low_level_keyboard_proc),
-            0 as HMODULE,
-            0,
-        );
-        let hm = SetWindowsHookExW(
-            WH_MOUSE_LL,
-            Some(low_level_mouse_proc),
-            0 as HMODULE,
-            0,
-        );
-        let hw = SetWinEventHook(
-            EVENT_SYSTEM_FOREGROUND,
-            EVENT_SYSTEM_FOREGROUND,
-            null_mut(),
-            Some(win_event_proc),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        );
-        (hk, hm, hw)
-    };
+    // Keep the low-level hooks installed in TSF mode too: they are still needed
+    // for V/E hotkeys, foreground exclusion/override, and settings/converter
+    // hotkeys. The hook callback simply yields typing to the TSF TIP.
+    let hook_handle = SetWindowsHookExW(
+        WH_KEYBOARD_LL,
+        Some(low_level_keyboard_proc),
+        0 as HMODULE,
+        0,
+    );
+    let mouse_hook_handle = SetWindowsHookExW(
+        WH_MOUSE_LL,
+        Some(low_level_mouse_proc),
+        0 as HMODULE,
+        0,
+    );
+    let win_event_hook = SetWinEventHook(
+        EVENT_SYSTEM_FOREGROUND,
+        EVENT_SYSTEM_FOREGROUND,
+        null_mut(),
+        Some(win_event_proc),
+        0,
+        0,
+        WINEVENT_OUTOFCONTEXT,
+    );
 
     // Keep the Run key in sync even when the daemon starts after the UI saved
     // the setting while it was not running.
     set_start_with_windows(config.start_with_windows);
+    let use_tsf = config.use_tsf;
 
     let mut lock = STATE.lock().unwrap();
     *lock = Some(HookState {
@@ -751,6 +707,7 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         hook_handle,
         mouse_hook_handle,
         win_event_hook,
+        tsf_registered: crate::tsf::is_tsf_registered(),
     });
     drop(lock);
 
@@ -818,17 +775,6 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     // Skip all injected keys (prevents recursive loops when SendInput emits keys)
     if (kbd.flags & LLKHF_INJECTED) != 0 || kbd.dwExtraInfo == VIETFLOW_MAGIC {
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
-    }
-
-    // Fast-path: In TSF mode, immediately pass all input through with zero delay
-    if crate::tsf::is_tsf_registered() {
-        if let Ok(lock) = STATE.try_lock() {
-            if let Some(state) = lock.as_ref() {
-                if state.config.use_tsf {
-                    return CallNextHookEx(null_mut(), n_code, w_param, l_param);
-                }
-            }
-        }
     }
 
     let foreground = GetForegroundWindow();
@@ -958,7 +904,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     // In TSF mode: if TSF is enabled in config and registered in Windows,
     // yield typing input to the in-process TSF TIP (which composes directly without backspaces).
     // Hotkeys (Ctrl+Shift, Alt+Z, Win+Space, etc.) were already intercepted above.
-    if state.config.use_tsf && crate::tsf::is_tsf_registered() {
+    if state.config.use_tsf && state.tsf_registered {
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
@@ -1158,8 +1104,10 @@ unsafe fn check_custom_hotkey(
     // Direct normalized preset checks without allocating a compacted String on
     // every keydown (this function runs in the low-level hook).
     if compact_eq_ignore_ascii_case(s, "CtrlShift") {
-        return (ctrl || is_vk_down(VK_CONTROL))
-            && (vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_SHIFT);
+        return ((ctrl || is_vk_down(VK_CONTROL))
+            && (vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_SHIFT))
+            || ((shift || is_vk_down(VK_SHIFT))
+            && (vk == VK_LCONTROL || vk == VK_RCONTROL || vk == VK_CONTROL));
     }
     if compact_eq_ignore_ascii_case(s, "AltZ") {
         return (alt || is_vk_down(VK_MENU)) && (vk == b'Z' as u16);
@@ -1171,8 +1119,10 @@ unsafe fn check_custom_hotkey(
         return (shift || is_vk_down(VK_SHIFT)) && vk == VK_SPACE;
     }
     if compact_eq_ignore_ascii_case(s, "AltShift") {
-        return (alt || is_vk_down(VK_MENU))
-            && (vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_SHIFT);
+        return ((alt || is_vk_down(VK_MENU))
+            && (vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_SHIFT))
+            || ((shift || is_vk_down(VK_SHIFT))
+            && (vk == VK_LMENU || vk == VK_RMENU || vk == VK_MENU));
     }
     if compact_eq_ignore_ascii_case(s, "CapsLock") || compact_eq_ignore_ascii_case(s, "Caps") {
         return vk == VK_CAPITAL;
@@ -1291,6 +1241,7 @@ mod tests {
             hook_handle: std::ptr::null_mut(),
             mouse_hook_handle: std::ptr::null_mut(),
             win_event_hook: std::ptr::null_mut(),
+            tsf_registered: false,
         }
     }
 
