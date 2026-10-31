@@ -23,6 +23,7 @@ pub struct TrayIcon {
     icon_v: HICON,
     icon_e: HICON,
     icon_app: HICON,
+    icon_tsf: HICON,
     pub is_tsf_mode: bool,
 }
 
@@ -32,6 +33,7 @@ impl TrayIcon {
         icon_v: HICON,
         icon_e: HICON,
         icon_app: HICON,
+        icon_tsf: HICON,
         is_tsf_mode: bool,
     ) -> Self {
         let mut nid: NOTIFYICONDATAW = zeroed();
@@ -40,10 +42,10 @@ impl TrayIcon {
         nid.uID = 1;
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
-        nid.hIcon = if is_tsf_mode { icon_app } else { icon_v };
+        nid.hIcon = if is_tsf_mode { icon_tsf } else { icon_v };
 
         let tip = if is_tsf_mode {
-            "VietFlow - Cài đặt [IME]\0"
+            "VietFlow - Cài đặt [TSF IME]\0"
         } else {
             "VietFlow - Bộ gõ tiếng Việt\0"
         };
@@ -65,17 +67,26 @@ impl TrayIcon {
             icon_v,
             icon_e,
             icon_app,
+            icon_tsf,
             is_tsf_mode,
         }
     }
 
-    pub unsafe fn set_icons(&mut self, icon_v: HICON, icon_e: HICON, icon_app: HICON) {
+    pub unsafe fn set_icons(
+        &mut self,
+        icon_v: HICON,
+        icon_e: HICON,
+        icon_app: HICON,
+        icon_tsf: HICON,
+    ) {
         let old_v = self.icon_v;
         let old_e = self.icon_e;
         let old_app = self.icon_app;
+        let old_tsf = self.icon_tsf;
         self.icon_v = icon_v;
         self.icon_e = icon_e;
         self.icon_app = icon_app;
+        self.icon_tsf = icon_tsf;
         if !old_v.is_null() && old_v != icon_v {
             DestroyIcon(old_v);
         }
@@ -85,6 +96,9 @@ impl TrayIcon {
         if !old_app.is_null() && old_app != icon_app {
             DestroyIcon(old_app);
         }
+        if !old_tsf.is_null() && old_tsf != icon_tsf {
+            DestroyIcon(old_tsf);
+        }
     }
 
     pub unsafe fn set_tsf_mode(&mut self, is_tsf: bool) {
@@ -93,8 +107,8 @@ impl TrayIcon {
 
     pub unsafe fn update_status(&mut self, is_vietnamese: bool) {
         if self.is_tsf_mode {
-            self.nid.hIcon = self.icon_app;
-            let tip_str = "VietFlow - Cài đặt [IME]\0";
+            self.nid.hIcon = self.icon_tsf;
+            let tip_str = "VietFlow - Cài đặt [TSF IME]\0";
             let mut tip_buf = [0u16; 128];
             for (i, c) in tip_str.encode_utf16().take(127).enumerate() {
                 tip_buf[i] = c;
@@ -363,6 +377,9 @@ impl Drop for TrayIcon {
             }
             if !self.icon_app.is_null() {
                 DestroyIcon(self.icon_app);
+            }
+            if !self.icon_tsf.is_null() {
+                DestroyIcon(self.icon_tsf);
             }
         }
     }

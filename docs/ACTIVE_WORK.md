@@ -16,6 +16,7 @@ agents from editing the same files at the same time.
 
 | Agent / session | Task | Files / paths claimed | Started (UTC) | Status |
 | --- | --- | --- | --- | --- |
+| main / opencode | Feature audit fixes: UI state sync, TSF capability guards, custom tray icons | `ui_imgui/src/ui_manager.cpp`, `ui_imgui/src/ui_manager.h`, `ui_imgui/src/config.h`, `ui_imgui/src/config.cpp` | 2026-10-31 15:44Z | active |
 
 
 ## Rules

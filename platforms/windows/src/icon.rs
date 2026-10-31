@@ -13,8 +13,8 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CopyIcon, CreateIconFromResourceEx, CreateIconIndirect, GetSystemMetrics, LoadIconW,
-    LoadImageW, HICON, ICONINFO, IMAGE_ICON, LR_LOADFROMFILE, SM_CXICON, SM_CYICON,
-    SM_CXSMICON, SM_CYSMICON,
+    LoadImageW, HICON, ICONINFO, IMAGE_ICON, LR_LOADFROMFILE, SM_CXSMICON, SM_CYSMICON,
+
 };
 
 use crate::config::AppConfig;
@@ -87,16 +87,14 @@ pub fn create_e_icon(config: &AppConfig) -> HICON {
     unsafe { CopyIcon(LoadIconW(null_mut(), 32512 as *const u16)) }
 }
 
-/// Load the main VietFlow application icon (from embedded resource or disk assets).
-/// Used in TSF IME mode where the tray icon indicates the app itself rather than V/E state.
-/// We request high-resolution standard icon dimensions (SM_CXICON / 32x32) rather than 16x16,
-/// so Windows downsamples the full-bleed 30x30 graphic sharply instead of picking the cramped,
-/// padded 16x16 frame that looks tiny on the taskbar.
+/// Load the main VietFlow application icon (from embedded resource 1 or disk assets).
+/// Requesting SM_CXSMICON ensures the tray picks the exact DPI-scaled frame from the
+/// multi-resolution icon (16, 20, 24, 28, 32, 40, 48, 64, 128, 256) without padding.
 pub fn create_app_icon() -> HICON {
-    let size_x = unsafe { GetSystemMetrics(SM_CXICON) };
-    let size_y = unsafe { GetSystemMetrics(SM_CYICON) };
-    let cx = if size_x > 0 { size_x.max(32) } else { 32 };
-    let cy = if size_y > 0 { size_y.max(32) } else { 32 };
+    let size_x = unsafe { GetSystemMetrics(SM_CXSMICON) };
+    let size_y = unsafe { GetSystemMetrics(SM_CYSMICON) };
+    let cx = if size_x > 0 { size_x } else { 16 };
+    let cy = if size_y > 0 { size_y } else { 16 };
 
     // 1. Try loading embedded resource icon (ID 1) from the executable module
     unsafe {
@@ -123,6 +121,40 @@ pub fn create_app_icon() -> HICON {
 
     // 3. Fall back to system application icon
     unsafe { CopyIcon(LoadIconW(null_mut(), 32512 as *const u16)) }
+}
+
+/// Load the dedicated VietFlow TSF IME icon (from embedded resource 2 or disk assets).
+/// Features the full-bleed blue V tile with the distinct TSF badge on the lower right.
+pub fn create_tsf_icon() -> HICON {
+    let size_x = unsafe { GetSystemMetrics(SM_CXSMICON) };
+    let size_y = unsafe { GetSystemMetrics(SM_CYSMICON) };
+    let cx = if size_x > 0 { size_x } else { 16 };
+    let cy = if size_y > 0 { size_y } else { 16 };
+
+    // 1. Try loading embedded resource icon (ID 2) from the executable module
+    unsafe {
+        let hinstance = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(null_mut());
+        let hicon = LoadImageW(hinstance, 2 as *const u16, IMAGE_ICON, cx, cy, 0);
+        if !hicon.is_null() {
+            return hicon as HICON;
+        }
+    }
+
+    // 2. Fall back to loading from disk assets
+    let candidate_paths = [
+        "assets/VietFlow-TSF.ico",
+        "../../assets/VietFlow-TSF.ico",
+        "../assets/VietFlow-TSF.ico",
+    ];
+    for p in &candidate_paths {
+        if std::path::Path::new(p).is_file() {
+            if let Some(icon) = load_icon_from_file_sized(p, cx, cy) {
+                return icon;
+            }
+        }
+    }
+
+    create_app_icon()
 }
 
 fn load_icon_from_file_sized(path_str: &str, cx: i32, cy: i32) -> Option<HICON> {

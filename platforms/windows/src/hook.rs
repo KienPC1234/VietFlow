@@ -609,10 +609,53 @@ pub unsafe fn apply_config(config: AppConfig) {
     let tray_hwnd = state.tray_hwnd;
     let effective = state.effective_enabled();
     crate::tsf::sync_tsf_config(&state.config, effective);
-    if state.config.use_tsf && crate::tsf::is_tsf_registered() {
+    let use_tsf = state.config.use_tsf && crate::tsf::is_tsf_registered();
+    if use_tsf {
         crate::tsf::set_tsf_profile_active(true);
+        // In TSF mode: release all global low-level hooks so the daemon runs at minimum footprint
+        // without intercepting or delaying any typing keystrokes.
+        if !state.hook_handle.is_null() {
+            UnhookWindowsHookEx(state.hook_handle);
+            state.hook_handle = null_mut();
+        }
+        if !state.mouse_hook_handle.is_null() {
+            UnhookWindowsHookEx(state.mouse_hook_handle);
+            state.mouse_hook_handle = null_mut();
+        }
+        if !state.win_event_hook.is_null() {
+            UnhookWinEvent(state.win_event_hook);
+            state.win_event_hook = null_mut();
+        }
     } else {
         crate::tsf::set_tsf_profile_active(false);
+        // Non-TSF hook mode: restore low-level hooks if not currently active
+        if state.hook_handle.is_null() {
+            state.hook_handle = SetWindowsHookExW(
+                WH_KEYBOARD_LL,
+                Some(low_level_keyboard_proc),
+                0 as HMODULE,
+                0,
+            );
+        }
+        if state.mouse_hook_handle.is_null() {
+            state.mouse_hook_handle = SetWindowsHookExW(
+                WH_MOUSE_LL,
+                Some(low_level_mouse_proc),
+                0 as HMODULE,
+                0,
+            );
+        }
+        if state.win_event_hook.is_null() {
+            state.win_event_hook = SetWinEventHook(
+                EVENT_SYSTEM_FOREGROUND,
+                EVENT_SYSTEM_FOREGROUND,
+                null_mut(),
+                Some(win_event_proc),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT,
+            );
+        }
     }
     drop(lock);
 
@@ -650,35 +693,39 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         engine.macros.insert(k, v);
     }
 
-    let hook_handle = SetWindowsHookExW(
-        WH_KEYBOARD_LL,
-        Some(low_level_keyboard_proc),
-        0 as HMODULE,
-        0,
-    );
+    let use_tsf = config.use_tsf && crate::tsf::is_tsf_registered();
 
-    let mouse_hook_handle = SetWindowsHookExW(
-        WH_MOUSE_LL,
-        Some(low_level_mouse_proc),
-        0 as HMODULE,
-        0,
-    );
-
-    let win_event_hook = SetWinEventHook(
-        EVENT_SYSTEM_FOREGROUND,
-        EVENT_SYSTEM_FOREGROUND,
-        null_mut(),
-        Some(win_event_proc),
-        0,
-        0,
-        WINEVENT_OUTOFCONTEXT,
-    );
+    // In TSF mode: run daemon at minimum footprint with no keyboard/mouse hooks installed.
+    let (hook_handle, mouse_hook_handle, win_event_hook) = if use_tsf {
+        (null_mut(), null_mut(), null_mut())
+    } else {
+        let hk = SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(low_level_keyboard_proc),
+            0 as HMODULE,
+            0,
+        );
+        let hm = SetWindowsHookExW(
+            WH_MOUSE_LL,
+            Some(low_level_mouse_proc),
+            0 as HMODULE,
+            0,
+        );
+        let hw = SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            null_mut(),
+            Some(win_event_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
+        (hk, hm, hw)
+    };
 
     // Keep the Run key in sync even when the daemon starts after the UI saved
     // the setting while it was not running.
     set_start_with_windows(config.start_with_windows);
-
-    let use_tsf = config.use_tsf;
 
     let mut lock = STATE.lock().unwrap();
     *lock = Some(HookState {
@@ -771,6 +818,17 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     // Skip all injected keys (prevents recursive loops when SendInput emits keys)
     if (kbd.flags & LLKHF_INJECTED) != 0 || kbd.dwExtraInfo == VIETFLOW_MAGIC {
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
+    }
+
+    // Fast-path: In TSF mode, immediately pass all input through with zero delay
+    if crate::tsf::is_tsf_registered() {
+        if let Ok(lock) = STATE.try_lock() {
+            if let Some(state) = lock.as_ref() {
+                if state.config.use_tsf {
+                    return CallNextHookEx(null_mut(), n_code, w_param, l_param);
+                }
+            }
+        }
     }
 
     let foreground = GetForegroundWindow();

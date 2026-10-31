@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-changed=../../assets/VietFlow.ico");
+    println!("cargo:rerun-if-changed=../../assets/VietFlow-TSF.ico");
 
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
@@ -58,6 +59,7 @@ fn main() {
 
         let mut res = winres::WindowsResource::new();
         res.set_icon("../../assets/VietFlow.ico");
+        res.set_icon_with_id("../../assets/VietFlow-TSF.ico", "2");
         res.set("ProductName", "VietFlow");
         res.set("FileDescription", "VietFlow - Bộ gõ tiếng Việt");
         res.set("FileVersion", &win_ver);

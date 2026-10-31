@@ -23,13 +23,14 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, WPARAM,
 };
 
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetMessageW, MessageBoxW,
     PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer, ShowWindow,
     TranslateMessage, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_SETFOREGROUND,
     MB_TOPMOST, MSG, SW_RESTORE, SW_SHOWNORMAL, WNDCLASSW, WM_CLOSE, WM_COMMAND, WM_DESTROY,
-    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER,
+    WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER,
 };
 
 pub mod constants;
@@ -37,7 +38,7 @@ pub mod constants;
 use crate::config::AppConfig;
 use crate::constants::*;
 use crate::hook::{apply_config, install_hook, uninstall_hook, STATE};
-use crate::icon::{create_app_icon, create_e_icon, create_v_icon, ICON_FONT};
+use crate::icon::{create_app_icon, create_e_icon, create_tsf_icon, create_v_icon, ICON_FONT};
 use crate::startup::set_start_with_windows;
 use crate::tray::{to_wide, TrayIcon};
 
@@ -232,6 +233,50 @@ fn relaunch_as_admin() -> bool {
     result as isize > 32
 }
 
+fn parse_hotkey_str(s: &str) -> Option<(u32, u32)> {
+    let mut mods = 0x4000u32; // MOD_NOREPEAT
+    let mut vk = 0u32;
+    for part in s.split('+').map(|p| p.trim()) {
+        if part.eq_ignore_ascii_case("Ctrl") || part.eq_ignore_ascii_case("Control") {
+            mods |= 0x0002; // MOD_CONTROL
+        } else if part.eq_ignore_ascii_case("Alt") {
+            mods |= 0x0001; // MOD_ALT
+        } else if part.eq_ignore_ascii_case("Shift") {
+            mods |= 0x0004; // MOD_SHIFT
+        } else if part.eq_ignore_ascii_case("Win") || part.eq_ignore_ascii_case("Windows") {
+            mods |= 0x0008; // MOD_WIN
+        } else if part.starts_with('F') && part.len() >= 2 {
+            if let Ok(num) = part[1..].parse::<u32>() {
+                if (1..=12).contains(&num) {
+                    vk = 0x70 + num - 1; // VK_F1..VK_F12
+                }
+            }
+        } else if part.len() == 1 {
+            let ch = part.as_bytes()[0];
+            if ch.is_ascii_alphanumeric() {
+                vk = ch.to_ascii_uppercase() as u32;
+            }
+        }
+    }
+    if vk != 0 {
+        Some((mods, vk))
+    } else {
+        None
+    }
+}
+
+unsafe fn update_registered_hotkeys(hwnd: HWND, config: &AppConfig) {
+    UnregisterHotKey(hwnd, HOTKEY_ID_SETTINGS);
+    UnregisterHotKey(hwnd, HOTKEY_ID_CONVERT);
+
+    if let Some((mods, vk)) = parse_hotkey_str(&config.hotkey_settings) {
+        RegisterHotKey(hwnd, HOTKEY_ID_SETTINGS, mods, vk);
+    }
+    if let Some((mods, vk)) = parse_hotkey_str(&config.hotkey_converter) {
+        RegisterHotKey(hwnd, HOTKEY_ID_CONVERT, mods, vk);
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -345,12 +390,14 @@ fn main() {
         let icon_v = create_v_icon(&config);
         let icon_e = create_e_icon(&config);
         let icon_app = create_app_icon();
+        let icon_tsf = create_tsf_icon();
         let is_tsf_mode = config.use_tsf && crate::tsf::is_tsf_dll_present() && crate::tsf::is_tsf_registered();
-        let mut tray = TrayIcon::new(hwnd, icon_v, icon_e, icon_app, is_tsf_mode);
+        let mut tray = TrayIcon::new(hwnd, icon_v, icon_e, icon_app, icon_tsf, is_tsf_mode);
         tray.update_status(config.enabled);
 
         TRAY_PTR = &mut tray;
 
+        update_registered_hotkeys(hwnd, &config);
         install_hook(hwnd, config);
 
         *CONFIG_MTIME.lock().unwrap() = config_mtime();
@@ -435,13 +482,22 @@ unsafe extern "system" fn wnd_proc(
                 };
 
                 if changed {
-                    reload_runtime_config();
+                    reload_runtime_config(hwnd);
                 }
             }
             0
         }
         WM_RELOAD_CONFIG => {
-            reload_runtime_config();
+            reload_runtime_config(hwnd);
+            0
+        }
+        WM_HOTKEY => {
+            let id = w_param as i32;
+            if id == HOTKEY_ID_SETTINGS {
+                spawn_gui(false);
+            } else if id == HOTKEY_ID_CONVERT {
+                spawn_gui(true);
+            }
             0
         }
         WM_CONVERT => {
@@ -614,6 +670,8 @@ unsafe extern "system" fn wnd_proc(
                     }
                 }
                 IDM_EXIT => {
+                    UnregisterHotKey(hwnd, HOTKEY_ID_SETTINGS);
+                    UnregisterHotKey(hwnd, HOTKEY_ID_CONVERT);
                     terminate_all_ui();
                     uninstall_hook();
                     if !TRAY_PTR.is_null() {
@@ -628,6 +686,8 @@ unsafe extern "system" fn wnd_proc(
             0
         }
         WM_DESTROY => {
+            UnregisterHotKey(hwnd, HOTKEY_ID_SETTINGS);
+            UnregisterHotKey(hwnd, HOTKEY_ID_CONVERT);
             terminate_all_ui();
             uninstall_hook();
             PostQuitMessage(0);
@@ -637,8 +697,9 @@ unsafe extern "system" fn wnd_proc(
     }
 }
 
-unsafe fn reload_runtime_config() {
+unsafe fn reload_runtime_config(hwnd: HWND) {
     let config = AppConfig::load();
+    update_registered_hotkeys(hwnd, &config);
     if !TRAY_PTR.is_null() {
         let is_tsf_mode = config.use_tsf && crate::tsf::is_tsf_dll_present() && crate::tsf::is_tsf_registered();
         (*TRAY_PTR).set_tsf_mode(is_tsf_mode);
@@ -654,7 +715,8 @@ unsafe fn reload_runtime_config() {
             let icon_v = create_v_icon(&config);
             let icon_e = create_e_icon(&config);
             let icon_app = create_app_icon();
-            (*TRAY_PTR).set_icons(icon_v, icon_e, icon_app);
+            let icon_tsf = create_tsf_icon();
+            (*TRAY_PTR).set_icons(icon_v, icon_e, icon_app, icon_tsf);
         }
         let effective = STATE
             .lock()

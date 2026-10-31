@@ -38,3 +38,6 @@ features = [
     "Win32_System_Memory",
     "Win32_System_SystemInformation",
 ]
+
+[build-dependencies]
+winres = "0.1"

@@ -8,6 +8,8 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
 ### Added
 
+- Biểu tượng thế hệ mới: vector full-bleed đa độ phân giải (16 đến 256 px) cho chế độ thường (`VietFlow.ico`) và biểu tượng có huy hiệu TSF (`VietFlow-TSF.ico`) cho chế độ TSF IME, hiển thị sắc nét chuẩn DPI theo `SM_CXSMICON`.
+- Tối ưu daemon ở chế độ TSF: tự động gỡ toàn bộ low-level hooks (`WH_KEYBOARD_LL`, `WH_MOUSE_LL`, `win_event_hook`), chuyển sang dùng `RegisterHotKey` của Windows cho phím tắt toàn cục, đạt 0 độ trễ gõ và 0 context switch trong daemon.
 - Nút "Cài lại TSF TIP" trong cài đặt chế độ TSF IME để tự động unregister và re-register TIP COM server sạch sẽ vào hệ thống.
 - Xử lý bộ gõ TSF theo kiến trúc Linux IME (IBus/Fcitx): tách biệt trạng thái preedit qua `current_preedit_text()`, tự động mở rộng macro và khôi phục tiếng Anh (`finish_composition_on_break`) ngay tại ranh giới từ (Space, Enter, Tab, ký tự ngắt từ) thông qua action `ReplaceAndEndComposition` trước khi kết thúc composition.
 - Đồng bộ `enable_macro` qua IPC bộ nhớ dùng chung `TsfSharedConfig`.
@@ -40,8 +42,7 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 - Hộp thoại kiểm tra cập nhật luôn hiện trên cửa sổ cài đặt thay vì nằm phía sau.
 - Sửa rò GDI icon khay khi lưu cấu hình nhiều lần; sau 20 lần reload, GDI objects giữ nguyên 12 thay vì tăng lên 132.
 - Chỉ tạo lại icon khay khi cấu hình icon thay đổi.
-- Icon khay V/E dùng font riêng `VietFlow Tray` (~2,2 KB): V lấy từ **Roboto SemiBold**, E lấy từ **JetBrains Mono SemiBold**, cân cùng chiều cao thị giác; viền mỏng hơn (1 px ở cỡ 16 px); bỏ GDI+ để giảm khởi tạo và rò tài nguyên, đồng thời giữ nét sắc ở mọi DPI.
-- Preview icon trong tab Giao diện dùng đúng font V/E của tray và đúng trạng thái tô/viền, không còn vẽ bằng font UI.
+- Icon khay V/E dùng font riêng `VietFlow Tray` (~2,2 KB): V lấy từ **Roboto SemiBold**, E lấy từ **JetBrains Mono SemiBold**, cân cùng chiều cao thị giác; bỏ GDI+ để giảm khởi tạo và rò tài nguyên, đồng thời giữ nét sắc ở mọi DPI.
 - Ổn định âm thanh thông báo V/E: nhúng sẵn chime IMA ADPCM ngắn (~0,16 giây, ~2,1 KB), âm lượng thấp, tần số mềm; phát bằng một worker tuần tự, gộp các lần bấm nhanh, có fallback `%SystemRoot%\Media`/alias/beep và bỏ việc UI + daemon cùng phát một tiếng.
 - UI giải phóng D3D11 device/swap chain khi minimize và tạo lại khi mở, giảm khoảng 10 MB working set / 6,5 MB private bytes.
 - Bỏ chế độ gửi phím Clipboard; cấu hình cũ dùng Clipboard tự chuyển về Tự động, tránh lỗi và nhận diện nhầm.
@@ -53,7 +54,7 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 - Chuyển mã Unicode tổ hợp (NFD) đúng cả chiều đọc/ghi, gồm circumflex/breve/horn + dấu thanh; bỏ dấu hoạt động với văn bản NFD.
 - UI: sửa ID trùng giữa các dòng profile app, màu icon khay bị cũ sau reset, ghi quá 1 byte khi đổi đường dẫn/tên app, lower-case UTF-8 và chỉ số combo cấu hình lỗi.
 - UI: kiểm tra lỗi tạo render target D3D11 thay vì tiếp tục vẽ vào null.
-- Daemon: cache đường dẫn config thay vì tạo `PathBuf`/`create_dir_all` mỗi 250 ms, và dọn handle tiến trình UI đã đóng.
+- UI: rút gọn nhãn và thêm tooltip giải thích cho phím tắt trong app loại trừ, cách gửi phím, TSF và các tùy chọn dễ nhầm; nội dung chọn trong bảng profile ngắn gọn hơn.
 
 ## [0.1.1] - 2026-10-30
 

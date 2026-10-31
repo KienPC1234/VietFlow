@@ -9,6 +9,10 @@ pub const WM_SETTINGS: u32 = WM_USER + 102;
 pub const WM_CONVERT: u32 = WM_USER + 103;
 pub const WM_RELOAD_CONFIG: u32 = WM_USER + 104;
 
+// Global System Hotkey IDs
+pub const HOTKEY_ID_SETTINGS: i32 = 2001;
+pub const HOTKEY_ID_CONVERT: i32 = 2002;
+
 // Tray Context Menu Action IDs
 pub const IDM_TOGGLE: usize = 1001;
 
