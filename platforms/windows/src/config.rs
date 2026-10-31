@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+
+/// The daemon checks this path every 250 ms. Building a PathBuf and calling
+/// create_dir_all on every timer tick was unnecessary allocator and disk work.
+static CONFIG_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 /// Per-application overrides. All fields are optional: `None` means "inherit
 /// the global setting". The map is keyed by executable name.
@@ -354,7 +359,7 @@ impl AppConfig {
         }
     }
 
-    pub fn config_path() -> PathBuf {
+    fn build_config_path() -> PathBuf {
         if let Ok(appdata) = std::env::var("APPDATA") {
             let mut p = PathBuf::from(appdata);
             p.push(crate::constants::APP_DIR_NAME);
@@ -365,9 +370,18 @@ impl AppConfig {
         PathBuf::from(crate::constants::CONFIG_FILE_NAME)
     }
 
+    /// Cached path for the hot 250 ms config-mtime check.
+    pub fn config_path_ref() -> &'static PathBuf {
+        CONFIG_PATH.get_or_init(Self::build_config_path)
+    }
+
+    pub fn config_path() -> PathBuf {
+        Self::config_path_ref().clone()
+    }
+
     pub fn load() -> Self {
-        let path = Self::config_path();
-        if let Ok(content) = fs::read_to_string(&path) {
+        let path = Self::config_path_ref();
+        if let Ok(content) = fs::read_to_string(path) {
             if let Ok(mut cfg) = serde_json::from_str::<AppConfig>(&content) {
                 cfg.normalize();
                 return cfg;
@@ -379,7 +393,7 @@ impl AppConfig {
     }
 
     pub fn save(&self) {
-        let path = Self::config_path();
+        let path = Self::config_path_ref();
         if let Ok(json) = serde_json::to_string_pretty(self) {
             let _ = fs::write(path, json);
         }

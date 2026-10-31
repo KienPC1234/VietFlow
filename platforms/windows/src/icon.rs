@@ -13,15 +13,17 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CopyIcon, CreateIconFromResourceEx, CreateIconIndirect, GetSystemMetrics, LoadIconW,
-    LoadImageW, HICON, ICONINFO, IMAGE_ICON, LR_LOADFROMFILE, SM_CXSMICON, SM_CYSMICON,
+    LoadImageW, HICON, ICONINFO, IMAGE_ICON, LR_LOADFROMFILE,
+    SM_CXSMICON, SM_CYSMICON,
 };
 
 use crate::config::AppConfig;
 
 // Only the two glyphs used by the tray icon. Keeping the outlines (rather
-// than a scaled bitmap) makes the icon sharp at every DPI.
-const ICON_FONT: &[u8] = include_bytes!("../../../ui_imgui/assets/JetBrainsMonoTrayVE.ttf");
-const ICON_FACE: &str = "JetBrainsMono NF";
+// than a scaled bitmap) makes the icon sharp at every DPI. Montserrat Bold has
+// a clearer, more geometric V/E than the monospaced UI font.
+const ICON_FONT: &[u8] = include_bytes!("../../../ui_imgui/assets/MontserratTrayVE.ttf");
+const ICON_FACE: &str = "Montserrat";
 
 static FONT_ONCE: Once = Once::new();
 static FONT_RESOURCE: AtomicIsize = AtomicIsize::new(0);
@@ -109,7 +111,7 @@ pub fn create_app_icon() -> HICON {
     ];
     for p in &candidate_paths {
         if std::path::Path::new(p).is_file() {
-            if let Some(icon) = load_icon_from_file(p) {
+            if let Some(icon) = load_icon_from_file_sized(p, cx, cy) {
                 return icon;
             }
         }
@@ -117,6 +119,39 @@ pub fn create_app_icon() -> HICON {
 
     // 3. Fall back to system application icon
     unsafe { CopyIcon(LoadIconW(null_mut(), 32512 as *const u16)) }
+}
+
+fn load_icon_from_file_sized(path_str: &str, cx: i32, cy: i32) -> Option<HICON> {
+    let trimmed = path_str.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let p = std::path::Path::new(trimmed);
+    if !p.is_file() {
+        return None;
+    }
+
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+    if ext.as_deref() == Some("ico") {
+        let wide: Vec<u16> = trimmed.encode_utf16().chain(std::iter::once(0)).collect();
+        let hicon = unsafe {
+            LoadImageW(
+                null_mut(),
+                wide.as_ptr(),
+                IMAGE_ICON,
+                cx,
+                cy,
+                LR_LOADFROMFILE,
+            )
+        };
+        if !hicon.is_null() {
+            return Some(hicon as HICON);
+        }
+    }
+    load_icon_from_file(path_str)
 }
 
 fn parse_hex_argb(hex: &str, default_argb: u32) -> u32 {
@@ -277,8 +312,9 @@ fn render_glyph_icon(
             }
         }
 
-        let mut border = vec![0u8; render_size * render_size];
-        if border_enabled {
+        let fill_alpha = downsample(&fill, render_size, size, scale);
+        let border_alpha = if border_enabled {
+            let mut border = vec![0u8; render_size * render_size];
             let pen_width = if size >= 24 { 2.4f32 } else { 1.8f32 };
             let radius = (pen_width * scale as f32).round().max(1.0) as i32;
             let mut offsets = Vec::new();
@@ -307,10 +343,10 @@ fn render_glyph_icon(
                     }
                 }
             }
-        }
-
-        let fill_alpha = downsample(&fill, render_size, size, scale);
-        let border_alpha = downsample(&border, render_size, size, scale);
+            downsample(&border, render_size, size, scale)
+        } else {
+            Vec::new()
+        };
         let do_fill = fill_enabled || (!fill_enabled && !border_enabled);
         let (fr, fg, fb, fa) = color_components(parse_hex_argb(fill_hex, 0xFFFFFFFF));
         let default_border = if letter == 'V' {
@@ -490,5 +526,18 @@ mod tests {
 
         let glyph_e = render_glyph_icon('E', true, "#FFFFFF", true, "#0078D7");
         assert!(glyph_e.is_some(), "Glyph E rendering must succeed");
+
+        let glyph_no_border = render_glyph_icon('V', true, "#FFFFFF", false, "");
+        assert!(
+            glyph_no_border.is_some(),
+            "Border-disabled glyph rendering must succeed"
+        );
+
+        // Keep the tray asset to the two required outlines instead of shipping
+        // the full UI or Montserrat font.
+        assert!(
+            ICON_FONT.len() < 2048,
+            "tray font must remain a small V/E-only subset"
+        );
     }
 }

@@ -55,12 +55,21 @@ const TIMER_ID_CONFIG: usize = 1;
 static CONFIG_MTIME: Mutex<Option<SystemTime>> = Mutex::new(None);
 
 fn config_mtime() -> Option<SystemTime> {
-    std::fs::metadata(AppConfig::config_path())
+    std::fs::metadata(AppConfig::config_path_ref())
         .ok()
         .and_then(|meta| meta.modified().ok())
 }
 
 static UI_CHILDREN: Mutex<Vec<std::process::Child>> = Mutex::new(Vec::new());
+
+/// Drop handles for UI children that have already exited. Without this, the
+/// daemon keeps one process handle after the settings window is closed until
+/// the next time the GUI is opened.
+fn reap_ui_children() {
+    if let Ok(mut children) = UI_CHILDREN.lock() {
+        children.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+    }
+}
 
 fn spawn_gui(convert_mode: bool) {
     unsafe {
@@ -407,6 +416,7 @@ unsafe extern "system" fn wnd_proc(
             0
         }
         WM_TIMER => {
+            reap_ui_children();
             if w_param == TIMER_ID_CONFIG {
                 let current = config_mtime();
                 let changed = {

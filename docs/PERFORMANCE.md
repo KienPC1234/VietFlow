@@ -17,12 +17,43 @@ a separate process and only runs while the settings or converter window is
 open. Working set includes shared DLL/code pages, so private bytes are the
 better number for "how much RAM does it add".
 
+## Daemon with the GUI never opened (2026-10-31)
+
+Measured on the x64 release build with a temporary `%APPDATA%` and a default
+config, sampling every 15 seconds for one minute:
+
+| State | Working set | Private bytes | Handles | Threads |
+| --- | ---: | ---: | ---: | ---: |
+| 3 s | 13.9 MB | 2.44 MB | 157 | 4 |
+| 15 s | 13.9 MB | 2.44 MB | 157 | 4 |
+| 30 s | 13.9 MB | 2.43 MB | 158 | 4 |
+| 60 s | 13.9 MB | 2.40 MB | 158 | 3 |
+
+Private bytes did not grow while idle. The 4.45 GB virtual size reported by
+`Get-Process` is reserved address space, not committed/private RAM.
+
+Findings and small changes:
+
+- The 250 ms config watcher rebuilt `%APPDATA%\VietFlow\vietflow_config.json`
+  as a `PathBuf` and called `create_dir_all` on every tick. The path is now
+  cached in `OnceLock`; only `metadata()` runs on the timer.
+- A closed settings UI could leave one `std::process::Child` handle in the
+  daemon until the next GUI launch. The timer now reaps exited UI children.
+- `vietflow_tip.dll`/TSF shared memory is currently created even when TSF is
+  disabled; the one-page mapping is ~4 KB and is owned by the TSF workstream.
+- The embedded UI font and UI code are in the executable image, not private
+  heap. Splitting the UI into a separate executable/DLL would reduce image
+  size/working set, but is a larger packaging change than the idle RAM win.
+- Macro/custom-keymap strings exist in both the config and the engine. The
+  duplication is negligible for normal configs; it only matters if a user
+  imports a very large macro table.
+
 ## Optimizations applied
 
 - Tray icons are no longer rebuilt when icon-related config fields did not
   change. This avoids two glyph renders on every save.
-- Tray glyphs are rasterized from the embedded JetBrains Mono TTF through GDI
-  `GetGlyphOutline`, with no GDI+ startup or GDI+ image objects.
+- Tray glyphs are rasterized from the embedded Montserrat Bold subset through
+  GDI `GetGlyphOutline`, with no GDI+ startup or GDI+ image objects.
 - The settings UI releases its D3D11 device, swap chain and render target while
   minimized, then recreates them on restore.
 
@@ -46,12 +77,15 @@ to `DestroyIcon`.
 
 - `TrayIcon::set_icons` now destroys the previous private handles.
 - The system fallback icon is copied with `CopyIcon` so ownership is clear.
-- V/E glyphs now come from a 1.4 KB embedded JetBrains Mono subset containing
-  only those two outlines, rasterized at 8x through GDI `GetGlyphOutline`;
-  GDI+ is no longer initialized or linked.
+- V/E glyphs now come from a 1.2 KB embedded **Montserrat Bold** subset
+  containing only those two outlines, rasterized at 8x through GDI
+  `GetGlyphOutline`; GDI+ is no longer initialized or linked.
+- When the border is disabled, the renderer no longer allocates and downsamples
+  an empty border mask.
 
-Verification: 20 config saves through the live reload timer, and 200 direct
-V/E icon renders. GDI objects stayed at 4 before and after the render loop.
+Verification (2026-10-31): 20 live config/icon-colour reloads with Montserrat
+Bold and the border-disabled path. GDI objects stayed at 12 and USER objects at
+15 before and after the loop.
 
 | Build | GDI objects before | GDI objects after |
 | --- | ---: | ---: |

@@ -20,12 +20,13 @@ can render:
 Result: ~23 KB instead of ~2.4 MB. The atlas is also much smaller because
 `SetupFonts()` only requests those icon codepoints.
 
-`JetBrainsMonoTrayVE.ttf` is a second, icon-only subset containing exactly the
-`V` and `E` glyph outlines used by the native tray renderer. It is ~1.4 KB; do
-not replace it with the full UI font or the daemon grows by ~23 KB.
+`MontserratTrayVE.ttf` is a separate, icon-only subset of **Montserrat Bold**
+containing exactly the `V` and `E` glyph outlines used by the native tray
+renderer. It is ~1.2 KB; do not replace it with the full UI font or a full
+Montserrat font. The Montserrat license is in `Montserrat-OFL.txt`.
 
-The upstream font is licensed under the SIL Open Font License 1.1; see
-`full/OFL.txt`.
+The JetBrains UI font is licensed under the SIL Open Font License 1.1; see
+`full/OFL.txt`. The Montserrat Bold subset is covered by `Montserrat-OFL.txt`.
 
 ### Regenerate the subset
 
@@ -43,9 +44,9 @@ missing-glyph box even though the glyph exists in the TTF.
 Regenerate the tray-only subset (keep exactly `V` and `E`):
 
 ```powershell
-python -m fontTools.subset JetBrainsMonoNerdFont-Regular.ttf `
+python -m fontTools.subset Montserrat-Bold.ttf `
   --unicodes="U+0045,U+0056" --no-hinting --desubroutinize --layout-features="" `
-  --output-file=JetBrainsMonoTrayVE.ttf
+  --output-file=MontserratTrayVE.ttf
 ```
 
 ## Icon

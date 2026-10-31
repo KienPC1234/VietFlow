@@ -2,11 +2,13 @@
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
 use crate::models::{CharsetId, VnLexiName, VnLexiTone};
-use crate::tables::{IS_VN_VOWEL, TOTAL_VN_CHARS, TCVN3_TABLE, UNICODE_TABLE, VNI_WIN_TABLE};
+use crate::tables::{
+    IS_VN_VOWEL, STD_VN_ROOT_CHAR, TCVN3_TABLE, TOTAL_VN_CHARS, UNICODE_TABLE, VNI_WIN_TABLE,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct EncodedChar {
-    pub chars: [char; 2],
+    pub chars: [char; 4],
     pub len: usize,
 }
 
@@ -14,7 +16,7 @@ impl EncodedChar {
     #[inline(always)]
     pub const fn single(c: char) -> Self {
         Self {
-            chars: [c, '\0'],
+            chars: [c, '\0', '\0', '\0'],
             len: 1,
         }
     }
@@ -22,8 +24,16 @@ impl EncodedChar {
     #[inline(always)]
     pub const fn double(c0: char, c1: char) -> Self {
         Self {
-            chars: [c0, c1],
+            chars: [c0, c1, '\0', '\0'],
             len: 2,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn triple(c0: char, c1: char, c2: char) -> Self {
+        Self {
+            chars: [c0, c1, c2, '\0'],
+            len: 3,
         }
     }
 
@@ -93,30 +103,51 @@ pub fn encode_slot(
     }
 }
 
+/// Encode one standard Vietnamese table entry as canonical NFD.
+pub fn encode_composite_index(idx: usize) -> EncodedChar {
+    let root = STD_VN_ROOT_CHAR[idx] as usize;
+    let tone_val = (idx - root) / 2;
+
+    // True NFD: decompose the base diacritic (circumflex/breve/horn) as well
+    // as the tone mark. The old implementation emitted a precomposed base
+    // such as "ê" + U+0301, which is not canonical NFD.
+    let (plain_base, modifier) = match root {
+        12 | 13 => (if root & 1 == 0 { 0 } else { 1 }, '\u{0302}'), // â
+        24 | 25 => (if root & 1 == 0 { 0 } else { 1 }, '\u{0306}'), // ă
+        56 | 57 => (if root & 1 == 0 { 44 } else { 45 }, '\u{0302}'), // ê
+        108 | 109 => (if root & 1 == 0 { 96 } else { 97 }, '\u{0302}'), // ô
+        120 | 121 => (if root & 1 == 0 { 96 } else { 97 }, '\u{031B}'), // ơ
+        154 | 155 => (if root & 1 == 0 { 142 } else { 143 }, '\u{031B}'), // ư
+        _ => (root, '\0'),
+    };
+
+    let tone_mark = match tone_val {
+        1 => '\u{0301}', // Sắc
+        2 => '\u{0300}', // Huyền
+        3 => '\u{0309}', // Hỏi
+        4 => '\u{0303}', // Ngã
+        5 => '\u{0323}', // Nặng
+        _ => '\0',
+    };
+
+    let base_char = UNICODE_TABLE[plain_base];
+    match (modifier != '\0', tone_mark != '\0') {
+        (true, true) => EncodedChar::triple(base_char, modifier, tone_mark),
+        (true, false) => EncodedChar::double(base_char, modifier),
+        (false, true) => EncodedChar::double(base_char, tone_mark),
+        (false, false) => EncodedChar::single(base_char),
+    }
+}
+
 fn encode_composite(
     lexi: VnLexiName,
     tone: VnLexiTone,
     is_upper: bool,
     raw_char: char,
 ) -> EncodedChar {
-    let base_idx = match to_table_index(lexi, VnLexiTone::None, is_upper) {
+    let idx = match to_table_index(lexi, tone, is_upper) {
         Some(i) => i,
         None => return EncodedChar::single(raw_char),
     };
-
-    let base_char = UNICODE_TABLE[base_idx];
-    let tone_mark = match tone {
-        VnLexiTone::None => '\0',
-        VnLexiTone::Acute => '\u{0301}', // Sắc
-        VnLexiTone::Grave => '\u{0300}', // Huyền
-        VnLexiTone::Hook => '\u{0309}',  // Hỏi
-        VnLexiTone::Tilde => '\u{0303}', // Ngã
-        VnLexiTone::Dot => '\u{0323}',   // Nặng
-    };
-
-    if tone_mark != '\0' {
-        EncodedChar::double(base_char, tone_mark)
-    } else {
-        EncodedChar::single(base_char)
-    }
+    encode_composite_index(idx)
 }

@@ -4,17 +4,23 @@ This is the manual test pass required before the next public release. Unit tests
 cover the engine and config parsing; they do not prove that Windows apps accept
 the injected keys.
 
-## Automated pre-checks (2026-10-30)
+## Automated pre-checks (2026-10-31)
 
-- [x] `cargo test --workspace`: 35 core tests + 24 host tests pass, 1 network test ignored.
-- [x] x86 host suite also passes (24 passed, 1 ignored).
-- [x] x64 and x86 Release builds pass locally.
+- [x] `cargo test -p vietflow-core`: 40 tests pass.
+- [x] `cargo test -p vietflow-windows`: 28 tests pass, 1 network test ignored.
+- [ ] `cargo test --workspace`: blocked by the TSF crate's pre-existing
+      `windows-core` dependency mismatch (TSF workstream, not changed here).
+- [x] x64 Release build passes locally.
 - [x] GitHub Actions x64, x86 and ARM64 jobs pass.
 - [x] ARM64 artifact downloaded; PE header reports `Arm64` / PE32+.
 - [x] `dumpbin /dependents` shows no `VCRUNTIME140` or `MSVCP140`.
 - [x] `VietFlow.exe --settings` and `VietFlow.exe --convert` start and stay alive.
 - [x] Daemon starts with a temporary config containing `lock_hotkeys_in_excluded_apps=false` and an app profile.
-- [x] GDI objects stay stable over 20 live config reloads (12 before and after).
+- [x] Tray glyphs use a 1,196-byte Montserrat Bold subset containing only `V`
+      and `E`; `GetTextFaceW` resolves the embedded family as `Montserrat`.
+- [x] Glyph masks are crisp at 16 px; no bitmap scaling or GDI+ path is used.
+- [x] GDI/USER objects stay stable over 20 live icon-colour reloads with the
+      border-disabled path (GDI 12 -> 12, USER 15 -> 15).
 - [x] Startup registry verified: enabling writes the quoted executable path;
       disabling removes the value. The test restored the original registry state.
 - [x] Minimizing the settings UI releases D3D11 resources and restores normally
@@ -128,14 +134,14 @@ DirectInput game.
 - [ ] 100%, 150% and 200% DPI; no clipped tabs or buttons.
 - [ ] Minimum window 760×560; popups stay inside the window.
 - [ ] Long macro and exclusion lists scroll inside the page.
-- [x] Tray V/E glyphs render from the two-glyph JetBrains subset; GDI objects
-      stayed at 4 after 200 direct renders.
+- [x] Tray V/E glyphs render from the two-glyph Montserrat Bold subset; no
+      missing-glyph fallback.
 - [ ] Tray icons for V/E and custom colors.
 - [ ] Sound preview and V/E notification.
-- [x] Notification sound uses the embedded 3.1 KB IMA ADPCM chime first, then
-      `%SystemRoot%\Media`/alias/beep fallbacks. One serialized worker per
-      process; only one UI/daemon playback per V/E toggle. Listening check
-      still pending on the target machine.
+- [x] Notification sound uses the embedded 2.1 KB / 0.16 s IMA ADPCM soft chime
+      first, then `%SystemRoot%\Media`/alias/beep fallbacks. One serialized
+      worker per process; only one UI/daemon playback per V/E toggle. Listening
+      check still pending on the target machine.
 - [x] "Kiểm tra bản cập nhật" opens the update dialog above the settings window,
       not behind it. Verified on 2026-10-30: window class `#32770`, `topmost=True`,
       `foreground=True` after posting `IDM_CHECK_UPDATE` from the settings UI.

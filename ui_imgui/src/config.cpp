@@ -150,6 +150,19 @@ bool Config::Load(const std::string& custom_path) {
             custom_keymap.telex_double_keys = ck.value("telex_double_keys", custom_keymap.telex_double_keys);
             custom_keymap.lone_w = ck.value("lone_w", custom_keymap.lone_w);
         }
+
+        // Clamp values read from hand-edited/corrupt JSON. ImGui combo boxes
+        // index these values directly and would read past their arrays.
+        method = std::clamp(method, 0, 6);
+        charset = std::clamp(charset, 0, 3);
+        typing_timeout_ms = std::clamp<uint64_t>(typing_timeout_ms, 500, 5000);
+        for (auto& entry : app_profiles) {
+            AppProfile& profile = entry.second;
+            if (profile.method >= 0) profile.method = std::clamp(profile.method, 0, 6);
+            if (profile.charset >= 0) profile.charset = std::clamp(profile.charset, 0, 3);
+            if (profile.allow_macro >= 0) profile.allow_macro = std::clamp(profile.allow_macro, 0, 1);
+        }
+
         return true;
     } catch (...) {
         return false;

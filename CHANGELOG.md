@@ -37,8 +37,8 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 - Hộp thoại kiểm tra cập nhật luôn hiện trên cửa sổ cài đặt thay vì nằm phía sau.
 - Sửa rò GDI icon khay khi lưu cấu hình nhiều lần; sau 20 lần reload, GDI objects giữ nguyên 12 thay vì tăng lên 132.
 - Chỉ tạo lại icon khay khi cấu hình icon thay đổi.
-- Icon khay V/E lấy glyph từ subset JetBrains Mono chỉ chứa đúng 2 chữ V/E (~1,4 KB); bỏ GDI+ để giảm khởi tạo và rò tài nguyên, đồng thời giữ nét sắc ở mọi DPI.
-- Ổn định âm thanh thông báo V/E: nhúng sẵn chime IMA ADPCM ~3,1 KB, phát bằng một worker tuần tự, gộp các lần bấm nhanh, có fallback `%SystemRoot%\Media`/alias/beep và bỏ việc UI + daemon cùng phát một tiếng.
+- Icon khay V/E dùng subset **Montserrat Bold** chỉ chứa đúng 2 chữ V/E (~1,2 KB), nét rõ hơn; bỏ GDI+ để giảm khởi tạo và rò tài nguyên, đồng thời giữ nét sắc ở mọi DPI.
+- Ổn định âm thanh thông báo V/E: nhúng sẵn chime IMA ADPCM ngắn (~0,16 giây, ~2,1 KB), âm lượng thấp, tần số mềm; phát bằng một worker tuần tự, gộp các lần bấm nhanh, có fallback `%SystemRoot%\Media`/alias/beep và bỏ việc UI + daemon cùng phát một tiếng.
 - UI giải phóng D3D11 device/swap chain khi minimize và tạo lại khi mở, giảm khoảng 10 MB working set / 6,5 MB private bytes.
 - Bỏ chế độ gửi phím Clipboard; cấu hình cũ dùng Clipboard tự chuyển về Tự động, tránh lỗi và nhận diện nhầm.
 - Tự tắt tiếng Việt trong cửa sổ ANSI-only như VBA IDE; có checkbox để tắt tính năng này nếu app vẫn nhận tiếng Việt.
@@ -46,6 +46,10 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 - Gõ tắt mặc định tắt; UI chỉ bật checkbox phụ khi người dùng chủ động bật gõ tắt.
 - Cảnh báo bộ gõ tiếng Việt khác chuyển từ banner trong UI sang hộp thoại khi khởi động daemon.
 - Giữ trạng thái tạm bật tiếng Việt khi bấm icon khay từ app loại trừ; trở về app khác sẽ tự tắt lại.
+- Chuyển mã Unicode tổ hợp (NFD) đúng cả chiều đọc/ghi, gồm circumflex/breve/horn + dấu thanh; bỏ dấu hoạt động với văn bản NFD.
+- UI: sửa ID trùng giữa các dòng profile app, màu icon khay bị cũ sau reset, ghi quá 1 byte khi đổi đường dẫn/tên app, lower-case UTF-8 và chỉ số combo cấu hình lỗi.
+- UI: kiểm tra lỗi tạo render target D3D11 thay vì tiếp tục vẽ vào null.
+- Daemon: cache đường dẫn config thay vì tạo `PathBuf`/`create_dir_all` mỗi 250 ms, và dọn handle tiến trình UI đã đóng.
 
 ## [0.1.1] - 2026-10-30
 

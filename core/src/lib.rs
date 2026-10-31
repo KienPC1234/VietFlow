@@ -225,6 +225,17 @@ mod tests {
     }
 
     #[test]
+    fn test_strip_accents_handles_nfd() {
+        let nfd = "Tie\u{0302}\u{0301}ng Vie\u{0302}\u{0323}t";
+        assert_eq!(strip_accents(nfd), "Tieng Viet");
+        assert_eq!(
+            strip_accents("đu\u{031B}o\u{031B}\u{0300}ng"),
+            "duong",
+            "horn + grave combining marks must be removed"
+        );
+    }
+
+    #[test]
     fn test_strip_accents() {
         assert_eq!(strip_accents("Tiếng Việt"), "Tieng Viet");
         assert_eq!(strip_accents("Đường hoa Nguyễn Huệ"), "Duong hoa Nguyen Hue");
@@ -481,6 +492,25 @@ mod tests {
         assert!(nfd.contains('\u{0301}') || nfd.contains('\u{0323}'));
         let back_from_nfd = convert_charset(&nfd, CharsetId::UnicodeComposite, CharsetId::Unicode);
         assert_eq!(back_from_nfd, text);
+    }
+
+    #[test]
+    fn test_convert_full_nfd_composite() {
+        let nfd = "Tie\u{0302}\u{0301}ng Vie\u{0302}\u{0323}t";
+        let nfc = "Ti\u{1EBF}ng Vi\u{1EC7}t";
+
+        assert_eq!(
+            convert_charset(nfd, CharsetId::UnicodeComposite, CharsetId::Unicode),
+            nfc
+        );
+        assert_eq!(
+            convert_charset(nfc, CharsetId::Unicode, CharsetId::UnicodeComposite),
+            nfd
+        );
+        assert_eq!(
+            convert_charset(nfd, CharsetId::UnicodeComposite, CharsetId::Tcvn3),
+            convert_charset(nfc, CharsetId::Unicode, CharsetId::Tcvn3)
+        );
     }
 
     #[test]

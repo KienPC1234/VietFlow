@@ -1,7 +1,8 @@
 // VietFlow Core - Charset Converter & Accent Stripping Toolkit
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
-use crate::models::{CharsetId, VnLexiTone};
+use crate::charset::encode_composite_index;
+use crate::models::CharsetId;
 use crate::tables::{
     IS_VN_VOWEL, STD_VN_ROOT_CHAR, TCVN3_TABLE, TOTAL_VN_CHARS, UNICODE_TABLE, VNI_WIN_TABLE,
 };
@@ -155,12 +156,99 @@ pub fn strip_accent_char(c: char) -> char {
     }
 }
 
+/// Combining marks used by Vietnamese NFD text. They carry no base letter of
+/// their own, so stripping accents must remove them instead of copying them.
+fn is_vietnamese_combining_mark(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0300}' // grave
+            | '\u{0301}' // acute
+            | '\u{0302}' // circumflex
+            | '\u{0303}' // tilde
+            | '\u{0306}' // breve
+            | '\u{0309}' // hook above
+            | '\u{031B}' // horn
+            | '\u{0323}' // dot below
+            | '\u{0340}' // canonical grave
+            | '\u{0341}' // canonical acute
+    )
+}
+
 pub fn strip_accents(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     for c in text.chars() {
+        if is_vietnamese_combining_mark(c) {
+            continue;
+        }
         result.push(strip_accent_char(c));
     }
     result
+}
+
+/// Combine a base character plus Vietnamese combining marks into one table
+/// index. This accepts both ordering styles produced by NFD text:
+/// `base + tone` and `base + modifier + tone`.
+fn compose_composite_index(base: char, marks: &[char]) -> Option<usize> {
+    let base_index = unicode_to_table_index(base)?;
+    if base_index >= TOTAL_VN_CHARS {
+        return None;
+    }
+
+    let root = STD_VN_ROOT_CHAR[base_index] as usize;
+    let upper = (root & 1) == 0;
+    let base_letter = UNICODE_TABLE[root].to_ascii_lowercase();
+    let mut root_index = root;
+    let mut modifier = 0u8;
+    let mut tone = 0u8;
+
+    for &mark in marks {
+        match mark {
+            '\u{0302}' => {
+                if modifier != 0 {
+                    return None;
+                }
+                modifier = 1; // circumflex
+            }
+            '\u{0306}' => {
+                if modifier != 0 {
+                    return None;
+                }
+                modifier = 2; // breve
+            }
+            '\u{031B}' => {
+                if modifier != 0 {
+                    return None;
+                }
+                modifier = 3; // horn
+            }
+            '\u{0301}' | '\u{0341}' => tone = 1,
+            '\u{0300}' | '\u{0340}' => tone = 2,
+            '\u{0309}' => tone = 3,
+            '\u{0303}' => tone = 4,
+            '\u{0323}' => tone = 5,
+            _ => return None,
+        }
+    }
+
+    if modifier != 0 {
+        root_index = match (base_letter, modifier) {
+            ('a', 1) => 12, // â
+            ('a', 2) => 24, // ă
+            ('e', 1) => 56, // ê
+            ('o', 1) => 108, // ô
+            ('o', 3) => 120, // ơ
+            ('u', 3) => 154, // ư
+            _ => return None,
+        };
+        if !upper {
+            root_index += 1;
+        }
+    }
+
+    if tone > 0 && !IS_VN_VOWEL[root_index] {
+        return None;
+    }
+    Some(root_index + tone as usize * 2)
 }
 
 /// Decode raw bytes in a legacy charset into Unicode text. This is the inverse
@@ -279,30 +367,24 @@ pub fn convert_charset(text: &str, source: CharsetId, target: CharsetId) -> Stri
                 i += 1;
             }
             CharsetId::UnicodeComposite => {
-                let base_idx = unicode_to_table_index(c);
-                if let Some(b_idx) = base_idx {
-                    if b_idx < TOTAL_VN_CHARS && IS_VN_VOWEL[b_idx] {
-                        let root = STD_VN_ROOT_CHAR[b_idx] as usize;
-                        let mut tone_val = 0;
-                        if i + 1 < chars.len() {
-                            tone_val = match chars[i + 1] {
-                                '\u{0301}' => 1, // Sắc
-                                '\u{0300}' => 2, // Huyền
-                                '\u{0309}' => 3, // Hỏi
-                                '\u{0303}' => 4, // Ngã
-                                '\u{0323}' => 5, // Nặng
-                                _ => 0,
-                            };
-                        }
-                        if tone_val > 0 {
-                            let final_idx = root + tone_val * 2;
-                            indices.push(Some(final_idx));
-                            raw_chars.push(UNICODE_TABLE[final_idx]);
-                            i += 2;
-                            continue;
-                        }
+                let mut mark_end = i + 1;
+                while mark_end < chars.len()
+                    && is_vietnamese_combining_mark(chars[mark_end])
+                {
+                    mark_end += 1;
+                }
+
+                if mark_end > i + 1 {
+                    if let Some(final_idx) = compose_composite_index(c, &chars[i + 1..mark_end])
+                    {
+                        indices.push(Some(final_idx));
+                        raw_chars.push(UNICODE_TABLE[final_idx]);
+                        i = mark_end;
+                        continue;
                     }
                 }
+
+                let base_idx = unicode_to_table_index(c);
                 indices.push(base_idx);
                 raw_chars.push(c);
                 i += 1;
@@ -377,28 +459,9 @@ pub fn convert_charset(text: &str, source: CharsetId, target: CharsetId) -> Stri
                         }
                     }
                     CharsetId::UnicodeComposite => {
-                        let root = STD_VN_ROOT_CHAR[idx] as usize;
-                        let tone_val = (idx - root) / 2;
-                        let tone = match tone_val {
-                            1 => VnLexiTone::Acute,
-                            2 => VnLexiTone::Grave,
-                            3 => VnLexiTone::Hook,
-                            4 => VnLexiTone::Tilde,
-                            5 => VnLexiTone::Dot,
-                            _ => VnLexiTone::None,
-                        };
-                        let base_char = UNICODE_TABLE[root];
-                        result.push(base_char);
-                        let tone_mark = match tone {
-                            VnLexiTone::None => '\0',
-                            VnLexiTone::Acute => '\u{0301}',
-                            VnLexiTone::Grave => '\u{0300}',
-                            VnLexiTone::Hook => '\u{0309}',
-                            VnLexiTone::Tilde => '\u{0303}',
-                            VnLexiTone::Dot => '\u{0323}',
-                        };
-                        if tone_mark != '\0' {
-                            result.push(tone_mark);
+                        let encoded = encode_composite_index(idx);
+                        for &c in encoded.as_slice() {
+                            result.push(c);
                         }
                     }
                 }

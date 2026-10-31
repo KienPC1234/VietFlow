@@ -66,6 +66,13 @@ static std::string TrimLower(const char* text) {
     return out;
 }
 
+// Lowercase ASCII without invoking std::tolower on negative UTF-8 bytes.
+static void LowerAsciiInPlace(std::string& value) {
+    for (char& c : value) {
+        c = (char)std::tolower((unsigned char)c);
+    }
+}
+
 static bool ContainsWord(const std::vector<std::string>& words, const std::string& word) {
     return std::find(words.begin(), words.end(), word) != words.end();
 }
@@ -226,8 +233,9 @@ static std::string PickMacroFile(bool save) {
     if (!ok) return {};
     int len = WideCharToMultiByte(CP_UTF8, 0, file, -1, nullptr, 0, nullptr, nullptr);
     if (len <= 1) return {};
-    std::string path((size_t)len - 1, '\0');
+    std::string path((size_t)len, '\0');
     WideCharToMultiByte(CP_UTF8, 0, file, -1, &path[0], len, nullptr, nullptr);
+    path.resize((size_t)len - 1);
     return path;
 }
 
@@ -333,16 +341,17 @@ static std::vector<RunningApp> GetRunningApps() {
             if (QueryFullProcessImageNameW(hProc, 0, full_path, &size)) {
                 std::filesystem::path fp(full_path);
                 std::string exe = fp.filename().string();
-                std::transform(exe.begin(), exe.end(), exe.begin(), ::tolower);
+                LowerAsciiInPlace(exe);
 
                 if (exe != "explorer.exe" && exe != "taskmgr.exe") {
                     auto* map_ptr = reinterpret_cast<std::map<std::string, std::string>*>(lParam);
                     if (map_ptr->find(exe) == map_ptr->end()) {
                         int u8len = WideCharToMultiByte(CP_UTF8, 0, title, -1, nullptr, 0, nullptr, nullptr);
                         std::string u8title;
-                        if (u8len > 0) {
-                            u8title.resize(u8len - 1);
+                        if (u8len > 1) {
+                            u8title.resize((size_t)u8len);
                             WideCharToMultiByte(CP_UTF8, 0, title, -1, &u8title[0], u8len, nullptr, nullptr);
+                            u8title.resize((size_t)u8len - 1);
                         }
                         (*map_ptr)[exe] = u8title;
                     }
@@ -1501,13 +1510,13 @@ void UiManager::PageMacros() {
         ImGui::TableHeadersRow();
 
         std::string filter_str = macro_filter_;
-        std::transform(filter_str.begin(), filter_str.end(), filter_str.begin(), ::tolower);
+        LowerAsciiInPlace(filter_str);
         int match_count = 0;
 
         for (const auto& [k, v] : config_.macros) {
             if (!filter_str.empty()) {
-                std::string lk = k; std::transform(lk.begin(), lk.end(), lk.begin(), ::tolower);
-                std::string lv = v; std::transform(lv.begin(), lv.end(), lv.begin(), ::tolower);
+                std::string lk = k; LowerAsciiInPlace(lk);
+                std::string lv = v; LowerAsciiInPlace(lv);
                 if (lk.find(filter_str) == std::string::npos && lv.find(filter_str) == std::string::npos) {
                     continue;
                 }
@@ -1557,7 +1566,7 @@ void UiManager::PageExclusions() {
     ImGui::SameLine();
     if (ImGui::Button(NF_PLUS "  Thêm profile", ImVec2(Px(130.0f), Px(26.0f)))) {
         std::string app = new_profile_app_;
-        std::transform(app.begin(), app.end(), app.begin(), ::tolower);
+        LowerAsciiInPlace(app);
         if (!app.empty() && config_.app_profiles.find(app) == config_.app_profiles.end()) {
             config_.app_profiles[app] = AppProfile{};
             SaveConfig();
@@ -1595,10 +1604,13 @@ void UiManager::PageExclusions() {
 
             for (auto& [name, profile] : config_.app_profiles) {
                 ImGui::TableNextRow();
+                // Table rows do not push an ID scope. Without this, every row's
+                // ##PMethod/##PCharset/... combo shares the same ImGui ID.
+                ImGui::PushID(name.c_str());
                 ImGui::TableSetColumnIndex(0);
                 ImGui::TextUnformatted(name.c_str());
 
-                int method = profile.method + 1;
+                int method = std::clamp(profile.method, -1, 6) + 1;
                 ImGui::TableSetColumnIndex(1);
                 ImGui::SetNextItemWidth(-FLT_MIN);
                 if (ImGui::Combo("##PMethod", &method, profile_methods, IM_ARRAYSIZE(profile_methods))) {
@@ -1606,7 +1618,7 @@ void UiManager::PageExclusions() {
                     SaveConfig();
                 }
 
-                int charset = profile.charset + 1;
+                int charset = std::clamp(profile.charset, -1, 3) + 1;
                 ImGui::TableSetColumnIndex(2);
                 ImGui::SetNextItemWidth(-FLT_MIN);
                 if (ImGui::Combo("##PCharset", &charset, profile_charsets, IM_ARRAYSIZE(profile_charsets))) {
@@ -1628,7 +1640,7 @@ void UiManager::PageExclusions() {
                     SaveConfig();
                 }
 
-                int macro = profile.allow_macro + 1;
+                int macro = std::clamp(profile.allow_macro, -1, 1) + 1;
                 ImGui::TableSetColumnIndex(4);
                 ImGui::SetNextItemWidth(-FLT_MIN);
                 if (ImGui::Combo("##PMacro", &macro, profile_macros, IM_ARRAYSIZE(profile_macros))) {
@@ -1637,7 +1649,6 @@ void UiManager::PageExclusions() {
                 }
 
                 ImGui::TableSetColumnIndex(5);
-                ImGui::PushID(name.c_str());
                 if (ImGui::SmallButton(NF_TRASH)) remove_profile = name;
                 ImGui::PopID();
             }
@@ -1662,7 +1673,7 @@ void UiManager::PageExclusions() {
     if (ImGui::Button(NF_PLUS " Thêm", ImVec2(Px(75.0f), Px(26.0f)))) {
         if (strlen(new_excluded_app_) > 0) {
             std::string app = new_excluded_app_;
-            std::transform(app.begin(), app.end(), app.begin(), ::tolower);
+            LowerAsciiInPlace(app);
             if (std::find(config_.excluded_apps.begin(), config_.excluded_apps.end(), app) == config_.excluded_apps.end()) {
                 config_.excluded_apps.push_back(app);
                 SaveConfig();
@@ -1687,7 +1698,7 @@ void UiManager::PageExclusions() {
         if (GetOpenFileNameW(&ofn)) {
             std::filesystem::path fp(szFile);
             std::string exe = fp.filename().string();
-            std::transform(exe.begin(), exe.end(), exe.begin(), ::tolower);
+            LowerAsciiInPlace(exe);
             if (!exe.empty() && std::find(config_.excluded_apps.begin(), config_.excluded_apps.end(), exe) == config_.excluded_apps.end()) {
                 config_.excluded_apps.push_back(exe);
                 SaveConfig();
@@ -1758,7 +1769,7 @@ void UiManager::PageExclusions() {
         ImGui::Spacing();
 
         std::string filter_str = app_search_filter_;
-        std::transform(filter_str.begin(), filter_str.end(), filter_str.begin(), ::tolower);
+        LowerAsciiInPlace(filter_str);
 
         if (ImGui::BeginChild("RunningAppsList", ImVec2(0.0f, Px(230.0f)), true)) {
             if (running_apps_list_.empty()) {
@@ -1767,7 +1778,7 @@ void UiManager::PageExclusions() {
                 for (const auto& app : running_apps_list_) {
                     if (!filter_str.empty()) {
                         std::string lower_title = app.window_title;
-                        std::transform(lower_title.begin(), lower_title.end(), lower_title.begin(), ::tolower);
+                        LowerAsciiInPlace(lower_title);
                         if (app.exe_name.find(filter_str) == std::string::npos &&
                             lower_title.find(filter_str) == std::string::npos) {
                             continue;
@@ -2064,10 +2075,10 @@ static void DrawTrayIconPreview(const char* letter, bool fill, const ImVec4& fil
 void UiManager::PageAdvanced() {
     SectionHeader("Biểu tượng khay");
 
-    static ImVec4 e_fill_col = HexToImVec4(config_.tray_icon_e_fill_color, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-    static ImVec4 e_border_col = HexToImVec4(config_.tray_icon_e_border_color, ImVec4(0.0f, 0.47f, 0.84f, 1.0f));
-    static ImVec4 v_fill_col = HexToImVec4(config_.tray_icon_v_fill_color, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-    static ImVec4 v_border_col = HexToImVec4(config_.tray_icon_v_border_color, ImVec4(1.0f, 0.0f, 0.5f, 1.0f));
+    ImVec4 e_fill_col = HexToImVec4(config_.tray_icon_e_fill_color, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    ImVec4 e_border_col = HexToImVec4(config_.tray_icon_e_border_color, ImVec4(0.0f, 0.47f, 0.84f, 1.0f));
+    ImVec4 v_fill_col = HexToImVec4(config_.tray_icon_v_fill_color, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    ImVec4 v_border_col = HexToImVec4(config_.tray_icon_v_border_color, ImVec4(1.0f, 0.0f, 0.5f, 1.0f));
 
     if (ImGui::BeginTable("EVKeyTrayGrid", 2, ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("ColE", ImGuiTableColumnFlags_WidthStretch, 0.5f);

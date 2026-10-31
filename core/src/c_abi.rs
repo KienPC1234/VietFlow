@@ -179,6 +179,7 @@ pub unsafe extern "C" fn vf_engine_set_charset(engine: *mut c_void, charset: u8)
 pub unsafe extern "C" fn vf_engine_set_spell_check(engine: *mut c_void, enabled: bool) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
         engine.options.spell_check = enabled;
+        engine.reset();
     }
 }
 
@@ -186,6 +187,7 @@ pub unsafe extern "C" fn vf_engine_set_spell_check(engine: *mut c_void, enabled:
 pub unsafe extern "C" fn vf_engine_set_modern_style(engine: *mut c_void, enabled: bool) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
         engine.options.modern_style = enabled;
+        engine.reset();
     }
 }
 
@@ -193,6 +195,7 @@ pub unsafe extern "C" fn vf_engine_set_modern_style(engine: *mut c_void, enabled
 pub unsafe extern "C" fn vf_engine_set_auto_restore(engine: *mut c_void, enabled: bool) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
         engine.options.auto_non_vn_restore = enabled;
+        engine.reset();
     }
 }
 

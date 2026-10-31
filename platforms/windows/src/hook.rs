@@ -1198,7 +1198,10 @@ mod tests {
         assert_eq!(&NOTIFICATION_SOUND[8..12], b"WAVE");
         let format = u16::from_le_bytes([NOTIFICATION_SOUND[20], NOTIFICATION_SOUND[21]]);
         assert_eq!(format, 0x0011, "expected IMA ADPCM");
-        assert!(NOTIFICATION_SOUND.len() < 4096);
+        assert!(
+            NOTIFICATION_SOUND.len() < 3000,
+            "keep the notification chime short"
+        );
     }
 
     fn hook_state(excluded: bool, manual_override: bool, user_enabled: bool) -> HookState {

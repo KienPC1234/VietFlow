@@ -15,10 +15,14 @@ use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW, HKEY, HKEY_CLASSES_ROOT,
     HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS, REG_OPTION_NON_VOLATILE, REG_SZ,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
 use windows::Win32::UI::TextServices::{
     CLSID_TF_CategoryMgr, CLSID_TF_InputProcessorProfiles, GUID_TFCAT_CATEGORY_OF_TIP,
-    GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT, GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
-    GUID_TFCAT_TIP_KEYBOARD, ITfCategoryMgr, ITfInputProcessorProfiles,
+    GUID_TFCAT_TIPCAP_COMLESS, GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
+    GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, GUID_TFCAT_TIPCAP_SECUREMODE,
+    GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
+    GUID_TFCAT_TIP_KEYBOARD, ITfCategoryMgr, ITfInputProcessorProfileMgr,
+    ITfInputProcessorProfiles,
 };
 
 unsafe fn register_clsid_in_root(
@@ -171,13 +175,18 @@ pub unsafe fn register_server(hmodule: HMODULE) -> HRESULT {
     // 2. Direct HKLM write for CTF TIP LanguageProfile and Category
     let tip_guid_str = format!("{{{CLSID_VIETFLOW_TIP:?}}}");
     let prof_guid_str = format!("{{{GUID_VIETFLOW_PROFILE:?}}}");
+    let module_path_str = String::from_utf16_lossy(&module_path[..len as usize]);
 
     // Profile for English US (0x00000409)
     let path_0409 = format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{tip_guid_str}\\LanguageProfile\\0x00000409\\{prof_guid_str}");
     if let Some(k) = reg_create(HKEY_LOCAL_MACHINE, &path_0409) {
         reg_set_sz(k, Some("Description"), TEXT_SERVICE_PROFILE_NAME);
+        reg_set_sz(k, Some("Display Description"), TEXT_SERVICE_PROFILE_NAME);
         reg_set_dword(k, "Enable", 1);
-        reg_set_dword(k, "SubstituteLayout", 0x00000409);
+        reg_set_dword(k, "SubstituteLayout", 0x04090409);
+        reg_set_sz(k, Some("IconFile"), &module_path_str);
+        reg_set_dword(k, "IconIndex", 0);
+        reg_set_dword(k, "ProfileFlags", 2);
         let _ = RegCloseKey(k);
     }
 
@@ -185,36 +194,92 @@ pub unsafe fn register_server(hmodule: HMODULE) -> HRESULT {
     let path_042a = format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{tip_guid_str}\\LanguageProfile\\0x0000042a\\{prof_guid_str}");
     if let Some(k) = reg_create(HKEY_LOCAL_MACHINE, &path_042a) {
         reg_set_sz(k, Some("Description"), TEXT_SERVICE_PROFILE_NAME);
+        reg_set_sz(k, Some("Display Description"), TEXT_SERVICE_PROFILE_NAME);
         reg_set_dword(k, "Enable", 1);
-        reg_set_dword(k, "SubstituteLayout", 0x00000409);
+        reg_set_dword(k, "SubstituteLayout", 0x04090409);
+        reg_set_sz(k, Some("IconFile"), &module_path_str);
+        reg_set_dword(k, "IconIndex", 0);
+        reg_set_dword(k, "ProfileFlags", 2);
         let _ = RegCloseKey(k);
     }
 
-    // Category registrations
-    let categories = [
-        format!("{{{GUID_TFCAT_CATEGORY_OF_TIP:?}}}"),
-        format!("{{{GUID_TFCAT_TIP_KEYBOARD:?}}}"),
-        format!("{{{GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT:?}}}"),
-        format!("{{{GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT:?}}}"),
+    // Category registrations (Category of TIP, Keyboard TIP, and capabilities)
+    let categories: [(windows::core::GUID, windows::core::GUID); 8] = [
+        (GUID_TFCAT_CATEGORY_OF_TIP, GUID_TFCAT_TIP_KEYBOARD),
+        (GUID_TFCAT_TIP_KEYBOARD, CLSID_VIETFLOW_TIP),
+        (GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT, CLSID_VIETFLOW_TIP),
+        (GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, CLSID_VIETFLOW_TIP),
+        (GUID_TFCAT_TIPCAP_UIELEMENTENABLED, CLSID_VIETFLOW_TIP),
+        (GUID_TFCAT_TIPCAP_SECUREMODE, CLSID_VIETFLOW_TIP),
+        (GUID_TFCAT_TIPCAP_COMLESS, CLSID_VIETFLOW_TIP),
+        (GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, CLSID_VIETFLOW_TIP),
     ];
 
-    for cat in &categories {
-        let cat_path = format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{tip_guid_str}\\Category\\Category\\{cat}\\{tip_guid_str}");
+    for (cat, item) in &categories {
+        let cat_str = format!("{{{cat:?}}}");
+        let item_str = format!("{{{item:?}}}");
+        let cat_path = format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{tip_guid_str}\\Category\\Category\\{cat_str}\\{item_str}");
         if let Some(k) = reg_create(HKEY_LOCAL_MACHINE, &cat_path) {
             let _ = RegCloseKey(k);
         }
-        let item_path = format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{tip_guid_str}\\Category\\Item\\{tip_guid_str}\\{cat}");
+        let item_path = format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{tip_guid_str}\\Category\\Item\\{item_str}\\{cat_str}");
         if let Some(k) = reg_create(HKEY_LOCAL_MACHINE, &item_path) {
             let _ = RegCloseKey(k);
         }
     }
 
-    // 3. Register TSF Input Processor Profile via COM
+    // 3. Register TSF Categories via COM
+    let cat_mgr: Result<ITfCategoryMgr, _> =
+        CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER);
+
+    if let Ok(mgr) = cat_mgr {
+        for (cat, item) in &categories {
+            let _ = mgr.RegisterCategory(&CLSID_VIETFLOW_TIP, cat, item);
+        }
+    }
+
+    // 4. Register Modern TSF Input Processor Profile via ITfInputProcessorProfileMgr
+    let profile_mgr_v2: Result<ITfInputProcessorProfileMgr, _> =
+        CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER);
+
+    let desc_wide: Vec<u16> = format!("{TEXT_SERVICE_PROFILE_NAME}\0").encode_utf16().collect();
+    let desc_slice = &desc_wide[..desc_wide.len() - 1];
+    let icon_slice = &module_path[..len as usize];
+    let hkl_us = HKL(0x04090409 as _);
+
+    if let Ok(mgr_v2) = profile_mgr_v2 {
+        let _ = mgr_v2.RegisterProfile(
+            &CLSID_VIETFLOW_TIP,
+            LANGID_ENGLISH_US,
+            &GUID_VIETFLOW_PROFILE,
+            desc_slice,
+            icon_slice,
+            0,
+            hkl_us,
+            0,
+            true,
+            0,
+        );
+
+        let _ = mgr_v2.RegisterProfile(
+            &CLSID_VIETFLOW_TIP,
+            LANGID_VIETNAMESE,
+            &GUID_VIETFLOW_PROFILE,
+            desc_slice,
+            icon_slice,
+            0,
+            hkl_us,
+            0,
+            true,
+            0,
+        );
+    }
+
+    // 5. Register Legacy TSF Input Processor Profile via ITfInputProcessorProfiles for backwards compatibility
     let profile_mgr: Result<ITfInputProcessorProfiles, _> =
         CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER);
 
     if let Ok(mgr) = profile_mgr {
-        let desc_wide: Vec<u16> = TEXT_SERVICE_PROFILE_NAME.encode_utf16().collect();
         let _ = mgr.Register(&CLSID_VIETFLOW_TIP);
 
         // Register for English US (0x0409)
@@ -222,8 +287,8 @@ pub unsafe fn register_server(hmodule: HMODULE) -> HRESULT {
             &CLSID_VIETFLOW_TIP,
             LANGID_ENGLISH_US,
             &GUID_VIETFLOW_PROFILE,
-            &desc_wide,
-            &[],
+            desc_slice,
+            icon_slice,
             0,
         );
         let _ = mgr.EnableLanguageProfile(&CLSID_VIETFLOW_TIP, LANGID_ENGLISH_US, &GUID_VIETFLOW_PROFILE, true);
@@ -233,53 +298,20 @@ pub unsafe fn register_server(hmodule: HMODULE) -> HRESULT {
             &CLSID_VIETFLOW_TIP,
             LANGID_VIETNAMESE,
             &GUID_VIETFLOW_PROFILE,
-            &desc_wide,
-            &[],
+            desc_slice,
+            icon_slice,
             0,
         );
         let _ = mgr.EnableLanguageProfile(&CLSID_VIETFLOW_TIP, LANGID_VIETNAMESE, &GUID_VIETFLOW_PROFILE, true);
     }
 
-    // 4. Register TSF Categories via COM
-    let cat_mgr: Result<ITfCategoryMgr, _> =
-        CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER);
-
-    if let Ok(mgr) = cat_mgr {
-        let _ = mgr.RegisterCategory(&CLSID_VIETFLOW_TIP, &GUID_TFCAT_CATEGORY_OF_TIP, &CLSID_VIETFLOW_TIP);
-        let _ = mgr.RegisterCategory(&CLSID_VIETFLOW_TIP, &GUID_TFCAT_TIP_KEYBOARD, &CLSID_VIETFLOW_TIP);
-        let _ = mgr.RegisterCategory(
-            &CLSID_VIETFLOW_TIP,
-            &GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
-            &CLSID_VIETFLOW_TIP,
-        );
-        let _ = mgr.RegisterCategory(
-            &CLSID_VIETFLOW_TIP,
-            &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
-            &CLSID_VIETFLOW_TIP,
-        );
-    }
-
-    // 5. Ensure registry Description strings are cleanly written and null-terminated
-    if let Some(k) = reg_create(HKEY_LOCAL_MACHINE, &path_0409) {
-        reg_set_sz(k, Some("Description"), TEXT_SERVICE_PROFILE_NAME);
-        reg_set_dword(k, "Enable", 1);
-        reg_set_dword(k, "SubstituteLayout", 0x00000409);
-        let _ = RegCloseKey(k);
-    }
-    if let Some(k) = reg_create(HKEY_LOCAL_MACHINE, &path_042a) {
-        reg_set_sz(k, Some("Description"), TEXT_SERVICE_PROFILE_NAME);
-        reg_set_dword(k, "Enable", 1);
-        reg_set_dword(k, "SubstituteLayout", 0x00000409);
-        let _ = RegCloseKey(k);
-    }
-
     // 6. Register active layout in input.dll for current user
     call_install_layout_or_tip(
-        "0409:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        "0409:{7C2B5E10-9A31-4B8F-B623-192E48270101}{7C2B5E11-9A31-4B8F-B623-192E48270102}",
         false,
     );
     call_install_layout_or_tip(
-        "042a:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        "042A:{7C2B5E10-9A31-4B8F-B623-192E48270101}{7C2B5E11-9A31-4B8F-B623-192E48270102}",
         false,
     );
 
@@ -308,11 +340,11 @@ unsafe fn call_install_layout_or_tip(layout: &str, uninstall: bool) {
 pub unsafe fn unregister_server() -> HRESULT {
     // 0. Remove active layout in input.dll
     call_install_layout_or_tip(
-        "0409:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        "0409:{7C2B5E10-9A31-4B8F-B623-192E48270101}{7C2B5E11-9A31-4B8F-B623-192E48270102}",
         true,
     );
     call_install_layout_or_tip(
-        "042a:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        "042A:{7C2B5E10-9A31-4B8F-B623-192E48270101}{7C2B5E11-9A31-4B8F-B623-192E48270102}",
         true,
     );
 
@@ -320,30 +352,43 @@ pub unsafe fn unregister_server() -> HRESULT {
     let cat_mgr: Result<ITfCategoryMgr, _> =
         CoCreateInstance(&CLSID_TF_CategoryMgr, None, CLSCTX_INPROC_SERVER);
 
+    let categories: [(windows::core::GUID, windows::core::GUID); 8] = [
+        (GUID_TFCAT_CATEGORY_OF_TIP, GUID_TFCAT_TIP_KEYBOARD),
+        (GUID_TFCAT_TIP_KEYBOARD, CLSID_VIETFLOW_TIP),
+        (GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT, CLSID_VIETFLOW_TIP),
+        (GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT, CLSID_VIETFLOW_TIP),
+        (GUID_TFCAT_TIPCAP_UIELEMENTENABLED, CLSID_VIETFLOW_TIP),
+        (GUID_TFCAT_TIPCAP_SECUREMODE, CLSID_VIETFLOW_TIP),
+        (GUID_TFCAT_TIPCAP_COMLESS, CLSID_VIETFLOW_TIP),
+        (GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT, CLSID_VIETFLOW_TIP),
+    ];
+
     if let Ok(mgr) = cat_mgr {
-        let _ = mgr.UnregisterCategory(
+        for (cat, item) in &categories {
+            let _ = mgr.UnregisterCategory(&CLSID_VIETFLOW_TIP, cat, item);
+        }
+    }
+
+    // 2. Unregister Modern TSF Profiles via ITfInputProcessorProfileMgr
+    let profile_mgr_v2: Result<ITfInputProcessorProfileMgr, _> =
+        CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER);
+
+    if let Ok(mgr_v2) = profile_mgr_v2 {
+        let _ = mgr_v2.UnregisterProfile(
             &CLSID_VIETFLOW_TIP,
-            &GUID_TFCAT_TIP_KEYBOARD,
-            &CLSID_VIETFLOW_TIP,
+            LANGID_ENGLISH_US,
+            &GUID_VIETFLOW_PROFILE,
+            0,
         );
-        let _ = mgr.UnregisterCategory(
+        let _ = mgr_v2.UnregisterProfile(
             &CLSID_VIETFLOW_TIP,
-            &GUID_TFCAT_CATEGORY_OF_TIP,
-            &CLSID_VIETFLOW_TIP,
-        );
-        let _ = mgr.UnregisterCategory(
-            &CLSID_VIETFLOW_TIP,
-            &GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
-            &CLSID_VIETFLOW_TIP,
-        );
-        let _ = mgr.UnregisterCategory(
-            &CLSID_VIETFLOW_TIP,
-            &GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
-            &CLSID_VIETFLOW_TIP,
+            LANGID_VIETNAMESE,
+            &GUID_VIETFLOW_PROFILE,
+            0,
         );
     }
 
-    // 2. Unregister TSF Profiles via COM
+    // 3. Unregister Legacy TSF Profiles via ITfInputProcessorProfiles
     let profile_mgr: Result<ITfInputProcessorProfiles, _> =
         CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER);
 

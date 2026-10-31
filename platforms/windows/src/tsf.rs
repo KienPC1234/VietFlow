@@ -215,10 +215,12 @@ pub fn is_tsf_dll_present() -> bool {
 /// Checks whether the VietFlow TIP COM CLSID and LanguageProfile are registered in HKLM CTF.
 pub fn is_tsf_registered() -> bool {
     unsafe {
+        use windows_sys::Win32::System::Registry::RegQueryValueExW;
         let paths = [
-            "SOFTWARE\\Microsoft\\CTF\\TIP\\{7C2B5E10-9A31-4B8F-B623-192E48270101}\\LanguageProfile\\0x00000409",
-            "SOFTWARE\\Microsoft\\CTF\\TIP\\{7C2B5E10-9A31-4B8F-B623-192E48270101}\\LanguageProfile\\0x0000042a",
+            "SOFTWARE\\Microsoft\\CTF\\TIP\\{7C2B5E10-9A31-4B8F-B623-192E48270101}\\LanguageProfile\\0x00000409\\{7C2B5E11-9A31-4B8F-B623-192E48270102}",
+            "SOFTWARE\\Microsoft\\CTF\\TIP\\{7C2B5E10-9A31-4B8F-B623-192E48270101}\\LanguageProfile\\0x0000042a\\{7C2B5E11-9A31-4B8F-B623-192E48270102}",
         ];
+        let val_name = to_wide("Display Description");
         for path in &paths {
             let subkey = to_wide(path);
             let mut hkey: HKEY = std::ptr::null_mut();
@@ -230,8 +232,47 @@ pub fn is_tsf_registered() -> bool {
                 &mut hkey,
             );
             if res == 0 {
+                let mut typ: u32 = 0;
+                let mut data_len: u32 = 0;
+                let val_res = RegQueryValueExW(
+                    hkey,
+                    val_name.as_ptr(),
+                    std::ptr::null_mut(),
+                    &mut typ,
+                    std::ptr::null_mut(),
+                    &mut data_len,
+                );
                 RegCloseKey(hkey);
-                return true;
+                if val_res == 0 && data_len > 2 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+pub fn is_current_process_elevated() -> bool {
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if windows_sys::Win32::System::Threading::OpenProcessToken(
+            windows_sys::Win32::System::Threading::GetCurrentProcess(),
+            windows_sys::Win32::Security::TOKEN_QUERY,
+            &mut token,
+        ) != 0
+        {
+            let mut elevation: windows_sys::Win32::Security::TOKEN_ELEVATION = std::mem::zeroed();
+            let mut ret_len = 0u32;
+            let ok = windows_sys::Win32::Security::GetTokenInformation(
+                token,
+                windows_sys::Win32::Security::TokenElevation,
+                &mut elevation as *mut _ as *mut _,
+                std::mem::size_of::<windows_sys::Win32::Security::TOKEN_ELEVATION>() as u32,
+                &mut ret_len,
+            );
+            CloseHandle(token);
+            if ok != 0 {
+                return elevation.TokenIsElevated != 0;
             }
         }
         false
@@ -240,14 +281,37 @@ pub fn is_tsf_registered() -> bool {
 
 /// Activates or deactivates the VietFlow TSF profile in the system.
 pub fn set_tsf_profile_active(active: bool) {
-    let _ = active;
+    if active {
+        call_set_default_layout_or_tip(
+            "0409:{7C2B5E10-9A31-4B8F-B623-192E48270101}{7C2B5E11-9A31-4B8F-B623-192E48270102}",
+        );
+    }
+}
+
+pub fn call_set_default_layout_or_tip(layout_str: &str) -> bool {
+    unsafe {
+        let input_mod = LoadLibraryW(to_wide("input.dll").as_ptr());
+        if input_mod.is_null() {
+            return false;
+        }
+        let proc = GetProcAddress(input_mod, b"SetDefaultLayoutOrTip\0".as_ptr() as *const _);
+        let mut ok = false;
+        if let Some(func) = proc {
+            type FnSetDefaultLayoutOrTip = unsafe extern "system" fn(*const u16, u32) -> windows_sys::core::BOOL;
+            let func: FnSetDefaultLayoutOrTip = std::mem::transmute(func);
+            let wide = to_wide(layout_str);
+            ok = func(wide.as_ptr(), 0) != 0;
+        }
+        FreeLibrary(input_mod);
+        ok
+    }
 }
 
 const ILOT_UNINSTALL: u32 = 0x00000001;
 
 pub fn call_install_layout_or_tip(layout_str: &str, uninstall: bool) -> bool {
     unsafe {
-        let input_mod = LoadLibraryW(to_wide("input.dll\0").as_ptr());
+        let input_mod = LoadLibraryW(to_wide("input.dll").as_ptr());
         if input_mod.is_null() {
             return false;
         }
@@ -256,7 +320,7 @@ pub fn call_install_layout_or_tip(layout_str: &str, uninstall: bool) -> bool {
         if let Some(func) = proc {
             type FnInstallLayoutOrTip = unsafe extern "system" fn(*const u16, u32) -> windows_sys::core::BOOL;
             let func: FnInstallLayoutOrTip = std::mem::transmute(func);
-            let wide = to_wide(&format!("{layout_str}\0"));
+            let wide = to_wide(layout_str);
             let flags = if uninstall { ILOT_UNINSTALL } else { 0 };
             ok = func(wide.as_ptr(), flags) != 0;
         }
@@ -267,9 +331,9 @@ pub fn call_install_layout_or_tip(layout_str: &str, uninstall: bool) -> bool {
 
 fn run_elevated_wait(file: &str, params: &str) -> Result<(), String> {
     unsafe {
-        let file_wide = to_wide(&format!("{file}\0"));
-        let params_wide = to_wide(&format!("{params}\0"));
-        let verb_wide = to_wide("runas\0");
+        let file_wide = to_wide(file);
+        let params_wide = to_wide(params);
+        let verb_wide = to_wide("runas");
 
         let mut sei: SHELLEXECUTEINFOW = std::mem::zeroed();
         sei.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
@@ -305,43 +369,90 @@ fn run_elevated_wait(file: &str, params: &str) -> Result<(), String> {
     }
 }
 
-/// Registers the VietFlow TSF in-process COM DLL via regsvr32 with elevation.
+/// Registers the VietFlow TSF in-process COM DLL with elevation.
 pub fn register_tsf() -> Result<(), String> {
     let dll = tsf_dll_path().ok_or_else(|| "vietflow_tip.dll không tồn tại.".to_string())?;
 
-    // 1. Run elevated regsvr32 to register COM server and HKLM CTF TIP entries
-    let params = format!("/s \"{}\"", dll.to_string_lossy());
-    run_elevated_wait("regsvr32.exe", &params)?;
+    if is_current_process_elevated() {
+        unsafe {
+            let dll_wide = to_wide(&dll.to_string_lossy());
+            let hmod = LoadLibraryW(dll_wide.as_ptr());
+            if hmod.is_null() {
+                return Err("Không thể nạp vietflow_tip.dll".to_string());
+            }
+            let proc = GetProcAddress(hmod, b"DllRegisterServer\0".as_ptr() as *const _);
+            let mut ok = false;
+            let mut code = -1;
+            if let Some(func) = proc {
+                type FnDllRegisterServer = unsafe extern "system" fn() -> i32;
+                let func: FnDllRegisterServer = std::mem::transmute(func);
+                code = func();
+                ok = code >= 0;
+            }
+            FreeLibrary(hmod);
+            if !ok {
+                return Err(format!("DllRegisterServer trả về mã lỗi: 0x{code:08X}"));
+            }
+        }
+    } else {
+        // 1. Run elevated regsvr32 to register COM server and HKLM CTF TIP entries
+        let params = format!("/s \"{}\"", dll.to_string_lossy());
+        run_elevated_wait("regsvr32.exe", &params)?;
+    }
 
     // 2. Add layout to active user keyboard layout list via input.dll
     call_install_layout_or_tip(
-        "0409:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        "0409:{7C2B5E10-9A31-4B8F-B623-192E48270101}{7C2B5E11-9A31-4B8F-B623-192E48270102}",
         false,
     );
     call_install_layout_or_tip(
-        "042a:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        "042A:{7C2B5E10-9A31-4B8F-B623-192E48270101}{7C2B5E11-9A31-4B8F-B623-192E48270102}",
         false,
     );
 
     Ok(())
 }
 
-/// Unregisters the VietFlow TSF in-process COM DLL via regsvr32 with elevation.
+/// Unregisters the VietFlow TSF in-process COM DLL with elevation.
 pub fn unregister_tsf() -> Result<(), String> {
     // 1. Remove layout from active user keyboard layout list so Windows immediately deactivates it
     call_install_layout_or_tip(
-        "0409:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        "0409:{7C2B5E10-9A31-4B8F-B623-192E48270101}{7C2B5E11-9A31-4B8F-B623-192E48270102}",
         true,
     );
     call_install_layout_or_tip(
-        "042a:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        "042A:{7C2B5E10-9A31-4B8F-B623-192E48270101}{7C2B5E11-9A31-4B8F-B623-192E48270102}",
         true,
     );
 
-    // 2. Run elevated regsvr32 /u to wipe COM and HKLM CTF TIP registrations
     let dll = tsf_dll_path().ok_or_else(|| "vietflow_tip.dll không tồn tại.".to_string())?;
-    let params = format!("/u /s \"{}\"", dll.to_string_lossy());
-    run_elevated_wait("regsvr32.exe", &params)?;
+
+    if is_current_process_elevated() {
+        unsafe {
+            let dll_wide = to_wide(&dll.to_string_lossy());
+            let hmod = LoadLibraryW(dll_wide.as_ptr());
+            if hmod.is_null() {
+                return Err("Không thể nạp vietflow_tip.dll".to_string());
+            }
+            let proc = GetProcAddress(hmod, b"DllUnregisterServer\0".as_ptr() as *const _);
+            let mut ok = false;
+            let mut code = -1;
+            if let Some(func) = proc {
+                type FnDllUnregisterServer = unsafe extern "system" fn() -> i32;
+                let func: FnDllUnregisterServer = std::mem::transmute(func);
+                code = func();
+                ok = code >= 0;
+            }
+            FreeLibrary(hmod);
+            if !ok {
+                return Err(format!("DllUnregisterServer trả về mã lỗi: 0x{code:08X}"));
+            }
+        }
+    } else {
+        // 2. Run elevated regsvr32 /u to wipe COM and HKLM CTF TIP registrations
+        let params = format!("/u /s \"{}\"", dll.to_string_lossy());
+        run_elevated_wait("regsvr32.exe", &params)?;
+    }
 
     Ok(())
 }
