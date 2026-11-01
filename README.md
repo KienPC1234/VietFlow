@@ -3,6 +3,10 @@
 Lightweight, memory-safe native Vietnamese input method for Windows.
 Rust core engine and hook daemon with an isolated Dear ImGui + DirectX 11 settings UI.
 
+<p align="center">
+  <img src="assets/screenshot.png" alt="VietFlow Settings UI" width="760" />
+</p>
+
 Repository: [https://github.com/KienPC1234/VietFlow](https://github.com/KienPC1234/VietFlow)
 
 ## Key Features
@@ -10,7 +14,7 @@ Repository: [https://github.com/KienPC1234/VietFlow](https://github.com/KienPC12
 - **Hybrid Input**: Native Text Services Framework (TSF TIP) for zero-backspace typing in modern apps, plus a 0ms low-level hook with hardware key repeat (WASD) for games.
 - **Game Safe**: Automatic global hotkey locking (Ctrl+Shift / Alt+Z) and smart UWP/Xbox container detection (Roblox, CS2, Valorant).
 - **Per-App Overrides**: Custom typing method, charset, key-injection mode, and macro access per executable.
-- **Resource Footprint**: Always-on daemon uses ~2.9 MB private bytes and 0% idle CPU. Settings UI runs out-of-process and frees 100% RAM/GPU when closed.
+- **Resource Footprint**: Always-on daemon uses ~2.0–2.9 MB private bytes (lowest measured footprint) and 0% idle CPU. Settings UI runs out-of-process and frees 100% RAM/GPU when closed.
 - **Smart English Habit**: Phonotactic restoration prevents mangling common technical words (`test`, `reset`, `setup`).
 - **Native Multi-Arch**: Static MSVC builds for x64, x86, and ARM64 (no VC++ Redistributable required). High-DPI vector UI (100%–200%).
 
@@ -18,18 +22,19 @@ Repository: [https://github.com/KienPC1234/VietFlow](https://github.com/KienPC12
 
 | Feature / Capability | VietFlow | EVKey | OpenKey | UniKey 4.3 |
 | :--- | :--- | :--- | :--- | :--- |
-| **Language & Architecture** | Rust std (Memory-safe) | C++ Hook + C#/.NET UI | C++ Win32 | C++ MFC / Win32 |
-| **Input Delivery Modes** | Hybrid: TSF TIP + Low-Level Hook | Low-Level Hook only | Low-Level Hook only | Low-Level Hook only |
-| **Daemon Memory Footprint** | ~2.9 MB Private Bytes | ~15–25 MB (.NET runtime) | ~5–8 MB | ~2–4 MB |
-| **UI Isolation** | Out-of-process DirectX 11 + ImGui | In-process Form | Monolithic Win32 Dialog | Monolithic MFC Dialog |
+| **Language & Architecture** | Rust std (Memory-safe) | C++ (Win32 API) | C++ (Win32 API) | C++ (MFC / Win32) |
+| **Memory Safety & Stability** | 100% Memory-Safe (zero buffer overflows, no data races) | Unsafe C++ (raw pointers, memory corruption risks) | Unsafe C++ (raw pointers) | Unsafe C++ (raw pointers) |
+| **Input Delivery Modes** | Hybrid: Modern TSF TIP (Windows 10/11) + Low-Level Hook | Dual: Low-Level Hook + Classic IME (IMM32) | Low-Level Hook only | Low-Level Hook only |
+| **Daemon Memory Footprint** | ~2.0–2.9 MB Private Bytes (lowest measured) | ~8–15 MB Private Bytes | ~6–10 MB Private Bytes | ~3–5 MB Private Bytes |
+| **UI Isolation** | Out-of-process DirectX 11 + ImGui (frees 100% RAM/GPU) | Monolithic Win32 Dialog | Monolithic Win32 Dialog | Monolithic MFC Dialog |
 | **Game Movement (WASD)** | 0ms Native Passthrough + Auto-Repeat | Heuristic passthrough | vDoNothing passthrough | Frequent key locks |
 | **In-Game Hotkey Lock** | Automatic lock in excluded apps | Manual switch only | None | None |
 | **Per-App Profile Overrides** | Yes (Engine, Charset, Macro, Mode) | Basic E/V switch list | Registry E/V toggle list | None |
 | **Browser URL Bar Conflict** | Native in TSF / Minimal diffing | Temporary char hack | Narrow space hack (0x202F) | Freezes / suggestion collision |
 | **Windows on ARM (ARM64)** | Native ARM64, x64, x86 | Emulated x86 | Emulated x86/x64 | Emulated x86 |
-| **High-DPI Scaling** | Native vector rendering (100%–200%) | Fair (WinForms DPI issues) | Blurry GDI controls | Blurry bitmap icons |
+| **High-DPI Scaling** | Native vector rendering (100%–200%) | GDI custom draw (fixed assets) | Blurry GDI controls | Blurry bitmap icons |
 | **Dynamic Macro Tokens** | `@date`, `@time`, `@clipboard`, CSV/TSV | Static text only | Static text only | Static text only |
-| **License & Auditing** | Open Source (GPLv3, audited) | Closed Source | Open Source (GPLv3) | Closed Source (v4.3) |
+| **License & Auditing** | Open Source (GPLv3, audited) | Closed Source (Windows freeware) | Open Source (GPLv3) | Closed Source (v4.3) |
 
 ## Layout
 
