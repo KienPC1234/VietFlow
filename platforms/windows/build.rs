@@ -60,11 +60,59 @@ fn main() {
         let mut res = winres::WindowsResource::new();
         res.set_icon("../../assets/VietFlow.ico");
         res.set_icon_with_id("../../assets/VietFlow-TSF.ico", "2");
+        res.set_language(0x0409);
         res.set("ProductName", "VietFlow");
-        res.set("FileDescription", "VietFlow - Bộ gõ tiếng Việt");
+        res.set("FileDescription", "VietFlow - Modern Vietnamese Input Method");
+        res.set("CompanyName", "VietFlow Team");
+        res.set("Comments", "VietFlow - Modern Vietnamese Input Method");
+        res.set("InternalName", "VietFlow");
+        res.set("OriginalFilename", "VietFlow.exe");
         res.set("FileVersion", &win_ver);
         res.set("ProductVersion", &win_ver);
         res.set("LegalCopyright", "Copyright (C) 2026 VietFlow Team. GNU GPL v3.0");
+
+        let manifest = format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0" xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
+  <assemblyIdentity
+    version="{win_ver}"
+    processorArchitecture="*"
+    name="VietFlow.VietFlowTeam.VietFlow"
+    type="win32"
+  />
+  <description>VietFlow - Modern Vietnamese Input Method</description>
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 and Windows 11 -->
+      <supportedOS Id="{{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}}"/>
+      <!-- Windows 8.1 -->
+      <supportedOS Id="{{1f676c76-80e1-4239-95bb-83d0f6d0da78}}"/>
+      <!-- Windows 8 -->
+      <supportedOS Id="{{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}}"/>
+      <!-- Windows 7 -->
+      <supportedOS Id="{{35138b9a-5d96-4fbd-8e2d-a2440225f93a}}"/>
+    </application>
+  </compatibility>
+  <asmv3:application>
+    <asmv3:windowsSettings xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </asmv3:windowsSettings>
+  </asmv3:application>
+</assembly>"#);
+        res.set_manifest(&manifest);
         let _ = res.compile();
     }
 }

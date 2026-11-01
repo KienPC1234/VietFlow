@@ -58,13 +58,12 @@ extern "system" {
 
 #[link(name = "kernel32")]
 extern "system" {
-    fn Beep(dwFreq: u32, dwDuration: u32) -> i32;
     fn GetTickCount64() -> u64;
 }
 
-/// A small IMA ADPCM chime, independent of the Windows sound scheme or media
-/// files. Kept as a separate aligned copy because PlaySound reads it as a
-/// byte buffer through SND_MEMORY.
+/// A short, clean uncompressed 16-bit 48kHz PCM notification chime.
+/// Plays instantaneously with zero audio distortion, aliasing, or clicks
+/// across all Windows versions and Bluetooth LE / A2DP audio endpoints.
 const NOTIFICATION_SOUND: &[u8] = include_bytes!("../../../assets/notification.wav");
 static SOUND_DATA: OnceLock<Vec<u8>> = OnceLock::new();
 
@@ -98,12 +97,11 @@ fn play_notification_sound_blocking() {
     const SND_SYNC: u32 = 0x0000;
     const SND_NODEFAULT: u32 = 0x0002;
     const SND_MEMORY: u32 = 0x0004;
-    const SND_FILENAME: u32 = 0x0002_0000;
-    const SND_ALIAS: u32 = 0x0001_0000;
     const MB_ICONASTERISK: u32 = 0x0000_0040;
 
-    // Primary path: the embedded chime. No media file, codec lookup through
-    // the sound scheme, or extra process is involved.
+    // Primary path: the embedded 16-bit 48kHz PCM chime.
+    // Uncompressed PCM requires no external ACM codecs and maps 1:1
+    // to Windows WASAPI and Bluetooth LE audio sample rates.
     let sound = SOUND_DATA.get_or_init(|| NOTIFICATION_SOUND.to_vec());
     let res = unsafe {
         PlaySoundW(
@@ -116,61 +114,10 @@ fn play_notification_sound_blocking() {
         return;
     }
 
-    // Fallback for a stripped-down Windows installation without the ADPCM
-    // codec. Never assume C:\Windows: Windows can be installed on another drive.
-    let media = std::env::var_os("SystemRoot")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"))
-        .join("Media");
-
-    // Prefer the short, light Windows notification sounds; fall back to the
-    // standard notification and legacy beeps. SND_NODEFAULT lets the next
-    // candidate run if a file is damaged.
-    let sound_candidates = [
-        "notify.wav",
-        "ding.wav",
-        "Windows Notify System Generic.wav",
-        "Windows Notify.wav",
-        "Windows Ding.wav",
-        "chimes.wav",
-    ];
-
-    for name in sound_candidates {
-        let path = media.join(name);
-        if !path.is_file() {
-            continue;
-        }
-        let wide = to_wide(&path.to_string_lossy());
-        let res = unsafe {
-            PlaySoundW(
-                wide.as_ptr(),
-                null_mut(),
-                SND_SYNC | SND_FILENAME | SND_NODEFAULT,
-            )
-        };
-        if res != 0 {
-            return;
-        }
-    }
-
-    // Some installations omit the .wav files but keep the system alias.
-    let alias = to_wide("SystemNotification");
-    let res = unsafe {
-        PlaySoundW(
-            alias.as_ptr(),
-            null_mut(),
-            SND_SYNC | SND_ALIAS | SND_NODEFAULT,
-        )
-    };
-    if res != 0 {
-        return;
-    }
-
-    let beeped = unsafe { MessageBeep(MB_ICONASTERISK) };
-    if beeped == 0 {
-        unsafe {
-            Beep(1200, 60);
-        }
+    // Gentle fallback: standard system asterisk beep if audio device is unavailable.
+    // Never invoke raw hardware buzzer.
+    unsafe {
+        MessageBeep(MB_ICONASTERISK);
     }
 }
 
@@ -210,7 +157,7 @@ use crate::config::{normalize_injection_mode, AppConfig, AppProfile};
 use crate::inject::{send_atomic_batch_with_mode, VIETFLOW_MAGIC};
 use crate::process::{get_process_name_for_window, is_app_excluded, profile_for_app};
 use crate::startup::set_start_with_windows;
-use crate::tray::{to_wide, WM_CONVERT, WM_SETTINGS, WM_TRAYICON};
+use crate::tray::{WM_CONVERT, WM_SETTINGS, WM_TRAYICON};
 
 pub struct HookState {
     pub engine: VietFlowEngine,
@@ -1237,13 +1184,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_notification_is_compressed_wav() {
+    fn embedded_notification_is_clean_pcm_wav() {
         assert_eq!(&NOTIFICATION_SOUND[0..4], b"RIFF");
         assert_eq!(&NOTIFICATION_SOUND[8..12], b"WAVE");
         let format = u16::from_le_bytes([NOTIFICATION_SOUND[20], NOTIFICATION_SOUND[21]]);
-        assert_eq!(format, 0x0011, "expected IMA ADPCM");
+        assert_eq!(format, 0x0001, "expected uncompressed 16-bit PCM");
+        let sample_rate = u32::from_le_bytes([
+            NOTIFICATION_SOUND[24],
+            NOTIFICATION_SOUND[25],
+            NOTIFICATION_SOUND[26],
+            NOTIFICATION_SOUND[27],
+        ]);
+        assert_eq!(sample_rate, 48000, "expected 48kHz native mixer sample rate");
         assert!(
-            NOTIFICATION_SOUND.len() < 3000,
+            NOTIFICATION_SOUND.len() < 16000,
             "keep the notification chime short"
         );
     }

@@ -30,7 +30,7 @@ use windows_sys::Win32::System::DataExchange::{
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetMessageW, MessageBoxW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetMessageW, KillTimer, MessageBoxW,
     PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetTimer, ShowWindow,
     TranslateMessage, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_SETFOREGROUND,
     MB_TOPMOST, MSG, SW_RESTORE, SW_SHOWNORMAL, WNDCLASSW, WM_CLOSE, WM_CLIPBOARDUPDATE,
@@ -59,6 +59,8 @@ static mut TRAY_PTR: *mut TrayIcon = null_mut();
 static mut WM_TASKBAR_CREATED: u32 = 0;
 
 const TIMER_ID_CONFIG: usize = 1;
+const TIMER_ID_RETRY_TRAY: usize = 2;
+static mut TRAY_RETRY_COUNT: u32 = 0;
 static CONFIG_MTIME: Mutex<Option<SystemTime>> = Mutex::new(None);
 
 fn config_mtime() -> Option<SystemTime> {
@@ -465,6 +467,18 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_TIMER => {
             reap_ui_children();
+            if w_param == TIMER_ID_RETRY_TRAY {
+                let ok = if !TRAY_PTR.is_null() {
+                    (*TRAY_PTR).re_add()
+                } else {
+                    false
+                };
+                TRAY_RETRY_COUNT += 1;
+                if ok || TRAY_RETRY_COUNT >= 6 {
+                    KillTimer(hwnd, TIMER_ID_RETRY_TRAY);
+                }
+                return 0;
+            }
             if w_param == TIMER_ID_CONFIG {
                 let current = config_mtime();
                 let changed = {
@@ -706,8 +720,14 @@ unsafe extern "system" fn wnd_proc(
         }
         _ => {
             if WM_TASKBAR_CREATED != 0 && msg == WM_TASKBAR_CREATED {
-                if !TRAY_PTR.is_null() {
-                    (*TRAY_PTR).re_add();
+                let ok = if !TRAY_PTR.is_null() {
+                    (*TRAY_PTR).re_add()
+                } else {
+                    false
+                };
+                if !ok {
+                    TRAY_RETRY_COUNT = 0;
+                    SetTimer(hwnd, TIMER_ID_RETRY_TRAY, 400, None);
                 }
                 0
             } else {

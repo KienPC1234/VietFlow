@@ -68,6 +68,18 @@ foreach ($asset in $optionalAssets) {
     if (Test-Path $path) { $assets += $asset }
 }
 
+# Auto-inject branding bitmaps and database optimizations into any MSI assets before publishing
+$injectScript = Join-Path $PSScriptRoot "inject_msi_bitmaps.ps1"
+if (Test-Path $injectScript) {
+    foreach ($asset in $assets) {
+        if ($asset.EndsWith('.msi', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $msiPath = Join-Path (Split-Path -Parent $PSScriptRoot) $asset
+            Write-Host "Verifying/Injecting branding bitmaps into $msiPath..." -ForegroundColor Cyan
+            & pwsh -File $injectScript -MsiPath $msiPath
+        }
+    }
+}
+
 # Refresh current assets list
 $currentRelease = Invoke-RestMethod -Method Get -Uri "https://api.github.com/repos/KienPC1234/VietFlow/releases/$($release.id)" -Headers $headers
 $existingAssets = $currentRelease.assets

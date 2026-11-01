@@ -72,8 +72,8 @@ impl TrayIcon {
         }
     }
 
-    pub unsafe fn re_add(&mut self) {
-        Shell_NotifyIconW(NIM_ADD, &self.nid);
+    pub unsafe fn re_add(&mut self) -> bool {
+        Shell_NotifyIconW(NIM_ADD, &self.nid) != 0
     }
 
     pub unsafe fn set_icons(

@@ -48,12 +48,16 @@ function Get-ChangelogSection([string]$Text, [string]$Version) {
     return ""
 }
 
-function Add-MsiActionText([string]$MsiPath) {
+function Optimize-MsiDatabase([string]$MsiPath) {
     if (-not (Test-Path $MsiPath)) { return }
+    $db = $null
+    $wi = $null
     try {
         $wi = New-Object -ComObject WindowsInstaller.Installer
         $db = $wi.OpenDatabase($MsiPath, 1)
-        $sqlCreate = "CREATE TABLE `ActionText` (`Action` CHAR(72) NOT NULL, `Description` CHAR(64) LOCALIZABLE, `Template` CHAR(128) LOCALIZABLE PRIMARY KEY `Action`)"
+
+        # 1. ActionText Table
+        $sqlCreate = "CREATE TABLE ``ActionText`` (``Action`` CHAR(72) NOT NULL, ``Description`` CHAR(64) LOCALIZABLE, ``Template`` CHAR(128) LOCALIZABLE PRIMARY KEY ``Action``)"
         try {
             $view = $db.OpenView($sqlCreate)
             $view.Execute()
@@ -72,17 +76,94 @@ function Add-MsiActionText([string]$MsiPath) {
         )
         foreach ($act in $actions) {
             try {
-                $sql = "INSERT INTO `ActionText` (`Action`, `Description`, `Template`) VALUES ('$($act[0])', '$($act[1])', '$($act[2])')"
+                $sql = "INSERT INTO ``ActionText`` (``Action``, ``Description``, ``Template``) VALUES ('$($act[0])', '$($act[1])', '$($act[2])')"
                 $view = $db.OpenView($sql)
                 $view.Execute()
                 $view.Close()
             } catch {}
         }
+
+        # 2. Fix Shortcut table Description field (replaces unresolved [MsiStartMenuShortcutDescription] and [MsiDesktopShortcutDescription])
+        try {
+            $sqlShortcut = "UPDATE ``Shortcut`` SET ``Description`` = 'VietFlow - Modern Vietnamese Input Method'"
+            $view = $db.OpenView($sqlShortcut)
+            $view.Execute()
+            $view.Close()
+        } catch {
+            Write-Warning "Failed to update Shortcut table: $_"
+        }
+
+        # 3. Inject standard Property values so any unresolved MSI property references evaluate cleanly
+        $props = @{
+            "MsiStartMenuShortcutDescription" = "VietFlow - Modern Vietnamese Input Method"
+            "MsiDesktopShortcutDescription"   = "VietFlow - Modern Vietnamese Input Method"
+            "ARPCOMMENTS"                     = "VietFlow - Modern Vietnamese Input Method"
+            "ARPCONTACT"                      = "VietFlow Team"
+            "ARPHELPLINK"                     = "https://github.com/KienPC1234/VietFlow"
+            "ARPURLINFOABOUT"                 = "https://github.com/KienPC1234/VietFlow"
+            "ARPURLUPDATEINFO"                = "https://github.com/KienPC1234/VietFlow/releases"
+        }
+        foreach ($k in $props.Keys) {
+            $val = $props[$k]
+            try {
+                $view = $db.OpenView("INSERT INTO ``Property`` (``Property``, ``Value``) VALUES ('$k', '$val')")
+                $view.Execute()
+                $view.Close()
+            } catch {
+                try {
+                    $view = $db.OpenView("UPDATE ``Property`` SET ``Value`` = '$val' WHERE ``Property`` = '$k'")
+                    $view.Execute()
+                    $view.Close()
+                } catch {}
+            }
+        }
+
+        # 4. Inject VietFlow branded bitmaps (Dialog background & Top banner)
+        $dialogBmp = Join-Path $root "assets\wix_dialog.bmp"
+        $bannerBmp = Join-Path $root "assets\wix_banner.bmp"
+        if (Test-Path $dialogBmp) {
+            try {
+                $view = $db.OpenView("SELECT Name, Data FROM Binary WHERE Name = 'WixUI_Bmp_Dialog'")
+                $view.Execute()
+                $rec = $view.Fetch()
+                if ($rec) {
+                    $rec.SetStream(2, $dialogBmp)
+                    $view.Modify(2, $rec)
+                }
+                $view.Close()
+            } catch {
+                Write-Warning "Failed to inject WixUI_Bmp_Dialog: $_"
+            }
+        }
+        if (Test-Path $bannerBmp) {
+            try {
+                $view = $db.OpenView("SELECT Name, Data FROM Binary WHERE Name = 'WixUI_Bmp_Banner'")
+                $view.Execute()
+                $rec = $view.Fetch()
+                if ($rec) {
+                    $rec.SetStream(2, $bannerBmp)
+                    $view.Modify(2, $rec)
+                }
+                $view.Close()
+            } catch {
+                Write-Warning "Failed to inject WixUI_Bmp_Banner: $_"
+            }
+        }
+
         $db.Commit()
-        Write-Host "      Injected ActionText into $MsiPath" -ForegroundColor Green
+        Write-Host "      Optimized MSI package (ActionText, Shortcut descriptions, Bitmaps, ARP metadata): $($MsiPath)" -ForegroundColor Green
     } catch {
-        Write-Warning "Failed to inject ActionText into $($MsiPath): $_"
+        Write-Warning "Failed to optimize MSI database $($MsiPath): $_"
+    } finally {
+        if ($db) { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($db) | Out-Null }
+        if ($wi) { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($wi) | Out-Null }
+        [GC]::Collect()
+        [GC]::WaitForPendingFinalizers()
     }
+}
+
+function Add-MsiActionText([string]$MsiPath) {
+    Optimize-MsiDatabase $MsiPath
 }
 
 # ---------------------------------------------------------------------------
@@ -345,6 +426,17 @@ if ($willPackage) {
     $releasesDir = Join-Path $root "releases"
     New-Item -ItemType Directory -Force -Path $releasesDir | Out-Null
 
+    # Ensure WiX MSI branding bitmaps exist
+    $dialogBmp = Join-Path $root "assets\wix_dialog.bmp"
+    $bannerBmp = Join-Path $root "assets\wix_banner.bmp"
+    if ((-not (Test-Path $dialogBmp)) -or (-not (Test-Path $bannerBmp))) {
+        $genScript = Join-Path $root "scripts\generate_msi_bitmaps.py"
+        if (Test-Path $genScript) {
+            Write-Host "      Generating WiX MSI branding bitmaps..." -ForegroundColor Cyan
+            python $genScript
+        }
+    }
+
     foreach ($a in $archs) {
         $channel = switch ($a) {
             'x86' { "win-x86" }
@@ -381,6 +473,14 @@ if ($willPackage) {
         )
         if ($Msi) {
             $packArgs += "--msi"
+            $dialogBmp = Join-Path $root "assets\wix_dialog.bmp"
+            $bannerBmp = Join-Path $root "assets\wix_banner.bmp"
+            if (Test-Path $dialogBmp) {
+                $packArgs += @("--msiDialogBackground", $dialogBmp)
+            }
+            if (Test-Path $bannerBmp) {
+                $packArgs += @("--msiTopBanner", $bannerBmp)
+            }
         }
         & $vpk.Source @packArgs
         if ($LASTEXITCODE -ne 0) {

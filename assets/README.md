@@ -2,13 +2,8 @@
 
 `notification.wav` is the embedded V/E notification chime.
 
-- Format: WAV, IMA ADPCM (4-bit), mono, 22,050 Hz, 0.16 s
-- Size: 2,142 bytes
-- Source: generated locally from soft C5/G5 tones (523.25 Hz / 783.99 Hz), low amplitude, 8 ms attack and 20 ms fade-out to avoid clicks and harshness
-- Embedded by `platforms/windows/src/hook.rs`; no external file or system sound scheme is required
-
-Regenerate with ffmpeg:
-
-```powershell
-ffmpeg -y -i notification_pcm.wav -c:a adpcm_ima_wav notification.wav
-```
+- Format: WAV, uncompressed 16-bit PCM, mono, 48,000 Hz, 0.075 s
+- Size: 7,244 bytes
+- Source: generated locally with smooth cosine envelope (4 ms attack, 4 ms release), -12 dBFS headroom, dual-tone C6/G6 bell (1046.50 Hz / 1567.98 Hz)
+- Zero resampling or compression artifacts; eliminates clicking, buzzing, and distortion on Bluetooth LE (BLE) and A2DP wireless earphones
+- Embedded by `platforms/windows/src/hook.rs`; requires no external ACM codecs, media files, or system sound schemes

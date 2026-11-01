@@ -9,6 +9,11 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, FreeLibrary, GetLastError, ERROR_CANCELLED, HANDLE, INVALID_HANDLE_VALUE,
     WAIT_OBJECT_0,
 };
+use windows_sys::Win32::Security::{
+    InitializeSecurityDescriptor, SetSecurityDescriptorDacl, SECURITY_ATTRIBUTES,
+    SECURITY_DESCRIPTOR,
+};
+const SECURITY_DESCRIPTOR_REVISION: u32 = 1;
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows_sys::Win32::System::Memory::{
     CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
@@ -75,9 +80,28 @@ impl SharedConfigWriter {
             let name = to_wide(SHARED_MEM_NAME);
             let size = std::mem::size_of::<TsfSharedConfig>() as u32;
 
+            // Security attributes with NULL DACL allows AppContainer (UWP / Windows Store)
+            // and elevated processes on Windows 10/11 to access the shared memory configuration.
+            let mut sd: SECURITY_DESCRIPTOR = std::mem::zeroed();
+            InitializeSecurityDescriptor(
+                &mut sd as *mut _ as *mut std::ffi::c_void,
+                SECURITY_DESCRIPTOR_REVISION,
+            );
+            SetSecurityDescriptorDacl(
+                &mut sd as *mut _ as *mut std::ffi::c_void,
+                1,
+                std::ptr::null_mut(),
+                0,
+            );
+            let mut sa = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: &mut sd as *mut _ as *mut std::ffi::c_void,
+                bInheritHandle: 0,
+            };
+
             let mapping = CreateFileMappingW(
                 INVALID_HANDLE_VALUE,
-                std::ptr::null_mut(),
+                &mut sa,
                 PAGE_READWRITE,
                 0,
                 size,

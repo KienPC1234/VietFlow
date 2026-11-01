@@ -6,6 +6,10 @@ fn main() {
         res.set_icon("../../assets/VietFlow-TSF.ico");
         res.set("ProductName", "VietFlow TSF");
         res.set("FileDescription", "VietFlow Text Services Framework TIP");
+        res.set("CompanyName", "VietFlow Team");
+        res.set("LegalCopyright", "Copyright (C) 2026 VietFlow Team. GNU GPL v3.0");
+        res.set("InternalName", "vietflow_tip");
+        res.set("OriginalFilename", "vietflow_tip.dll");
         let _ = res.compile();
 
         if std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default() == "msvc" {

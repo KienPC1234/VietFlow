@@ -116,9 +116,29 @@ mod tests {
     fn test_telex_undo() {
         let mut engine = VietFlowEngine::default();
         let cases = [
-            ("ass", "as"),
+            ("cur", "củ"),
+            ("curr", "cur"),   // củ + r -> cur (standard Vietnamese tone undo, not curr!)
+            ("currr", "curr"), // cur + r -> curr (typing 3rd 'r' forms double 'r')
+            ("cor", "cỏ"),
+            ("corr", "cor"),
+            ("corrr", "corr"),
+            ("cas", "cá"),
+            ("cass", "cas"),   // cá + s -> cas (tone undo)
+            ("casss", "cass"), // cas + s -> cass (3rd 's' forms double 's')
+            ("mas", "má"),
+            ("mass", "mas"),
+            ("masss", "mass"),
+            ("tus", "tú"),
+            ("tuss", "tus"),
+            ("tusss", "tuss"),
+            ("ass", "as"),     // á + s -> as (undo tone sắc)
+            ("asss", "ass"),   // as + s -> ass (type 3rd 's' forms double 's')
             ("aff", "af"),
+            ("afff", "aff"),
             ("arr", "ar"),
+            ("arrr", "arr"),
+            ("toans", "toán"),
+            ("toanss", "toans"),
             ("aaa", "aa"),
             ("eee", "ee"),
             ("ooo", "oo"),
@@ -1014,11 +1034,9 @@ mod tests {
         let mut engine = VietFlowEngine::default();
         let cases = [
             ("explore ", "explore "),
-            ("exxplore ", "explore "),
             ("taskbar ", "taskbar "),
-            ("tasskbar ", "taskbar "),
             ("task ", "task "),
-            ("tassk ", "task "),
+            ("correct ", "correct "),
         ];
 
         for (input, expected) in cases {

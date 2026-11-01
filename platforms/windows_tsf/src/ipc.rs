@@ -67,7 +67,10 @@ impl SharedConfigReader {
             .unwrap_or(HANDLE::default());
 
             let view = if !mapping.is_invalid() {
-                let p = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS | FILE_MAP_READ, 0, 0, size as usize);
+                let mut p = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS | FILE_MAP_READ, 0, 0, size as usize);
+                if p.Value.is_null() {
+                    p = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, size as usize);
+                }
                 if !p.Value.is_null() {
                     let ptr = p.Value as *mut TsfSharedConfig;
                     if (*ptr).version == 0 {

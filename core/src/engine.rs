@@ -138,7 +138,7 @@ impl VietFlowEngine {
         if !self.buffer.is_empty()
             && self.options.spell_check
             && self.options.auto_non_vn_restore
-            && self.has_any_vietnamese_mark()
+            && (self.has_any_vietnamese_mark() || self.matches_raw_english_keyword())
             && !self.is_valid_vietnamese_word()
         {
             let raw: String = self.raw_chars.iter().collect();
@@ -294,13 +294,8 @@ impl VietFlowEngine {
         // Try tone key
         let tone_key = get_tone_key(c, self.options.method, &self.options.custom_keymap);
         if tone_key != ToneKeyType::None {
-            let was_undo = self.current_tone != VnLexiTone::None
-                && self.current_tone == to_vn_lexi_tone(tone_key)
-                && tone_key != ToneKeyType::Remove;
             if let Some(res) = self.try_apply_tone(tone_key, c) {
-                if !was_undo {
-                    self.raw_chars.push(c);
-                }
+                self.raw_chars.push(c);
                 return res;
             }
         }
@@ -606,7 +601,7 @@ impl VietFlowEngine {
             return Some(self.rebuild_from_index(first_vowel));
         }
 
-        // Stop codas (c, ch, p, t) never take huyền/hỏi/ngã
+        // If the syllable has a coda, validate it before allowing tone
         if has_coda {
             let coda = &self.buffer[last_vowel + 1..];
             let coda_len = coda.len();
@@ -614,6 +609,9 @@ impl VietFlowEngine {
                 let mut coda_chars = ['\0'; 2];
                 for (i, slot) in coda.iter().enumerate() {
                     coda_chars[i] = to_lower_ascii(slot.raw_char);
+                }
+                if self.options.spell_check && !is_valid_ending_consonant(&coda_chars[..coda_len]) {
+                    return None;
                 }
                 if is_stop_coda(&coda_chars[..coda_len])
                     && matches!(
@@ -623,12 +621,14 @@ impl VietFlowEngine {
                 {
                     return None;
                 }
+            } else if self.options.spell_check {
+                return None;
             }
         }
 
-        // Check for tone undo: restore the raw keystroke sequence up to (but
-        // not including) the repeated tone key. This keeps the original `ow`,
-        // `uw`, `[`, `]`, `{`, `}` forms instead of leaving `ơs`/`ưs`.
+        // Check for tone undo: restore the raw keystroke sequence.
+        // Typing the tone key again cancels the tone mark, reverting the syllable
+        // to its literal raw characters (e.g. "củ" + "r" -> "cur", "toán" + "s" -> "toans").
         if self.current_tone == new_tone {
             self.current_tone = VnLexiTone::None;
             self.temp_disabled = true;
@@ -637,6 +637,7 @@ impl VietFlowEngine {
             for &raw in &self.raw_chars {
                 out.push_char(raw);
             }
+
             self.buffer.clear();
             for &raw in &self.raw_chars {
                 self.buffer.push(Slot::new(raw));
@@ -1165,7 +1166,7 @@ impl VietFlowEngine {
         if !self.buffer.is_empty()
             && self.options.spell_check
             && self.options.auto_non_vn_restore
-            && self.has_any_vietnamese_mark()
+            && (self.has_any_vietnamese_mark() || self.matches_raw_english_keyword())
             && !self.is_valid_vietnamese_word()
         {
             // Restore raw keystrokes
@@ -1542,6 +1543,34 @@ impl VietFlowEngine {
                 .any(|keyword| keyword == word)
     }
 
+    #[inline]
+    pub fn matches_raw_english_keyword(&self) -> bool {
+        if self.raw_chars.is_empty() {
+            return false;
+        }
+        if self.raw_chars.len() <= 32 {
+            let mut stack_buf = [0u8; 32];
+            let mut is_ascii = true;
+            for (i, &c) in self.raw_chars.iter().enumerate() {
+                if c.is_ascii() {
+                    stack_buf[i] = to_lower_ascii(c) as u8;
+                } else {
+                    is_ascii = false;
+                    break;
+                }
+            }
+            if is_ascii {
+                if let Ok(raw_slice) = std::str::from_utf8(&stack_buf[..self.raw_chars.len()]) {
+                    return self.matches_english_keyword(raw_slice);
+                }
+            }
+        } else {
+            let raw_str: String = self.raw_chars.iter().map(|&c| to_lower_ascii(c)).collect();
+            return self.matches_english_keyword(&raw_str);
+        }
+        false
+    }
+
     pub fn is_valid_vietnamese_word(&self) -> bool {
         if self.buffer.is_empty() {
             return true;
@@ -1556,35 +1585,8 @@ impl VietFlowEngine {
             return false;
         }
 
-        // Only compare the raw key sequence. Comparing the buffer base would
-        // treat Vietnamese words such as "mẹ" (raw "mej", base "me") as the
-        // English word "me" and skip the tone restoration.
-        // Use stack buffer to avoid heap allocation on the hot-path keystroke loop.
-        if !self.raw_chars.is_empty() {
-            if self.raw_chars.len() <= 32 {
-                let mut stack_buf = [0u8; 32];
-                let mut is_ascii = true;
-                for (i, &c) in self.raw_chars.iter().enumerate() {
-                    if c.is_ascii() {
-                        stack_buf[i] = to_lower_ascii(c) as u8;
-                    } else {
-                        is_ascii = false;
-                        break;
-                    }
-                }
-                if is_ascii {
-                    if let Ok(raw_slice) = std::str::from_utf8(&stack_buf[..self.raw_chars.len()]) {
-                        if self.matches_english_keyword(raw_slice) {
-                            return false;
-                        }
-                    }
-                }
-            } else {
-                let raw_str: String = self.raw_chars.iter().map(|&c| to_lower_ascii(c)).collect();
-                if self.matches_english_keyword(&raw_str) {
-                    return false;
-                }
-            }
+        if self.matches_raw_english_keyword() {
+            return false;
         }
 
         if self.vowel_count == 0 {
