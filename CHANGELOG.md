@@ -4,6 +4,21 @@ Mọi thay đổi đáng chú ý của VietFlow được ghi ở đây.
 Định dạng dựa trên [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
+## [Unreleased]
+
+### Added
+
+- Tối ưu hóa Core Engine theo mô hình OpenKey: Bổ sung cờ `temp_disabled` (tương đương `tempDisableKey`) lập tức khóa biến đổi dấu tiếng Việt khi người dùng nhấn lặp phím để hoàn tác (tone undo hoặc modify undo), hoặc khi bộ gõ chuyển sang âm tiết ngoại lai. Toàn bộ các ký tự kế tiếp trong từ đi thẳng không bị gán nhầm dấu thanh.
+- Tự động bù trừ ô gợi ý Autocomplete (Chromium Omnibox, Windows Explorer, Run dialog): Chèn ký tự đệm Narrow No-Break Space (`\u{202F}`) kèm phím Backspace bù để hủy bỏ vùng bôi đen autocomplete trước khi hoàn tác ký tự, ngăn ngừa triệt để lỗi nuốt backspace gây lặp ký tự thừa.
+- Tự phục hồi biểu tượng khay hệ thống: Lắng nghe thông điệp hệ thống `TaskbarCreated` (`RegisterWindowMessageW`) để tự động gắn lại biểu tượng khay khi Explorer bị reload hoặc khởi động lại.
+
+### Fixed
+
+- Khắc phục triệt để lỗi treo bộ cài MSI (Windows Installer Setup hang): Tiếp nhận và xử lý đầy đủ các thông điệp `WM_CLOSE`, `WM_QUERYENDSESSION`, `WM_ENDSESSION` trong luồng thông điệp daemon (`wnd_proc`), cho phép Windows Restart Manager và bộ cài đặt nâng cấp/thay thế tiến trình đang chạy tức thì mà không bị chặn tiến trình.
+- Bổ sung bảng `ActionText` tiêu chuẩn cho bộ cài MSI trong kịch bản đóng gói `build.ps1`, chấm dứt tình trạng dòng trạng thái `Status:` bị bỏ trống trên cửa sổ cài đặt `VietFlow Setup`.
+- Loại bỏ các lệnh đồng bộ chặn luồng giao diện khi chuyển đổi chế độ TSF TIP, giải quyết dứt điểm hiện tượng giật lag khi chuyển chế độ gõ.
+- Sửa lỗi lặp ký tự và sinh chữ thừa ở kiểu gõ Telex khi gõ các từ tiếng Anh (ví dụ `explore` thành `exxxplore` hoặc `taskbar` thành `tassskbar`).
+
 ## [0.1.2] - 2026-11-01
 
 ### Added

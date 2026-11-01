@@ -1008,4 +1008,37 @@ mod tests {
             assert_eq!(actual, expected, "Failed VNI undo for: {input}");
         }
     }
+
+    #[test]
+    fn test_explore_and_taskbar() {
+        let mut engine = VietFlowEngine::default();
+        let cases = [
+            ("explore ", "explore "),
+            ("exxplore ", "explore "),
+            ("taskbar ", "taskbar "),
+            ("tasskbar ", "taskbar "),
+            ("task ", "task "),
+            ("tassk ", "task "),
+        ];
+
+        for (input, expected) in cases {
+            engine.reset();
+            let mut screen = String::new();
+            for c in input.chars() {
+                let (bs, out) = engine.process_key(c);
+                let mut char_buf = [0u8; 4];
+                let char_str = c.encode_utf8(&mut char_buf);
+                let is_plain_passthrough = bs == 0 && out.as_str() == char_str;
+                if is_plain_passthrough {
+                    screen.push(c);
+                } else {
+                    for _ in 0..bs {
+                        screen.pop();
+                    }
+                    screen.push_str(out.as_str());
+                }
+            }
+            assert_eq!(screen, expected, "Failed for input: {input}");
+        }
+    }
 }

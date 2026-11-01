@@ -67,6 +67,7 @@ pub struct VietFlowEngine {
 
     display_shadow: Vec<char>,
     last_key_time_ms: u64,
+    pub temp_disabled: bool,
 }
 
 impl Default for VietFlowEngine {
@@ -92,6 +93,7 @@ impl VietFlowEngine {
             capitalize_next: false,
             display_shadow: Vec::with_capacity(32),
             last_key_time_ms: 0,
+            temp_disabled: false,
         }
     }
 
@@ -158,6 +160,7 @@ impl VietFlowEngine {
         self.vowel_start = 0;
         self.vowel_count = 0;
         self.display_shadow.clear();
+        self.temp_disabled = false;
     }
 
     pub fn process_key(&mut self, c: char) -> (usize, KeyText) {
@@ -239,13 +242,14 @@ impl VietFlowEngine {
         }
 
         // Telex bracket shortcuts: [ = ơ, ] = ư, { = Ơ, } = Ư (Telex only)
-        if self.options.method == InputMethod::Telex {
+        if self.options.method == InputMethod::Telex && !self.temp_disabled {
             if let Some(res) = self.try_bracket_shortcut(c) {
                 return res;
             }
         }
 
         if self.buffer.is_empty() {
+            self.temp_disabled = false;
             if self.options.consonant_shortcuts && matches!(c, 'f' | 'F' | 'j' | 'J' | 'w' | 'W') {
                 return self.process_first_letter(c);
             }
@@ -274,11 +278,29 @@ impl VietFlowEngine {
             return (0, KeyText::from_char(c));
         }
 
+        // When temporary key disable is active (e.g. after tone/accent undo or foreign word restoration),
+        // let all subsequent alphabetic letters pass through without forming Vietnamese marks.
+        if self.temp_disabled {
+            if is_letter_fast(c) {
+                return self.process_subsequent_letter(c);
+            }
+            let char_type = get_char_type(c, self.options.method, &self.options.custom_keymap);
+            if matches!(char_type, CharType::WordBreak | CharType::Reset) || is_word_break_fast(c) {
+                return self.process_word_break(c);
+            }
+            return self.process_word_break(c);
+        }
+
         // Try tone key
         let tone_key = get_tone_key(c, self.options.method, &self.options.custom_keymap);
         if tone_key != ToneKeyType::None {
+            let was_undo = self.current_tone != VnLexiTone::None
+                && self.current_tone == to_vn_lexi_tone(tone_key)
+                && tone_key != ToneKeyType::Remove;
             if let Some(res) = self.try_apply_tone(tone_key, c) {
-                self.raw_chars.push(c);
+                if !was_undo {
+                    self.raw_chars.push(c);
+                }
                 return res;
             }
         }
@@ -609,6 +631,7 @@ impl VietFlowEngine {
         // `uw`, `[`, `]`, `{`, `}` forms instead of leaving `ơs`/`ưs`.
         if self.current_tone == new_tone {
             self.current_tone = VnLexiTone::None;
+            self.temp_disabled = true;
             let backspaces = self.display_len;
             let mut out = KeyText::new();
             for &raw in &self.raw_chars {
@@ -618,7 +641,9 @@ impl VietFlowEngine {
             for &raw in &self.raw_chars {
                 self.buffer.push(Slot::new(raw));
             }
-            self.recalculate_word_form();
+            self.word_form = WordForm::NonVn;
+            self.has_ending_consonant = false;
+            self.clear_vowels();
             self.display_len = out.chars().count();
             return Some((backspaces, out));
         }
@@ -674,6 +699,7 @@ impl VietFlowEngine {
                     if last_slot.modified {
                         last_slot.lexi = if last_slot.is_upper { VnLexiName::D } else { VnLexiName::d };
                         last_slot.modified = false;
+                        self.temp_disabled = true;
                         self.buffer.push(Slot::new(raw_key));
                         return Some(self.rebuild_current_word());
                     }
@@ -701,6 +727,7 @@ impl VietFlowEngine {
                             if slot.modified {
                                 slot.lexi = if slot.is_upper { VnLexiName::D } else { VnLexiName::d };
                                 slot.modified = false;
+                                self.temp_disabled = true;
                                 self.buffer.push(Slot::new(raw_key));
                                 return Some(self.rebuild_current_word());
                             }
@@ -721,6 +748,7 @@ impl VietFlowEngine {
                     if last_slot.modified {
                         last_slot.lexi = iso_to_vn_lexi(last_slot_char);
                         last_slot.modified = false;
+                        self.temp_disabled = true;
                         self.buffer.push(Slot::new(raw_key));
                         return Some(self.rebuild_current_word());
                     }
@@ -753,6 +781,7 @@ impl VietFlowEngine {
                                     if slot.modified {
                                         slot.lexi = iso_to_vn_lexi(slot_char);
                                         slot.modified = false;
+                                        self.temp_disabled = true;
                                         self.buffer.push(Slot::new(raw_key));
                                         return Some(self.rebuild_current_word());
                                     }
@@ -1202,6 +1231,7 @@ impl VietFlowEngine {
         self.has_ending_consonant = false;
         self.display_len = prefix_len + out.chars().count();
         self.clear_vowels();
+        self.temp_disabled = true;
 
         (backspaces, out)
     }
@@ -1212,6 +1242,7 @@ impl VietFlowEngine {
         }
 
         if self.buffer.is_empty() {
+            self.temp_disabled = false;
             return (0, KeyText::new());
         }
 

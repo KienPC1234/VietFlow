@@ -240,12 +240,11 @@ pub fn is_tsf_registered() -> bool {
 }
 
 /// Activates or deactivates the VietFlow TSF profile in the system.
-pub fn set_tsf_profile_active(active: bool) {
-    if active {
-        call_set_default_layout_or_tip(
-            "0409:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
-        );
-    }
+/// Dynamic invocation of SetDefaultLayoutOrTip at runtime causes Explorer to synchronously
+/// tear down and reload all input stacks across all threads, leading to shell hang and crash.
+/// TSF active state and options are synchronized cleanly across processes via shared memory (sync_tsf_config).
+pub fn set_tsf_profile_active(_active: bool) {
+    // Intentionally omitted at runtime to prevent explorer.exe reload and shell hangs.
 }
 
 pub fn call_set_default_layout_or_tip(layout_str: &str) -> bool {

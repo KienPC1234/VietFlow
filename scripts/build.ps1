@@ -48,6 +48,43 @@ function Get-ChangelogSection([string]$Text, [string]$Version) {
     return ""
 }
 
+function Add-MsiActionText([string]$MsiPath) {
+    if (-not (Test-Path $MsiPath)) { return }
+    try {
+        $wi = New-Object -ComObject WindowsInstaller.Installer
+        $db = $wi.OpenDatabase($MsiPath, 1)
+        $sqlCreate = "CREATE TABLE `ActionText` (`Action` CHAR(72) NOT NULL, `Description` CHAR(64) LOCALIZABLE, `Template` CHAR(128) LOCALIZABLE PRIMARY KEY `Action`)"
+        try {
+            $view = $db.OpenView($sqlCreate)
+            $view.Execute()
+            $view.Close()
+        } catch {}
+
+        $actions = @(
+            @("InstallValidate", "Validating install", ""),
+            @("InstallInitialize", "Initializing installation...", ""),
+            @("ProcessComponents", "Updating component registration...", ""),
+            @("InstallFiles", "Copying new files...", "File: [1], Directory: [9], Size: [6]"),
+            @("CreateShortcuts", "Creating shortcuts...", "Shortcut: [1]"),
+            @("WriteRegistryValues", "Writing system registry values...", "Key: [1], Name: [2], Value: [3]"),
+            @("RemoveFiles", "Removing files...", "File: [1], Directory: [9]"),
+            @("InstallFinalize", "Finalizing installation...", "")
+        )
+        foreach ($act in $actions) {
+            try {
+                $sql = "INSERT INTO `ActionText` (`Action`, `Description`, `Template`) VALUES ('$($act[0])', '$($act[1])', '$($act[2])')"
+                $view = $db.OpenView($sql)
+                $view.Execute()
+                $view.Close()
+            } catch {}
+        }
+        $db.Commit()
+        Write-Host "      Injected ActionText into $MsiPath" -ForegroundColor Green
+    } catch {
+        Write-Warning "Failed to inject ActionText into $($MsiPath): $_"
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Version (VERSION is the only place to bump)
 # ---------------------------------------------------------------------------
@@ -349,6 +386,10 @@ if ($willPackage) {
         if ($LASTEXITCODE -ne 0) {
             Write-Error "Velopack packaging failed for $a!"
             exit $LASTEXITCODE
+        }
+        if ($Msi) {
+            $msiFile = Join-Path $releasesDir "VietFlow-$channel.msi"
+            Add-MsiActionText $msiFile
         }
     }
 

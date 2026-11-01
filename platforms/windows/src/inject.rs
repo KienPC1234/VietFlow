@@ -16,9 +16,9 @@ extern "system" {
     fn MapVirtualKeyW(uCode: u32, uMapType: u32) -> u32;
 }
 
-const ATOMIC_BACKSPACE_LIMIT: usize = 8;
+const ATOMIC_BACKSPACE_LIMIT: usize = 16;
 const ATOMIC_CHAR_LIMIT: usize = 32;
-const MAX_ATOMIC_INPUTS: usize = (ATOMIC_BACKSPACE_LIMIT + ATOMIC_CHAR_LIMIT) * 2;
+const MAX_ATOMIC_INPUTS: usize = (ATOMIC_BACKSPACE_LIMIT + ATOMIC_CHAR_LIMIT + 4) * 2;
 
 #[inline]
 pub fn create_vk_input(vk: u16, key_up: bool) -> INPUT {
@@ -96,6 +96,21 @@ fn send_unicode_batch(backspaces: usize, text: &str) -> bool {
         let mut count = 0usize;
         let back_scan = unsafe { MapVirtualKeyW(VK_BACK as u32, 0) as u16 };
 
+        // Narrow No-Break Space (\u{202F}) collapses any active autocomplete suggestion
+        // (such as Chrome Omnibox or Explorer address bar candidate selection) so that
+        // subsequent backspaces cleanly delete real typed letters instead of getting eaten
+        // by the selection.
+        if backspaces > 0 {
+            const EMPTY_CHAR: char = '\u{202F}';
+            inputs[count] = create_unicode_input(EMPTY_CHAR, false);
+            inputs[count + 1] = create_unicode_input(EMPTY_CHAR, true);
+            count += 2;
+
+            inputs[count] = create_vk_input_scanned(VK_BACK, back_scan, false);
+            inputs[count + 1] = create_vk_input_scanned(VK_BACK, back_scan, true);
+            count += 2;
+        }
+
         for _ in 0..backspaces {
             inputs[count] = create_vk_input_scanned(VK_BACK, back_scan, false);
             inputs[count + 1] = create_vk_input_scanned(VK_BACK, back_scan, true);
@@ -116,7 +131,12 @@ fn send_unicode_batch(backspaces: usize, text: &str) -> bool {
     // Large restorations or macro expansions
     let mut ok = true;
     if backspaces > 0 {
-        let mut back_inputs = Vec::with_capacity(backspaces * 2);
+        let mut back_inputs = Vec::with_capacity((backspaces + 1) * 2 + 2);
+        const EMPTY_CHAR: char = '\u{202F}';
+        back_inputs.push(create_unicode_input(EMPTY_CHAR, false));
+        back_inputs.push(create_unicode_input(EMPTY_CHAR, true));
+        back_inputs.push(create_vk_input(VK_BACK, false));
+        back_inputs.push(create_vk_input(VK_BACK, true));
         for _ in 0..backspaces {
             back_inputs.push(create_vk_input(VK_BACK, false));
             back_inputs.push(create_vk_input(VK_BACK, true));
@@ -200,7 +220,12 @@ fn send_scancode_batch(backspaces: usize, text: &str) {
 /// with a tiny pause. Slower, but survives apps that drop fast batches.
 fn send_safe_batch(backspaces: usize, text: &str) {
     if backspaces > 0 {
-        let mut inputs = Vec::with_capacity(backspaces * 2);
+        let mut inputs = Vec::with_capacity((backspaces + 1) * 2 + 2);
+        const EMPTY_CHAR: char = '\u{202F}';
+        inputs.push(create_unicode_input(EMPTY_CHAR, false));
+        inputs.push(create_unicode_input(EMPTY_CHAR, true));
+        inputs.push(create_vk_input(VK_BACK, false));
+        inputs.push(create_vk_input(VK_BACK, true));
         for _ in 0..backspaces {
             inputs.push(create_vk_input(VK_BACK, false));
             inputs.push(create_vk_input(VK_BACK, true));

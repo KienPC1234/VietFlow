@@ -31,10 +31,11 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorking
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetMessageW, MessageBoxW,
-    PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer, ShowWindow,
+    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetTimer, ShowWindow,
     TranslateMessage, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_SETFOREGROUND,
     MB_TOPMOST, MSG, SW_RESTORE, SW_SHOWNORMAL, WNDCLASSW, WM_CLOSE, WM_CLIPBOARDUPDATE,
-    WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER,
+    WM_COMMAND, WM_DESTROY, WM_ENDSESSION, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_QUERYENDSESSION,
+    WM_RBUTTONUP, WM_TIMER,
 };
 
 pub mod constants;
@@ -55,6 +56,7 @@ extern "system" {
 }
 
 static mut TRAY_PTR: *mut TrayIcon = null_mut();
+static mut WM_TASKBAR_CREATED: u32 = 0;
 
 const TIMER_ID_CONFIG: usize = 1;
 static CONFIG_MTIME: Mutex<Option<SystemTime>> = Mutex::new(None);
@@ -377,6 +379,8 @@ fn main() {
             null_mut(),
         );
 
+        WM_TASKBAR_CREATED = RegisterWindowMessageW(to_wide("TaskbarCreated\0").as_ptr());
+
         let icon_v = create_v_icon(&config);
         let icon_e = create_e_icon(&config);
         let icon_app = create_app_icon();
@@ -680,6 +684,19 @@ unsafe extern "system" fn wnd_proc(
             }
             0
         }
+        WM_CLOSE => {
+            DestroyWindow(hwnd);
+            0
+        }
+        WM_QUERYENDSESSION => {
+            1
+        }
+        WM_ENDSESSION => {
+            if w_param != 0 {
+                DestroyWindow(hwnd);
+            }
+            0
+        }
         WM_DESTROY => {
             RemoveClipboardFormatListener(hwnd);
             terminate_all_ui();
@@ -687,7 +704,16 @@ unsafe extern "system" fn wnd_proc(
             PostQuitMessage(0);
             0
         }
-        _ => DefWindowProcW(hwnd, msg, w_param, l_param),
+        _ => {
+            if WM_TASKBAR_CREATED != 0 && msg == WM_TASKBAR_CREATED {
+                if !TRAY_PTR.is_null() {
+                    (*TRAY_PTR).re_add();
+                }
+                0
+            } else {
+                DefWindowProcW(hwnd, msg, w_param, l_param)
+            }
+        }
     }
 }
 
