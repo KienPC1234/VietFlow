@@ -122,6 +122,8 @@ fn spawn_gui(convert_mode: bool) {
     }
     if let Ok(exe) = std::env::current_exe() {
         let mut command = std::process::Command::new(exe);
+        let config_path = crate::config::AppConfig::config_path();
+        command.arg("--config").arg(config_path);
         if convert_mode {
             command.arg("--convert");
         } else {
@@ -242,10 +244,15 @@ fn run_native_gui(convert_mode: bool) {
         }
         SetEmbeddedFontData(EMBEDDED_FONT.as_ptr(), EMBEDDED_FONT.len());
         SetTrayFontData(ICON_FONT.as_ptr(), ICON_FONT.len());
+
+        let config_path = crate::config::AppConfig::config_path();
+        let path_str = config_path.to_string_lossy();
+        let c_path = std::ffi::CString::new(path_str.as_bytes()).unwrap_or_default();
+
         if convert_mode {
-            ShowConverterGui(std::ptr::null());
+            ShowConverterGui(c_path.as_ptr());
         } else {
-            ShowSettingsGui(std::ptr::null(), None);
+            ShowSettingsGui(c_path.as_ptr(), None);
         }
     }
 }
@@ -274,10 +281,17 @@ fn relaunch_as_admin() -> bool {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    // Fast-path for Velopack installer / updater lifecycle hooks
-    // (--veloapp-install, --veloapp-updated, --veloapp-obsolete, --veloapp-uninstall)
-    if args.iter().any(|a| a.starts_with("--veloapp-")) {
-        return;
+    if let Some(pos) = args.iter().position(|a| a == "--config") {
+        if let Some(path) = args.get(pos + 1) {
+            crate::config::set_custom_config_path(std::path::PathBuf::from(path));
+        }
+    }
+
+    if args.iter().any(|a| a == "--clean-shortcuts" || a == "--uninstall-cleanup") {
+        unsafe {
+            crate::startup::clean_all_shortcuts_and_cache();
+        }
+        std::process::exit(0);
     }
 
     if args.iter().any(|a| a == "--gui" || a == "-g" || a == "--settings") {
@@ -291,6 +305,10 @@ fn main() {
     if args.iter().any(|a| a == "--register-tsf") {
         match crate::tsf::register_tsf() {
             Ok(_) => {
+                let mut config = AppConfig::load();
+                config.use_tsf = true;
+                config.save();
+                crate::tsf::sync_tsf_config(&config, config.enabled);
                 println!("Đã đăng ký VietFlow TSF TIP thành công.");
                 std::process::exit(0);
             }
@@ -303,6 +321,9 @@ fn main() {
     if args.iter().any(|a| a == "--unregister-tsf") {
         match crate::tsf::unregister_tsf() {
             Ok(_) => {
+                let mut config = AppConfig::load();
+                config.use_tsf = false;
+                config.save();
                 println!("Đã hủy đăng ký VietFlow TSF TIP thành công.");
                 std::process::exit(0);
             }
@@ -383,11 +404,24 @@ fn main() {
 
         WM_TASKBAR_CREATED = RegisterWindowMessageW(to_wide("TaskbarCreated\0").as_ptr());
 
+        // Synchronize TSF configuration to cross-process shared memory immediately on daemon launch
+        crate::tsf::sync_tsf_config(&config, config.enabled);
+
         let icon_v = create_v_icon(&config);
         let icon_e = create_e_icon(&config);
         let icon_app = create_app_icon();
         let icon_tsf = create_tsf_icon();
         let is_tsf_mode = config.use_tsf && crate::tsf::is_tsf_dll_present() && crate::tsf::is_tsf_registered();
+        if is_tsf_mode {
+            crate::tsf::call_install_layout_or_tip(
+                "0409:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+                false,
+            );
+            crate::tsf::call_install_layout_or_tip(
+                "042a:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+                true,
+            );
+        }
         let mut tray = TrayIcon::new(hwnd, icon_v, icon_e, icon_app, icon_tsf, is_tsf_mode);
         tray.update_status(config.enabled);
 
@@ -425,12 +459,7 @@ unsafe extern "system" fn wnd_proc(
             if event == WM_LBUTTONDBLCLK {
                 spawn_gui(false);
             } else if event == WM_LBUTTONUP {
-                let is_tsf = !TRAY_PTR.is_null() && (*TRAY_PTR).is_tsf_mode;
-                if is_tsf {
-                    spawn_gui(false);
-                } else {
-                    toggle_mode(hwnd);
-                }
+                toggle_mode(hwnd);
             } else if event == WM_RBUTTONUP {
                 if let Ok(lock) = STATE.lock() {
                     if let Some(state) = lock.as_ref() {
@@ -637,6 +666,14 @@ unsafe extern "system" fn wnd_proc(
                                 state.config.use_tsf = !state.config.use_tsf;
                                 crate::tsf::sync_tsf_config(&state.config, state.effective_enabled());
                                 if state.config.use_tsf && crate::tsf::is_tsf_registered() {
+                                    crate::tsf::call_install_layout_or_tip(
+                                        "0409:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+                                        false,
+                                    );
+                                    crate::tsf::call_install_layout_or_tip(
+                                        "042a:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+                                        true,
+                                    );
                                     crate::tsf::set_tsf_profile_active(true);
                                 } else {
                                     crate::tsf::set_tsf_profile_active(false);

@@ -33,29 +33,7 @@ pub unsafe fn set_start_with_windows(enable: bool) -> bool {
 
     let success = if enable {
         if let Ok(exe_path) = std::env::current_exe() {
-            // When installed via Velopack or MSI, the app executable is in `current\VietFlow.exe`.
-            // Pointing the Run registry entry to the root launcher stub `..\VietFlow.exe` ensures
-            // startup executes the latest version through updates.
-            let target_exe = if exe_path
-                .parent()
-                .and_then(|p| p.file_name())
-                .map(|f| f.to_string_lossy().eq_ignore_ascii_case("current"))
-                .unwrap_or(false)
-            {
-                if let Some(grandparent) = exe_path.parent().and_then(|p| p.parent()) {
-                    let root_stub = grandparent.join("VietFlow.exe");
-                    if root_stub.exists() {
-                        root_stub
-                    } else {
-                        exe_path
-                    }
-                } else {
-                    exe_path
-                }
-            } else {
-                exe_path
-            };
-            let quoted = format!("\"{}\"", target_exe.to_string_lossy());
+            let quoted = format!("\"{}\"", exe_path.to_string_lossy());
             let wide_val = to_wide(&quoted);
             let byte_len = (wide_val.len() * std::mem::size_of::<u16>()) as u32;
 
@@ -76,4 +54,58 @@ pub unsafe fn set_start_with_windows(enable: bool) -> bool {
 
     RegCloseKey(hkey);
     success
+}
+
+/// Remove all application shortcuts from Start Menu, Desktop, and Startup registry,
+/// then signal Windows Shell to purge stale icon caches and refresh UI immediately.
+pub unsafe fn clean_all_shortcuts_and_cache() {
+    // 1. Remove Startup Run entry
+    let _ = set_start_with_windows(false);
+
+    // 2. Collect shortcut file targets across user and machine profiles
+    let mut candidate_paths: Vec<std::path::PathBuf> = Vec::new();
+
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let p = std::path::Path::new(&appdata);
+        candidate_paths.push(p.join(r"Microsoft\Windows\Start Menu\Programs\VietFlow.lnk"));
+        candidate_paths.push(p.join(r"Microsoft\Windows\Start Menu\Programs\VietFlow Team\VietFlow.lnk"));
+    }
+    if let Ok(userprofile) = std::env::var("USERPROFILE") {
+        let p = std::path::Path::new(&userprofile);
+        candidate_paths.push(p.join(r"Desktop\VietFlow.lnk"));
+        candidate_paths.push(p.join(r"OneDrive\Desktop\VietFlow.lnk"));
+    }
+    if let Ok(public) = std::env::var("PUBLIC") {
+        let p = std::path::Path::new(&public);
+        candidate_paths.push(p.join(r"Desktop\VietFlow.lnk"));
+    }
+    if let Ok(programdata) = std::env::var("ProgramData") {
+        let p = std::path::Path::new(&programdata);
+        candidate_paths.push(p.join(r"Microsoft\Windows\Start Menu\Programs\VietFlow.lnk"));
+        candidate_paths.push(p.join(r"Microsoft\Windows\Start Menu\Programs\VietFlow Team\VietFlow.lnk"));
+    }
+
+    for path in &candidate_paths {
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    // 3. Remove orphaned Start Menu directories if empty
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let team_folder = std::path::Path::new(&appdata).join(r"Microsoft\Windows\Start Menu\Programs\VietFlow Team");
+        let _ = std::fs::remove_dir(&team_folder);
+    }
+    if let Ok(programdata) = std::env::var("ProgramData") {
+        let team_folder = std::path::Path::new(&programdata).join(r"Microsoft\Windows\Start Menu\Programs\VietFlow Team");
+        let _ = std::fs::remove_dir(&team_folder);
+    }
+
+    // 4. Force Windows Shell icon cache refresh
+    windows_sys::Win32::UI::Shell::SHChangeNotify(
+        windows_sys::Win32::UI::Shell::SHCNE_ASSOCCHANGED as i32,
+        windows_sys::Win32::UI::Shell::SHCNF_IDLIST,
+        std::ptr::null(),
+        std::ptr::null(),
+    );
 }

@@ -1,103 +1,167 @@
+# VietFlow Release Publisher
+# Synchronizes release metadata with GitHub Releases and uploads all built artifacts.
+# Supports GitHub Token from GITHUB_TOKEN environment variable, GitHub CLI (gh), or Git credential helper.
+
+param(
+    [string]$Tag = "",
+    [switch]$Draft = $false,
+    [switch]$Prerelease = $false
+)
+
 $ErrorActionPreference = "Stop"
 $env:GIT_TERMINAL_PROMPT = '0'
 $env:GCM_INTERACTIVE = 'never'
 
-$cred = @('protocol=https', 'host=github.com', '') | git credential fill 2>$null
-$token = ($cred | Select-String '^password=').Line.Substring(9)
-if (-not $token) { throw "No GitHub credential available" }
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$distDir = Join-Path $repoRoot "dist"
+$releasesDir = Join-Path $repoRoot "releases"
+
+# 1. Resolve GitHub Token
+$token = $env:GITHUB_TOKEN
+if ([string]::IsNullOrWhiteSpace($token)) {
+    $ghCmd = Get-Command "gh" -ErrorAction SilentlyContinue
+    if ($ghCmd) {
+        $token = & $ghCmd.Source auth token 2>$null
+    }
+}
+if ([string]::IsNullOrWhiteSpace($token)) {
+    try {
+        $cred = @('protocol=https', 'host=github.com', '') | git credential fill 2>$null
+        $tokenLine = $cred | Select-String '^password=' | Select-Object -First 1
+        if ($tokenLine) {
+            $token = $tokenLine.Line.Substring(9).Trim()
+        }
+    } catch {}
+}
+if ([string]::IsNullOrWhiteSpace($token)) {
+    Write-Error "No GitHub credential available. Set GITHUB_TOKEN, authenticate with 'gh auth login', or configure git credentials."
+    exit 1
+}
 
 $headers = @{
-    Authorization = "token $token"
-    'User-Agent'  = 'VietFlow'
+    Authorization = "Bearer $token"
+    'User-Agent'  = 'VietFlow-Publisher/1.0'
     Accept        = 'application/vnd.github+json'
 }
 
-$manifest = Get-Content (Join-Path $PSScriptRoot '..\dist\latest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-$tag = "v$($manifest.version)"
+# 2. Read Release Metadata
+$manifestPath = Join-Path $distDir "latest.json"
+if (-not (Test-Path $manifestPath)) {
+    Write-Error "Missing manifest at $manifestPath. Please run scripts/build.ps1 first."
+    exit 1
+}
 
-$releaseBody = [ordered]@{
-    tag_name         = $tag
-    target_commitish = 'main'
-    name             = "VietFlow $($manifest.version)"
-    body             = $manifest.notes
-    draft            = $false
-    prerelease       = $false
-} | ConvertTo-Json -Depth 4
+$manifest = Get-Content $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$version = $manifest.version
+if ([string]::IsNullOrWhiteSpace($Tag)) {
+    $Tag = "v$version"
+}
 
+$releaseNotes = if ($manifest.notes) { $manifest.notes } else { "VietFlow Release $version" }
+$releaseTitle = "VietFlow $version"
+
+Write-Host "=================================================" -ForegroundColor Cyan
+Write-Host "  VietFlow Release Publisher: $Tag               " -ForegroundColor Cyan
+Write-Host "=================================================" -ForegroundColor Cyan
+
+# 3. Create or Update GitHub Release
+$repoApi = "https://api.github.com/repos/KienPC1234/VietFlow/releases"
 $release = $null
+
 try {
-    $release = Invoke-RestMethod -Method Get `
-        -Uri "https://api.github.com/repos/KienPC1234/VietFlow/releases/tags/$tag" `
-        -Headers $headers
-    Write-Host "Found existing release $($release.tag_name) (id $($release.id))"
-} catch {
-    $release = Invoke-RestMethod -Method Post `
-        -Uri "https://api.github.com/repos/KienPC1234/VietFlow/releases" `
+    $release = Invoke-RestMethod -Method Get -Uri "$repoApi/tags/$Tag" -Headers $headers
+    Write-Host "Found existing release $Tag (id: $($release.id)). Synchronizing metadata..." -ForegroundColor Yellow
+
+    $updateBody = [ordered]@{
+        name       = $releaseTitle
+        body       = $releaseNotes
+        draft      = [bool]$Draft
+        prerelease = [bool]$Prerelease
+    } | ConvertTo-Json -Depth 4
+
+    $release = Invoke-RestMethod -Method Patch `
+        -Uri "$repoApi/$($release.id)" `
         -Headers $headers `
-        -Body ([System.Text.Encoding]::UTF8.GetBytes($releaseBody)) `
+        -Body ([System.Text.Encoding]::UTF8.GetBytes($updateBody)) `
         -ContentType 'application/json; charset=utf-8'
-    Write-Host "Created release $($release.tag_name) (id $($release.id))"
-}
-Write-Host $release.html_url
+} catch {
+    Write-Host "Creating new release $Tag on GitHub..." -ForegroundColor Cyan
 
-$requiredAssets = @(
-    'dist\VietFlow-x64.exe',
-    'dist\VietFlow-x86.exe',
-    'dist\latest.json',
-    'dist\version.txt',
-    'dist\CHANGELOG.md'
-)
-$optionalAssets = @(
-    'dist\VietFlow.exe',
-    'dist\vietflow_tip.dll',
-    'dist\VietFlow-arm64.exe',
-    'releases\VietFlow-win-x64-Setup.exe',
-    'releases\VietFlow-win-x86-Setup.exe',
-    'releases\VietFlow-win-arm64-Setup.exe',
-    'releases\VietFlow-win-x64.msi',
-    'releases\VietFlow-win-x86.msi',
-    'releases\VietFlow-win-arm64.msi',
-    'releases\VietFlow-win-x64-Portable.zip',
-    'releases\VietFlow-win-x86-Portable.zip',
-    'releases\VietFlow-win-arm64-Portable.zip'
-)
+    $createBody = [ordered]@{
+        tag_name         = $Tag
+        target_commitish = 'main'
+        name             = $releaseTitle
+        body             = $releaseNotes
+        draft            = [bool]$Draft
+        prerelease       = [bool]$Prerelease
+    } | ConvertTo-Json -Depth 4
 
-$assets = @($requiredAssets)
-foreach ($asset in $optionalAssets) {
-    $path = Join-Path (Split-Path -Parent $PSScriptRoot) $asset
-    if (Test-Path $path) { $assets += $asset }
+    $release = Invoke-RestMethod -Method Post `
+        -Uri $repoApi `
+        -Headers $headers `
+        -Body ([System.Text.Encoding]::UTF8.GetBytes($createBody)) `
+        -ContentType 'application/json; charset=utf-8'
 }
 
-# Auto-inject branding bitmaps and database optimizations into any MSI assets before publishing
-$injectScript = Join-Path $PSScriptRoot "inject_msi_bitmaps.ps1"
-if (Test-Path $injectScript) {
-    foreach ($asset in $assets) {
-        if ($asset.EndsWith('.msi', [System.StringComparison]::OrdinalIgnoreCase)) {
-            $msiPath = Join-Path (Split-Path -Parent $PSScriptRoot) $asset
-            Write-Host "Verifying/Injecting branding bitmaps into $msiPath..." -ForegroundColor Cyan
-            & pwsh -File $injectScript -MsiPath $msiPath
-        }
+Write-Host "Release URL: $($release.html_url)" -ForegroundColor Green
+
+# 4. Discover Release Assets
+$candidates = @(
+    (Join-Path $distDir "VietFlow-x64.exe"),
+    (Join-Path $distDir "VietFlow-x86.exe"),
+    (Join-Path $distDir "VietFlow-arm64.exe"),
+    (Join-Path $distDir "VietFlow.exe"),
+    (Join-Path $distDir "vietflow_tip.dll"),
+    (Join-Path $distDir "latest.json"),
+    (Join-Path $distDir "version.txt"),
+    (Join-Path $distDir "CHANGELOG.md"),
+    (Join-Path $releasesDir "VietFlow-win-x64.msi"),
+    (Join-Path $releasesDir "VietFlow-win-x86.msi"),
+    (Join-Path $releasesDir "VietFlow-win-arm64.msi"),
+    (Join-Path $releasesDir "VietFlow-win-x64-Portable.zip"),
+    (Join-Path $releasesDir "VietFlow-win-x86-Portable.zip"),
+    (Join-Path $releasesDir "VietFlow-win-arm64-Portable.zip")
+)
+
+$assetsToUpload = @()
+foreach ($c in $candidates) {
+    if (Test-Path $c) {
+        $assetsToUpload += (Resolve-Path $c).Path
     }
 }
 
-# Refresh current assets list
-$currentRelease = Invoke-RestMethod -Method Get -Uri "https://api.github.com/repos/KienPC1234/VietFlow/releases/$($release.id)" -Headers $headers
-$existingAssets = $currentRelease.assets
+if ($assetsToUpload.Count -eq 0) {
+    Write-Error "No release assets found to upload in dist/ or releases/."
+    exit 1
+}
 
-foreach ($asset in $assets) {
-    $path = Join-Path (Split-Path -Parent $PSScriptRoot) $asset
-    if (-not (Test-Path $path)) { throw "Missing asset: $path" }
-    $name = Split-Path $path -Leaf
+# 5. Fetch Existing Assets for Deduplication
+$currentRelease = Invoke-RestMethod -Method Get -Uri "$repoApi/$($release.id)" -Headers $headers
+$existingAssets = @($currentRelease.assets)
 
-    $existing = $existingAssets | Where-Object { $_.name -eq $name }
+Write-Host "`nUploading $($assetsToUpload.Count) assets..." -ForegroundColor Cyan
+Write-Host "-------------------------------------------------" -ForegroundColor Gray
+
+foreach ($assetPath in $assetsToUpload) {
+    $fileName = Split-Path $assetPath -Leaf
+    $fileInfo = Get-Item $assetPath
+    $sizeMb = [math]::Round(($fileInfo.Length / 1MB), 2)
+
+    # Delete existing asset with identical name to avoid conflicts
+    $existing = $existingAssets | Where-Object { $_.name -eq $fileName } | Select-Object -First 1
     if ($existing) {
-        Write-Host "Deleting outdated asset $name (id $($existing.id))..."
-        Invoke-RestMethod -Method Delete -Uri $existing.url -Headers $headers
+        Write-Host "  Replacing outdated asset: $fileName..." -ForegroundColor Yellow
+        Invoke-RestMethod -Method Delete -Uri $existing.url -Headers $headers | Out-Null
     }
 
-    $uri = "https://uploads.github.com/repos/KienPC1234/VietFlow/releases/$($release.id)/assets?name=$([uri]::EscapeDataString($name))"
-    $uploaded = Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -InFile $path -ContentType 'application/octet-stream'
-    Write-Host ("Uploaded {0} ({1:N2} MB)" -f $uploaded.name, ($uploaded.size / 1MB))
+    $uploadUri = "https://uploads.github.com/repos/KienPC1234/VietFlow/releases/$($release.id)/assets?name=$([uri]::EscapeDataString($fileName))"
+    $uploaded = Invoke-RestMethod -Method Post `
+        -Uri $uploadUri `
+        -Headers $headers `
+        -InFile $assetPath `
+        -ContentType 'application/octet-stream'
+
+    Write-Host "  Uploaded: $fileName ($sizeMb MB)" -ForegroundColor Green
 }
 
-Write-Host "DONE"
+Write-Host "`n[OK] Release $Tag published successfully!" -ForegroundColor Green

@@ -40,13 +40,36 @@ static void NormalizeWordList(std::vector<std::string>& words) {
 }
 
 std::string Config::GetDefaultConfigPath() {
+    // 1. Check directory of the running executable (MSI install folder or portable folder)
+    wchar_t exe_path[MAX_PATH];
+    if (GetModuleFileNameW(NULL, exe_path, MAX_PATH) > 0) {
+        std::filesystem::path p(exe_path);
+        auto dir = p.parent_path();
+        auto local_cfg = dir / CONFIG_FILE_NAME;
+        auto marker = dir / ".installed";
+        if (std::filesystem::exists(local_cfg) || std::filesystem::exists(marker)) {
+            return local_cfg.string();
+        }
+    }
+
+    // 2. Common Application Data (%ProgramData%\VietFlow\vietflow_config.json)
+    wchar_t pd_path[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, 0, pd_path))) {
+        std::filesystem::path p(pd_path);
+        p /= APP_DIR_NAME;
+        auto pd_cfg = p / CONFIG_FILE_NAME;
+        if (std::filesystem::exists(pd_cfg)) {
+            return pd_cfg.string();
+        }
+    }
+
+    // 3. User Application Data (%APPDATA%\VietFlow\vietflow_config.json)
     wchar_t path[MAX_PATH];
     if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, path))) {
         std::wstring ws(path);
         std::filesystem::path p(ws);
         p /= APP_DIR_NAME;
         std::filesystem::create_directories(p);
-        // Must match platforms/windows/src/config.rs::AppConfig::config_path().
         p /= CONFIG_FILE_NAME;
         return p.string();
     }
@@ -111,7 +134,18 @@ bool Config::Load(const std::string& custom_path) {
         if (j.contains("excluded_apps") && j["excluded_apps"].is_array()) {
             excluded_apps = j["excluded_apps"].get<std::vector<std::string>>();
         }
+        smart_prefix_matching = j.value("smart_prefix_matching", smart_prefix_matching);
         lock_hotkeys_in_excluded_apps = j.value("lock_hotkeys_in_excluded_apps", lock_hotkeys_in_excluded_apps);
+        remember_per_app_mode = j.value("remember_per_app_mode", remember_per_app_mode);
+        auto_exclude_apps = j.value("auto_exclude_apps", auto_exclude_apps);
+        if (j.contains("per_app_modes") && j["per_app_modes"].is_object()) {
+            per_app_modes.clear();
+            for (const auto& [k, v] : j["per_app_modes"].items()) {
+                if (v.is_boolean()) {
+                    per_app_modes[k] = v.get<bool>();
+                }
+            }
+        }
         if (j.contains("app_profiles") && j["app_profiles"].is_object()) {
             app_profiles.clear();
             for (const auto& [name, value] : j["app_profiles"].items()) {
@@ -166,7 +200,7 @@ bool Config::Load(const std::string& custom_path) {
         // index these values directly and would read past their arrays.
         method = std::clamp(method, 0, 6);
         charset = std::clamp(charset, 0, 3);
-        typing_timeout_ms = std::clamp<uint64_t>(typing_timeout_ms, 500, 5000);
+        typing_timeout_ms = std::clamp<uint64_t>(typing_timeout_ms, 0, 10000);
         for (auto& entry : app_profiles) {
             AppProfile& profile = entry.second;
             if (profile.method >= 0) profile.method = std::clamp(profile.method, 0, 6);
@@ -230,7 +264,11 @@ bool Config::Save(const std::string& custom_path) const {
         j["tray_icon_e_border_color"] = tray_icon_e_border_color;
 
         j["excluded_apps"] = excluded_apps;
+        j["smart_prefix_matching"] = smart_prefix_matching;
         j["lock_hotkeys_in_excluded_apps"] = lock_hotkeys_in_excluded_apps;
+        j["remember_per_app_mode"] = remember_per_app_mode;
+        j["auto_exclude_apps"] = auto_exclude_apps;
+        j["per_app_modes"] = per_app_modes;
 
         json profiles = json::object();
         for (const auto& [name, profile] : app_profiles) {

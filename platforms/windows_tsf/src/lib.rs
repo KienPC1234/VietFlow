@@ -20,6 +20,20 @@ use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 static mut MODULE_HANDLE: HMODULE = HMODULE(std::ptr::null_mut());
 pub static DLL_REF_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+pub unsafe fn get_module_handle() -> HMODULE {
+    if !MODULE_HANDLE.0.is_null() {
+        return MODULE_HANDLE;
+    }
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS};
+    let mut hmod = HMODULE(std::ptr::null_mut());
+    let _ = GetModuleHandleExW(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+        windows::core::PCWSTR(DllMain as *const () as _),
+        &mut hmod,
+    );
+    hmod
+}
+
 /// Standard in-process COM DLL entry point.
 ///
 /// # Safety
@@ -77,7 +91,7 @@ pub unsafe extern "system" fn DllCanUnloadNow() -> HRESULT {
 /// Modifies HKLM/HKCR registry settings; requires administrative privileges.
 #[no_mangle]
 pub unsafe extern "system" fn DllRegisterServer() -> HRESULT {
-    registry::register_server(MODULE_HANDLE)
+    registry::register_server(get_module_handle())
 }
 
 /// Instructs an in-process server to remove only those entries created through `DllRegisterServer`.

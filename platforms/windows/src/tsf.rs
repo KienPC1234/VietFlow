@@ -3,6 +3,7 @@
 
 use crate::config::AppConfig;
 use crate::tray::to_wide;
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use windows_sys::Win32::Foundation::{
@@ -46,6 +47,8 @@ pub struct TsfSharedConfig {
     pub enable_macro: u32,
     pub version: u32,
     pub last_active_tick: u64,
+    pub last_active_pid: u32,
+    pub is_composing: u32,
 }
 
 impl Default for TsfSharedConfig {
@@ -62,6 +65,8 @@ impl Default for TsfSharedConfig {
             enable_macro: 1,
             version: 1,
             last_active_tick: 0,
+            last_active_pid: 0,
+            is_composing: 0,
         }
     }
 }
@@ -165,10 +170,16 @@ pub fn sync_tsf_config(config: &AppConfig, enabled: bool) {
     }
 
     if let Some(writer) = lock.as_mut() {
-        let prev_tick = if !writer.view.is_null() {
-            unsafe { (*writer.view).last_active_tick }
+        let (prev_tick, prev_pid, prev_comp) = if !writer.view.is_null() {
+            unsafe {
+                (
+                    (*writer.view).last_active_tick,
+                    (*writer.view).last_active_pid,
+                    (*writer.view).is_composing,
+                )
+            }
         } else {
-            0
+            (0, 0, 0)
         };
         let tsf_cfg = TsfSharedConfig {
             enabled: if enabled { 1 } else { 0 },
@@ -182,9 +193,31 @@ pub fn sync_tsf_config(config: &AppConfig, enabled: bool) {
             enable_macro: if config.enable_macro { 1 } else { 0 },
             version: 1,
             last_active_tick: prev_tick,
+            last_active_pid: prev_pid,
+            is_composing: prev_comp,
         };
         writer.update(&tsf_cfg);
     }
+}
+
+pub fn is_tsf_active_for_pid(pid: u32) -> bool {
+    let lock = match SHARED_WRITER.lock() {
+        Ok(l) => l,
+        Err(_) => return false,
+    };
+    if let Some(writer) = lock.as_ref() {
+        if !writer.view.is_null() {
+            unsafe {
+                let last_pid = (*writer.view).last_active_pid;
+                let last_tick = (*writer.view).last_active_tick;
+                let now = crate::hook::get_tick_count_64();
+                if last_pid == pid && now.saturating_sub(last_tick) < 3000 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Locates the `vietflow_tip.dll` file.
@@ -291,6 +324,7 @@ pub fn call_set_default_layout_or_tip(layout_str: &str) -> bool {
 }
 
 const ILOT_UNINSTALL: u32 = 0x00000001;
+const ILOT_DEFPROFILE: u32 = 0x00000002;
 
 pub fn call_install_layout_or_tip(layout_str: &str, uninstall: bool) -> bool {
     unsafe {
@@ -304,7 +338,7 @@ pub fn call_install_layout_or_tip(layout_str: &str, uninstall: bool) -> bool {
             type FnInstallLayoutOrTip = unsafe extern "system" fn(*const u16, u32) -> windows_sys::core::BOOL;
             let func: FnInstallLayoutOrTip = std::mem::transmute(func);
             let wide = to_wide(&format!("{layout_str}\0"));
-            let flags = if uninstall { ILOT_UNINSTALL } else { 0 };
+            let flags = if uninstall { ILOT_UNINSTALL } else { ILOT_DEFPROFILE };
             ok = func(wide.as_ptr(), flags) != 0;
         }
         FreeLibrary(input_mod);
@@ -314,6 +348,23 @@ pub fn call_install_layout_or_tip(layout_str: &str, uninstall: bool) -> bool {
 
 fn run_elevated_wait(file: &str, params: &str) -> Result<(), String> {
     unsafe {
+        #[link(name = "shell32")]
+        extern "system" {
+            fn IsUserAnAdmin() -> windows_sys::core::BOOL;
+        }
+
+        // If the current process is already elevated (e.g. running under Administrator or SYSTEM during MSI setup),
+        // spawn directly using Command to avoid UAC prompt failure in non-interactive/SYSTEM contexts.
+        if IsUserAnAdmin() != 0 {
+            let mut cmd = std::process::Command::new(file);
+            cmd.raw_arg(params);
+            match cmd.status() {
+                Ok(status) if status.success() => return Ok(()),
+                Ok(status) => return Err(format!("Tiến trình hoàn tất với mã lỗi: {:?}", status.code())),
+                Err(e) => return Err(format!("Không thể khởi chạy {file}: {e}")),
+            }
+        }
+
         let file_wide = to_wide(&format!("{file}\0"));
         let params_wide = to_wide(&format!("{params}\0"));
         let verb_wide = to_wide("runas\0");
@@ -400,6 +451,8 @@ pub fn reinstall_tsf() -> Result<(), String> {
     std::thread::sleep(std::time::Duration::from_millis(300));
     register_tsf()?;
     set_tsf_profile_active(true);
+    let config = AppConfig::load();
+    sync_tsf_config(&config, config.enabled);
     Ok(())
 }
 
@@ -409,13 +462,15 @@ mod tests {
 
     #[test]
     fn test_tsf_shared_config_layout() {
-        assert_eq!(std::mem::size_of::<TsfSharedConfig>(), 48);
+        assert_eq!(std::mem::size_of::<TsfSharedConfig>(), 56);
         let cfg = TsfSharedConfig::default();
         assert_eq!(cfg.enabled, 1);
         assert_eq!(cfg.method, 0);
         assert_eq!(cfg.consonant_shortcuts, 0);
         assert_eq!(cfg.enable_macro, 1);
         assert_eq!(cfg.version, 1);
+        assert_eq!(cfg.last_active_pid, 0);
+        assert_eq!(cfg.is_composing, 0);
     }
 
     #[test]

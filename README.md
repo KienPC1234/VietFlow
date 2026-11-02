@@ -61,8 +61,8 @@ cargo test
 # Build release (x64, static CRT -> dist\VietFlow.exe)
 .\scripts\build.ps1
 
-# Build all architectures with Velopack installers
-.\scripts\build.ps1 -Arch All -Velopack
+# Build all architectures with native WiX MSI installers
+.\scripts\build.ps1 -Arch All -Msi
 ```
 
 ## Donation

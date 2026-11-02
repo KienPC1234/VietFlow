@@ -1,0 +1,3 @@
+# VietFlow MSI Installation Marker
+# This file indicates that VietFlow was installed via the native Windows MSI installer.
+# Do not delete this file; it is used by the updater to identify MSI vs Portable installations.

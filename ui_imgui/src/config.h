@@ -59,7 +59,7 @@ struct Config {
     bool start_with_windows = false;
     bool notification_sound = false;
     bool use_tsf = false;
-    uint64_t typing_timeout_ms = 1500;
+    uint64_t typing_timeout_ms = 0;
     std::string hotkey_mode = "CtrlShift";
     std::string hotkey_settings = "Ctrl + Shift + F5";
     std::string hotkey_converter = "Ctrl + Shift + F9";
@@ -86,7 +86,11 @@ struct Config {
     std::vector<std::string> excluded_apps = {
         "valorant.exe", "cs2.exe", "league of legends.exe", "overwatch.exe", "dota2.exe"
     };
+    bool smart_prefix_matching = false;
     bool lock_hotkeys_in_excluded_apps = true;
+    bool remember_per_app_mode = false;
+    bool auto_exclude_apps = false;
+    std::map<std::string, bool> per_app_modes;
     std::map<std::string, AppProfile> app_profiles;
     std::map<std::string, std::string> macros = {
         {"vf", "VietFlow"},

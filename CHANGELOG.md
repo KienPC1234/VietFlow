@@ -8,12 +8,21 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
 ### Added
 
-- Tối ưu hóa Core Engine theo mô hình OpenKey: Bổ sung cờ `temp_disabled` (tương đương `tempDisableKey`) lập tức khóa biến đổi dấu tiếng Việt khi người dùng nhấn lặp phím để hoàn tác (tone undo hoặc modify undo), hoặc khi bộ gõ chuyển sang âm tiết ngoại lai. Toàn bộ các ký tự kế tiếp trong từ đi thẳng không bị gán nhầm dấu thanh.
+- Tối ưu hóa trình cập nhật và phân định rõ ràng giữa bản Portable và bản Cài đặt (MSI): Loại bỏ hoàn toàn phụ thuộc Velopack và các gói delta cồng kềnh. Bản Portable chỉ mở liên kết trang phát hành GitHub để người dùng chủ động tải về; bản Cài đặt (MSI) tự động tải tệp `.msi` mới nhất về thư mục tạm và khởi chạy trình cài đặt để nâng cấp/cài đặt lại sạch sẽ.
+- Chuyển đổi hoàn toàn sang dự án WiX Toolset v5 MSI độc lập: Đóng gói gói cài đặt chuẩn Windows Installer (`.msi`) nguyên bản, cài đặt chuẩn vào `Program Files\VietFlow`, không phụ thuộc vào gói bọc Velopack.
+- Bổ sung đầy đủ siêu dữ liệu gỡ cài đặt (Add/Remove Programs): Điền chính xác đường dẫn hỗ trợ (`ARPHELPLINK`), trang chủ (`ARPURLINFOABOUT`), cập nhật (`ARPURLUPDATEINFO`), mô tả chi tiết (`ARPCOMMENTS`), biểu tượng chất lượng cao (`ARPPRODUCTICON`) trên bảng ứng dụng Windows.
+- Cơ chế dọn dẹp triệt để khi gỡ cài đặt: Bổ sung hành động gỡ bỏ nguyên tử cho các phím tắt Start Menu và Desktop, loại bỏ hoàn toàn tình trạng để lại biểu tượng hỏng hoặc lỗi đường dẫn sau khi gỡ cài đặt; tự động kích hoạt `SHChangeNotify` để Windows Explorer làm mới bộ nhớ đệm biểu tượng ngay lập tức.
+- Tính năng ghi nhớ chế độ E/V cho từng ứng dụng: Tự động ghi nhớ và chuyển đổi trạng thái [V] hoặc [E] riêng cho mỗi cửa sổ ứng dụng, đồng bộ trạng thái linh hoạt khi chuyển đổi qua lại giữa các cửa sổ làm việc.
+- Tính năng Loại trừ ứng dụng tự động (`auto_exclude_apps`): Tự động chuyển sang chế độ Tiếng Anh [E] cho các ứng dụng dòng lệnh và terminal (`cmd.exe`, `powershell.exe`, `pwsh.exe`, `wt.exe`, `wsl.exe`...).
+- Chuẩn hóa toàn diện cơ chế hoàn tác (Undo) và chốt từ: Hoàn tác dấu thanh (`r`, `s`, `f`, `x`, `j`), hoàn tác mũ/móc (`aa`, `ee`, `oo`, `w`, `dd`) và hoàn tác gõ tự do (free marking undo) đồng bộ chính xác với lịch sử phím gõ, loại bỏ hoàn toàn tình trạng thừa ký tự (`curr`, `cass`, `theme`).
 - Tự động bù trừ ô gợi ý Autocomplete (Chromium Omnibox, Windows Explorer, Run dialog): Chèn ký tự đệm Narrow No-Break Space (`\u{202F}`) kèm phím Backspace bù để hủy bỏ vùng bôi đen autocomplete trước khi hoàn tác ký tự, ngăn ngừa triệt để lỗi nuốt backspace gây lặp ký tự thừa.
 - Tự phục hồi biểu tượng khay hệ thống: Lắng nghe thông điệp hệ thống `TaskbarCreated` (`RegisterWindowMessageW`) để tự động gắn lại biểu tượng khay khi Explorer bị reload hoặc khởi động lại.
 
 ### Fixed
 
+- Khắc phục lỗi từ bắt đầu bằng 'g' kết hợp nguyên âm 'i' ('gì', 'gìn', 'gí', 'gỉ', 'gĩ', 'gịt') bị nhận diện sai chính tả khiến bộ gõ tự động hoàn tác thành 'gif', 'ginf' khi nhấn phím cách.
+- Khắc phục triệt để lỗi thừa ký tự khi hoàn tác dấu thanh Telex ('củ' + 'r' thành 'cur', không bị lặp ký tự thừa thành 'curr').
+- Điều chỉnh thời gian chờ chốt từ mặc định: chuyển sang 0 ms (Tắt / không giới hạn) theo chuẩn UniKey và EVKey, ngăn ngừa tình trạng tự động chốt từ khi người dùng dừng suy nghĩ trong lúc gõ.
 - Khắc phục triệt để lỗi treo bộ cài MSI (Windows Installer Setup hang): Tiếp nhận và xử lý đầy đủ các thông điệp `WM_CLOSE`, `WM_QUERYENDSESSION`, `WM_ENDSESSION` trong luồng thông điệp daemon (`wnd_proc`), cho phép Windows Restart Manager và bộ cài đặt nâng cấp/thay thế tiến trình đang chạy tức thì mà không bị chặn tiến trình.
 - Bổ sung bảng `ActionText` tiêu chuẩn cho bộ cài MSI trong kịch bản đóng gói `build.ps1`, chấm dứt tình trạng dòng trạng thái `Status:` bị bỏ trống trên cửa sổ cài đặt `VietFlow Setup`.
 - Loại bỏ các lệnh đồng bộ chặn luồng giao diện khi chuyển đổi chế độ TSF TIP, giải quyết dứt điểm hiện tượng giật lag khi chuyển chế độ gõ.

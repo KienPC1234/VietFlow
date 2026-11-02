@@ -96,7 +96,43 @@ pub unsafe fn get_process_name_for_window(hwnd: HWND) -> Option<String> {
     name
 }
 
-pub fn app_name_matches(current: &str, configured: &str) -> bool {
+/// Match a process name against a pattern using case-insensitive wildcard (* and ?).
+pub fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let p_bytes = pattern.as_bytes();
+    let t_bytes = text.as_bytes();
+    let p_len = p_bytes.len();
+    let t_len = t_bytes.len();
+
+    let mut p_idx = 0;
+    let mut t_idx = 0;
+    let mut star_p_idx = None;
+    let mut star_t_idx = 0;
+
+    while t_idx < t_len {
+        if p_idx < p_len && (p_bytes[p_idx] == b'?' || p_bytes[p_idx] == t_bytes[t_idx]) {
+            p_idx += 1;
+            t_idx += 1;
+        } else if p_idx < p_len && p_bytes[p_idx] == b'*' {
+            star_p_idx = Some(p_idx);
+            p_idx += 1;
+            star_t_idx = t_idx;
+        } else if let Some(sp) = star_p_idx {
+            p_idx = sp + 1;
+            star_t_idx += 1;
+            t_idx = star_t_idx;
+        } else {
+            return false;
+        }
+    }
+
+    while p_idx < p_len && p_bytes[p_idx] == b'*' {
+        p_idx += 1;
+    }
+
+    p_idx == p_len
+}
+
+pub fn app_name_matches(current: &str, configured: &str, smart_prefix: bool) -> bool {
     let proc = current.trim().to_lowercase();
     let app = configured.trim().to_lowercase();
     if proc.is_empty() || app.is_empty() {
@@ -104,9 +140,25 @@ pub fn app_name_matches(current: &str, configured: &str) -> bool {
     }
     let proc_stem = proc.strip_suffix(".exe").unwrap_or(&proc);
     let app_stem = app.strip_suffix(".exe").unwrap_or(&app);
-    app == proc
-        || app_stem == proc_stem
-        || (app_stem.len() >= 4 && proc_stem.starts_with(app_stem))
+
+    // 1. Exact match (full name or stem without .exe)
+    if proc == app || proc_stem == app_stem {
+        return true;
+    }
+
+    // 2. Wildcard pattern matching (* and ?)
+    if app.contains('*') || app.contains('?') {
+        if wildcard_match(&app, &proc) || wildcard_match(app_stem, proc_stem) {
+            return true;
+        }
+    }
+
+    // 3. Smart prefix matching (only when enabled by user option)
+    if smart_prefix && app_stem.len() >= 4 && proc_stem.starts_with(app_stem) {
+        return true;
+    }
+
+    false
 }
 
 fn is_known_ime_name(name: &str) -> bool {
@@ -166,21 +218,48 @@ pub fn known_ime_conflicts() -> Vec<String> {
     found
 }
 
-pub fn is_app_excluded(current_process: Option<&str>, excluded_apps: &[String]) -> bool {
+pub fn is_app_excluded(
+    current_process: Option<&str>,
+    excluded_apps: &[String],
+    smart_prefix: bool,
+) -> bool {
     match current_process {
-        Some(proc) => excluded_apps.iter().any(|app| app_name_matches(proc, app)),
+        Some(proc) => excluded_apps
+            .iter()
+            .any(|app| app_name_matches(proc, app, smart_prefix)),
         None => false,
     }
+}
+
+/// Known terminal, console, and shell processes automatically excluded when `auto_exclude_apps` is enabled.
+pub fn is_auto_excluded_app(proc: &str) -> bool {
+    let lower = proc.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "cmd.exe"
+            | "powershell.exe"
+            | "pwsh.exe"
+            | "wt.exe"
+            | "windowsterminal.exe"
+            | "conhost.exe"
+            | "bash.exe"
+            | "wsl.exe"
+            | "putty.exe"
+            | "mobaxterm.exe"
+            | "xshell.exe"
+            | "mintty.exe"
+    )
 }
 
 pub fn profile_for_app<'a>(
     current_process: Option<&str>,
     profiles: &'a HashMap<String, AppProfile>,
+    smart_prefix: bool,
 ) -> Option<&'a AppProfile> {
     let proc = current_process?;
     profiles
         .iter()
-        .find(|(app, _)| app_name_matches(proc, app))
+        .find(|(app, _)| app_name_matches(proc, app, smart_prefix))
         .map(|(_, profile)| profile)
 }
 
@@ -189,26 +268,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_wildcard_match() {
+        assert!(wildcard_match("roblox*", "robloxplayerbeta.exe"));
+        assert!(wildcard_match("roblox*", "robloxstudiobeta.exe"));
+        assert!(wildcard_match("roblox*", "roblox.exe"));
+        assert!(!wildcard_match("roblox*", "notepad.exe"));
+        assert!(wildcard_match("*terminal*", "windowsterminal.exe"));
+        assert!(wildcard_match("cs?.exe", "cs2.exe"));
+        assert!(!wildcard_match("cs?.exe", "csgo.exe"));
+        assert!(wildcard_match("*.exe", "anything.exe"));
+        assert!(!wildcard_match("*.exe", "noext"));
+    }
+
+    #[test]
     fn test_is_app_excluded() {
         let list = vec![
             "valorant.exe".to_string(),
             "cs2".to_string(),
             "League of Legends.exe".to_string(),
-            "roblox".to_string(),
+            "roblox*".to_string(),
+            "code".to_string(),
         ];
 
-        assert!(is_app_excluded(Some("valorant.exe"), &list));
-        assert!(is_app_excluded(Some("VALORANT.EXE"), &list));
-        assert!(is_app_excluded(Some("valorant"), &list));
-        assert!(is_app_excluded(Some("cs2.exe"), &list));
-        assert!(is_app_excluded(Some("CS2"), &list));
-        assert!(is_app_excluded(Some("League of Legends.exe"), &list));
-        assert!(is_app_excluded(Some("RobloxPlayerBeta.exe"), &list));
-        assert!(is_app_excluded(Some("RobloxStudioBeta.exe"), &list));
-        assert!(is_app_excluded(Some("roblox.exe"), &list));
-        assert!(!is_app_excluded(Some("notepad.exe"), &list));
-        assert!(!is_app_excluded(None, &list));
-        assert!(!is_app_excluded(Some(""), &list));
+        // Exact match with or without .exe
+        assert!(is_app_excluded(Some("valorant.exe"), &list, false));
+        assert!(is_app_excluded(Some("VALORANT.EXE"), &list, false));
+        assert!(is_app_excluded(Some("valorant"), &list, false));
+        assert!(is_app_excluded(Some("cs2.exe"), &list, false));
+        assert!(is_app_excluded(Some("CS2"), &list, false));
+        assert!(is_app_excluded(Some("League of Legends.exe"), &list, false));
+        assert!(is_app_excluded(Some("code.exe"), &list, false));
+        assert!(is_app_excluded(Some("code"), &list, false));
+
+        // Wildcard roblox* matches variants even when smart_prefix is false
+        assert!(is_app_excluded(Some("RobloxPlayerBeta.exe"), &list, false));
+        assert!(is_app_excluded(Some("RobloxStudioBeta.exe"), &list, false));
+        assert!(is_app_excluded(Some("roblox.exe"), &list, false));
+
+        // False-positive avoidance: 'code' does NOT match 'codeblocks.exe' when smart_prefix is false!
+        assert!(!is_app_excluded(Some("codeblocks.exe"), &list, false));
+        assert!(!is_app_excluded(Some("codepath.exe"), &list, false));
+
+        // When smart_prefix is true, 'code' CAN match 'codeblocks.exe'
+        assert!(is_app_excluded(Some("codeblocks.exe"), &list, true));
+
+        assert!(!is_app_excluded(Some("notepad.exe"), &list, false));
+        assert!(!is_app_excluded(None, &list, false));
+        assert!(!is_app_excluded(Some(""), &list, false));
     }
 
     #[test]
@@ -239,14 +345,14 @@ mod tests {
         );
 
         assert_eq!(
-            profile_for_app(Some("code"), &profiles).and_then(|p| p.injection_mode),
+            profile_for_app(Some("code"), &profiles, false).and_then(|p| p.injection_mode),
             Some(4)
         );
         assert_eq!(
-            profile_for_app(Some("CS2.EXE"), &profiles).and_then(|p| p.allow_macro),
+            profile_for_app(Some("CS2.EXE"), &profiles, false).and_then(|p| p.allow_macro),
             Some(true)
         );
-        assert!(profile_for_app(Some("notepad.exe"), &profiles).is_none());
-        assert!(profile_for_app(None, &profiles).is_none());
+        assert!(profile_for_app(Some("notepad.exe"), &profiles, false).is_none());
+        assert!(profile_for_app(None, &profiles, false).is_none());
     }
 }

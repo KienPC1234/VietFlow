@@ -176,6 +176,7 @@ pub unsafe fn register_server(hmodule: HMODULE) -> HRESULT {
     let tip_guid_str = format!("{{{CLSID_VIETFLOW_TIP:?}}}");
     let prof_guid_str = format!("{{{GUID_VIETFLOW_PROFILE:?}}}");
     let module_path_str = String::from_utf16_lossy(&module_path[..len as usize]);
+    let icon_slice = &module_path[..len as usize];
 
     // Profile for English US (0x00000409)
     let path_0409 = format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{tip_guid_str}\\LanguageProfile\\0x00000409\\{prof_guid_str}");
@@ -186,7 +187,7 @@ pub unsafe fn register_server(hmodule: HMODULE) -> HRESULT {
         reg_set_dword(k, "SubstituteLayout", 0x04090409);
         reg_set_sz(k, Some("IconFile"), &module_path_str);
         reg_set_dword(k, "IconIndex", 0);
-        reg_set_dword(k, "ProfileFlags", 2);
+        reg_set_dword(k, "ProfileFlags", 0);
         let _ = RegCloseKey(k);
     }
 
@@ -231,7 +232,6 @@ pub unsafe fn register_server(hmodule: HMODULE) -> HRESULT {
 
     let desc_wide: Vec<u16> = format!("{TEXT_SERVICE_PROFILE_NAME}\0").encode_utf16().collect();
     let desc_slice = &desc_wide[..desc_wide.len() - 1];
-    let icon_slice = &module_path[..len as usize];
     let hkl_us = HKL(0x04090409 as _);
 
     if let Ok(mgr_v2) = profile_mgr_v2 {

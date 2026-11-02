@@ -15,7 +15,7 @@ pub const CHARSET_TCVN3: u8 = 2;
 pub const CHARSET_VNI_WINDOWS: u8 = 3;
 pub const CHARSET_VIQR: u8 = 4;
 
-pub const DEFAULT_TYPING_TIMEOUT_MS: u64 = 1500;
+pub const DEFAULT_TYPING_TIMEOUT_MS: u64 = 0;
 pub const DEFAULT_FOREIGN_INITIALS: &str = "fjwz";
 
 pub const PRESET_TELEX: u8 = 0;

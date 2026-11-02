@@ -25,6 +25,8 @@ pub struct TsfSharedConfig {
     pub enable_macro: u32,
     pub version: u32,
     pub last_active_tick: u64,
+    pub last_active_pid: u32,
+    pub is_composing: u32,
 }
 
 impl Default for TsfSharedConfig {
@@ -41,13 +43,15 @@ impl Default for TsfSharedConfig {
             enable_macro: 1,
             version: 1,
             last_active_tick: 0,
+            last_active_pid: 0,
+            is_composing: 0,
         }
     }
 }
 
 pub struct SharedConfigReader {
     mapping: HANDLE,
-    view: *const TsfSharedConfig,
+    view: *mut TsfSharedConfig,
 }
 
 impl SharedConfigReader {
@@ -67,7 +71,7 @@ impl SharedConfigReader {
             .unwrap_or(HANDLE::default());
 
             let view = if !mapping.is_invalid() {
-                let mut p = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS | FILE_MAP_READ, 0, 0, size as usize);
+                let mut p = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, size as usize);
                 if p.Value.is_null() {
                     p = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, size as usize);
                 }
@@ -76,12 +80,12 @@ impl SharedConfigReader {
                     if (*ptr).version == 0 {
                         *ptr = TsfSharedConfig::default();
                     }
-                    ptr as *const TsfSharedConfig
+                    ptr
                 } else {
-                    ptr::null()
+                    ptr::null_mut()
                 }
             } else {
-                ptr::null()
+                ptr::null_mut()
             };
 
             Self { mapping, view }
@@ -93,6 +97,30 @@ impl SharedConfigReader {
             unsafe { *self.view }
         } else {
             TsfSharedConfig::default()
+        }
+    }
+
+    pub fn update_active_focus(&self, focused: bool) {
+        if !self.view.is_null() {
+            unsafe {
+                if focused {
+                    (*self.view).last_active_pid = windows_sys::Win32::System::Threading::GetCurrentProcessId();
+                    (*self.view).last_active_tick = windows_sys::Win32::System::SystemInformation::GetTickCount64();
+                } else if (*self.view).last_active_pid == windows_sys::Win32::System::Threading::GetCurrentProcessId() {
+                    (*self.view).last_active_pid = 0;
+                    (*self.view).is_composing = 0;
+                }
+            }
+        }
+    }
+
+    pub fn update_active_keystroke(&self, is_composing: bool) {
+        if !self.view.is_null() {
+            unsafe {
+                (*self.view).last_active_pid = windows_sys::Win32::System::Threading::GetCurrentProcessId();
+                (*self.view).last_active_tick = windows_sys::Win32::System::SystemInformation::GetTickCount64();
+                (*self.view).is_composing = if is_composing { 1 } else { 0 };
+            }
         }
     }
 }

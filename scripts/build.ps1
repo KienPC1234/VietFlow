@@ -10,9 +10,7 @@ param(
     [ValidateSet('x64', 'x86', 'arm64', 'All')]
     [string]$Arch = 'x64',
     [string]$DistDir = "",
-    [switch]$Velopack,
     [switch]$Msi,
-    [string]$VelopackVersion = "",
     [switch]$StaticCrt,
     [switch]$DynamicCrt,
     [switch]$SkipTests
@@ -50,115 +48,9 @@ function Get-ChangelogSection([string]$Text, [string]$Version) {
 
 function Optimize-MsiDatabase([string]$MsiPath) {
     if (-not (Test-Path $MsiPath)) { return }
-    $db = $null
-    $wi = $null
-    try {
-        $wi = New-Object -ComObject WindowsInstaller.Installer
-        $db = $wi.OpenDatabase($MsiPath, 1)
-
-        # 1. ActionText Table
-        $sqlCreate = "CREATE TABLE ``ActionText`` (``Action`` CHAR(72) NOT NULL, ``Description`` CHAR(64) LOCALIZABLE, ``Template`` CHAR(128) LOCALIZABLE PRIMARY KEY ``Action``)"
-        try {
-            $view = $db.OpenView($sqlCreate)
-            $view.Execute()
-            $view.Close()
-        } catch {}
-
-        $actions = @(
-            @("InstallValidate", "Validating install", ""),
-            @("InstallInitialize", "Initializing installation...", ""),
-            @("ProcessComponents", "Updating component registration...", ""),
-            @("InstallFiles", "Copying new files...", "File: [1], Directory: [9], Size: [6]"),
-            @("CreateShortcuts", "Creating shortcuts...", "Shortcut: [1]"),
-            @("WriteRegistryValues", "Writing system registry values...", "Key: [1], Name: [2], Value: [3]"),
-            @("RemoveFiles", "Removing files...", "File: [1], Directory: [9]"),
-            @("InstallFinalize", "Finalizing installation...", "")
-        )
-        foreach ($act in $actions) {
-            try {
-                $sql = "INSERT INTO ``ActionText`` (``Action``, ``Description``, ``Template``) VALUES ('$($act[0])', '$($act[1])', '$($act[2])')"
-                $view = $db.OpenView($sql)
-                $view.Execute()
-                $view.Close()
-            } catch {}
-        }
-
-        # 2. Fix Shortcut table Description field (replaces unresolved [MsiStartMenuShortcutDescription] and [MsiDesktopShortcutDescription])
-        try {
-            $sqlShortcut = "UPDATE ``Shortcut`` SET ``Description`` = 'VietFlow - Modern Vietnamese Input Method'"
-            $view = $db.OpenView($sqlShortcut)
-            $view.Execute()
-            $view.Close()
-        } catch {
-            Write-Warning "Failed to update Shortcut table: $_"
-        }
-
-        # 3. Inject standard Property values so any unresolved MSI property references evaluate cleanly
-        $props = @{
-            "MsiStartMenuShortcutDescription" = "VietFlow - Modern Vietnamese Input Method"
-            "MsiDesktopShortcutDescription"   = "VietFlow - Modern Vietnamese Input Method"
-            "ARPCOMMENTS"                     = "VietFlow - Modern Vietnamese Input Method"
-            "ARPCONTACT"                      = "VietFlow Team"
-            "ARPHELPLINK"                     = "https://github.com/KienPC1234/VietFlow"
-            "ARPURLINFOABOUT"                 = "https://github.com/KienPC1234/VietFlow"
-            "ARPURLUPDATEINFO"                = "https://github.com/KienPC1234/VietFlow/releases"
-        }
-        foreach ($k in $props.Keys) {
-            $val = $props[$k]
-            try {
-                $view = $db.OpenView("INSERT INTO ``Property`` (``Property``, ``Value``) VALUES ('$k', '$val')")
-                $view.Execute()
-                $view.Close()
-            } catch {
-                try {
-                    $view = $db.OpenView("UPDATE ``Property`` SET ``Value`` = '$val' WHERE ``Property`` = '$k'")
-                    $view.Execute()
-                    $view.Close()
-                } catch {}
-            }
-        }
-
-        # 4. Inject VietFlow branded bitmaps (Dialog background & Top banner)
-        $dialogBmp = Join-Path $root "assets\wix_dialog.bmp"
-        $bannerBmp = Join-Path $root "assets\wix_banner.bmp"
-        if (Test-Path $dialogBmp) {
-            try {
-                $view = $db.OpenView("SELECT Name, Data FROM Binary WHERE Name = 'WixUI_Bmp_Dialog'")
-                $view.Execute()
-                $rec = $view.Fetch()
-                if ($rec) {
-                    $rec.SetStream(2, $dialogBmp)
-                    $view.Modify(2, $rec)
-                }
-                $view.Close()
-            } catch {
-                Write-Warning "Failed to inject WixUI_Bmp_Dialog: $_"
-            }
-        }
-        if (Test-Path $bannerBmp) {
-            try {
-                $view = $db.OpenView("SELECT Name, Data FROM Binary WHERE Name = 'WixUI_Bmp_Banner'")
-                $view.Execute()
-                $rec = $view.Fetch()
-                if ($rec) {
-                    $rec.SetStream(2, $bannerBmp)
-                    $view.Modify(2, $rec)
-                }
-                $view.Close()
-            } catch {
-                Write-Warning "Failed to inject WixUI_Bmp_Banner: $_"
-            }
-        }
-
-        $db.Commit()
-        Write-Host "      Optimized MSI package (ActionText, Shortcut descriptions, Bitmaps, ARP metadata): $($MsiPath)" -ForegroundColor Green
-    } catch {
-        Write-Warning "Failed to optimize MSI database $($MsiPath): $_"
-    } finally {
-        if ($db) { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($db) | Out-Null }
-        if ($wi) { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($wi) | Out-Null }
-        [GC]::Collect()
-        [GC]::WaitForPendingFinalizers()
+    $injectScript = Join-Path $PSScriptRoot "inject_msi_bitmaps.ps1"
+    if (Test-Path $injectScript) {
+        & pwsh -NoProfile -NonInteractive -File $injectScript -MsiPath $MsiPath
     }
 }
 
@@ -176,9 +68,6 @@ if (-not (Test-Path $versionPath)) {
 $version = (Get-Content $versionPath -Raw -Encoding UTF8).Trim()
 if ([string]::IsNullOrWhiteSpace($version)) {
     throw "VERSION file is empty"
-}
-if ($VelopackVersion -and $VelopackVersion.Trim() -ne $version) {
-    throw "VelopackVersion '$VelopackVersion' does not match VERSION '$version'."
 }
 
 # Keep Cargo.toml's [workspace.package] version in sync. VERSION stays the only
@@ -383,22 +272,18 @@ if (Test-Path $changelogSource) {
     Write-Warning "CHANGELOG.md not found at $changelogSource"
 }
 
-$vpk = if ($Velopack) { Get-Command "vpk" -ErrorAction SilentlyContinue } else { $null }
-$willPackage = $Velopack -and $vpk
 $downloads = [ordered]@{}
-if ($willPackage) {
-    if ($archs -contains 'x64') {
-        $downloads['x64'] = "$releaseDownloadBase/VietFlow-win-x64-Setup.exe"
-        $downloads['msi_x64'] = "$releaseDownloadBase/VietFlow-win-x64.msi"
-    }
-    if ($archs -contains 'x86') {
-        $downloads['x86'] = "$releaseDownloadBase/VietFlow-win-x86-Setup.exe"
-        $downloads['msi_x86'] = "$releaseDownloadBase/VietFlow-win-x86.msi"
-    }
-    if ($archs -contains 'arm64') {
-        $downloads['arm64'] = "$releaseDownloadBase/VietFlow-win-arm64-Setup.exe"
-        $downloads['msi_arm64'] = "$releaseDownloadBase/VietFlow-win-arm64.msi"
-    }
+if ($archs -contains 'x64') {
+    $downloads['x64'] = "$releaseDownloadBase/VietFlow-x64.exe"
+    $downloads['msi_x64'] = "$releaseDownloadBase/VietFlow-win-x64.msi"
+}
+if ($archs -contains 'x86') {
+    $downloads['x86'] = "$releaseDownloadBase/VietFlow-x86.exe"
+    $downloads['msi_x86'] = "$releaseDownloadBase/VietFlow-win-x86.msi"
+}
+if ($archs -contains 'arm64') {
+    $downloads['arm64'] = "$releaseDownloadBase/VietFlow-arm64.exe"
+    $downloads['msi_arm64'] = "$releaseDownloadBase/VietFlow-win-arm64.msi"
 }
 
 $notes = Get-ChangelogSection $changelogText $version
@@ -420,93 +305,30 @@ Write-Host "      Version:  $versionFile" -ForegroundColor Green
 Write-Host "      Manifest: $manifestFile" -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
-# 5. Optional Velopack packaging, one channel per architecture
+# 5. Native WiX v5 MSI Packaging
 # ---------------------------------------------------------------------------
-if ($willPackage) {
+if ($Msi) {
     $releasesDir = Join-Path $root "releases"
     New-Item -ItemType Directory -Force -Path $releasesDir | Out-Null
-
-    # Ensure WiX MSI branding bitmaps exist
-    $dialogBmp = Join-Path $root "assets\wix_dialog.bmp"
-    $bannerBmp = Join-Path $root "assets\wix_banner.bmp"
-    if ((-not (Test-Path $dialogBmp)) -or (-not (Test-Path $bannerBmp))) {
-        $genScript = Join-Path $root "scripts\generate_msi_bitmaps.py"
-        if (Test-Path $genScript) {
-            Write-Host "      Generating WiX MSI branding bitmaps..." -ForegroundColor Cyan
-            python $genScript
+    $wixScript = Join-Path $root "installer\wix\build_msi.ps1"
+    if (Test-Path $wixScript) {
+        foreach ($a in $archs) {
+            Write-Host "`n[5/5] Building native WiX MSI for $a v$version..." -ForegroundColor Magenta
+            & $wixScript -Arch $a -Version $version -OutputDir $releasesDir
         }
     }
-
-    foreach ($a in $archs) {
-        $channel = switch ($a) {
-            'x86' { "win-x86" }
-            'arm64' { "win-arm64" }
-            default { "win-x64" }
-        }
-        $runtime = $channel
-        $packDir = Join-Path $root "target\release\pack_staging-$a"
-        Remove-Item -Recurse -Force $packDir -ErrorAction SilentlyContinue
-        New-Item -ItemType Directory -Force -Path $packDir | Out-Null
-        Copy-Item -Path $built[$a] -Destination (Join-Path $packDir "VietFlow.exe") -Force
-        $tsfDll = Join-Path $DistDir "vietflow_tip.dll"
-        if (Test-Path $tsfDll) {
-            Copy-Item -Path $tsfDll -Destination $packDir -Force
-        }
-        Copy-Item -Path $versionFile, $manifestFile -Destination $packDir -Force
-        if (Test-Path $changelogFile) {
-            Copy-Item -Path $changelogFile -Destination $packDir -Force
-        }
-
-        Write-Host "`n[5/5] Packaging $a with Velopack v$version (channel $channel)..." -ForegroundColor Magenta
-        $packArgs = @(
-            "pack",
-            "--packId", "VietFlow",
-            "--packVersion", $version,
-            "--channel", $channel,
-            "--runtime", $runtime,
-            "--packDir", $packDir,
-            "--packTitle", "VietFlow",
-            "--packAuthors", "VietFlow Team",
-            "--mainExe", "VietFlow.exe",
-            "--icon", (Join-Path $root "assets\VietFlow.ico"),
-            "--outputDir", $releasesDir
-        )
-        if ($Msi) {
-            $packArgs += "--msi"
-            $dialogBmp = Join-Path $root "assets\wix_dialog.bmp"
-            $bannerBmp = Join-Path $root "assets\wix_banner.bmp"
-            if (Test-Path $dialogBmp) {
-                $packArgs += @("--msiDialogBackground", $dialogBmp)
-            }
-            if (Test-Path $bannerBmp) {
-                $packArgs += @("--msiTopBanner", $bannerBmp)
-            }
-        }
-        & $vpk.Source @packArgs
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "Velopack packaging failed for $a!"
-            exit $LASTEXITCODE
-        }
-        if ($Msi) {
-            $msiFile = Join-Path $releasesDir "VietFlow-$channel.msi"
-            Add-MsiActionText $msiFile
-        }
-    }
-
     Copy-Item -Path $versionFile, $manifestFile -Destination $releasesDir -Force
     if (Test-Path $changelogFile) {
         Copy-Item -Path $changelogFile -Destination $releasesDir -Force
     }
 
-    Write-Host "Velopack releases ready in: $releasesDir" -ForegroundColor Green
+    Write-Host "MSI releases ready in: $releasesDir" -ForegroundColor Green
     Write-Host "Upload these assets to the GitHub release:" -ForegroundColor Green
-    Write-Host "  VietFlow-x64.exe, VietFlow-x86.exe, VietFlow-arm64.exe" -ForegroundColor Green
-    Write-Host "  VietFlow-win-x64-Setup.exe, VietFlow-win-x86-Setup.exe, VietFlow-win-arm64-Setup.exe" -ForegroundColor Green
+    Write-Host "  VietFlow-x64.exe, VietFlow-x86.exe, VietFlow-arm64.exe (Portable)" -ForegroundColor Green
+    Write-Host "  VietFlow-win-x64.msi, VietFlow-win-x86.msi, VietFlow-win-arm64.msi (Installer)" -ForegroundColor Green
     Write-Host "  latest.json, version.txt, CHANGELOG.md" -ForegroundColor Green
-} elseif ($Velopack) {
-    Write-Warning "'vpk' tool was not found in PATH. Skipping Velopack packaging."
 } else {
-    Write-Host "`n[5/5] Velopack packaging skipped (use -Velopack to build installers)." -ForegroundColor DarkGray
+    Write-Host "`n[5/5] MSI packaging skipped (use -Msi to build Windows installers)." -ForegroundColor DarkGray
 }
 
 if ($env:RUSTFLAGS -ne $previousRustFlags) {

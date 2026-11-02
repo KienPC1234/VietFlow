@@ -870,6 +870,14 @@ void UiManager::PageOverview() {
     }
     ImGui::PopStyleColor();
 
+    ImGui::SameLine(0.0f, Px(16.0f));
+    if (CheckboxHelp("Dùng E/V cho từng app",
+                     &config_.remember_per_app_mode,
+                     "Loại trừ những ứng dụng tự động, VietFlow nhớ thiết lập E/V cho mỗi ứng dụng.\n"
+                     "Mỗi lần sau chuyển đổi qua lại những ứng dụng, VietFlow sẽ tự động chuyển E/V theo từng ứng dụng một cách linh động.")) {
+        SaveConfig();
+    }
+
     // Administrator elevation status badge and 1-click relaunch button
     ImGui::SameLine(0.0f, Px(16.0f));
     if (is_running_as_admin_) {
@@ -1765,6 +1773,19 @@ void UiManager::PageExclusions() {
         SaveConfig();
     }
 
+    if (CheckboxHelp("Dùng E/V cho từng ứng dụng",
+                     &config_.remember_per_app_mode,
+                     "Loại trừ những ứng dụng tự động, VietFlow nhớ thiết lập E/V cho mỗi ứng dụng.\n"
+                     "Mỗi lần sau chuyển đổi qua lại những ứng dụng, VietFlow sẽ tự động chuyển E/V theo từng ứng dụng một cách linh động.")) {
+        SaveConfig();
+    }
+
+    if (CheckboxHelp("Loại trừ ứng dụng tự động",
+                     &config_.auto_exclude_apps,
+                     "Tự động chuyển sang chế độ Tiếng Anh (E) cho các ứng dụng dòng lệnh và terminal (cmd, PowerShell, Windows Terminal, WSL...).")) {
+        SaveConfig();
+    }
+
     SectionHeaderHelp("Thiết lập riêng cho từng app",
                       "Chỉ áp dụng cho app đã thêm. Chọn 'Theo mặc định' để dùng cài đặt chung.");
     ImGui::TextDisabled("Chỉ áp dụng cho app được thêm. 'Theo mặc định' dùng cài đặt chung.");
@@ -2465,15 +2486,16 @@ void UiManager::PageAdvanced() {
     ImGui::EndDisabled();
 
     SectionHeaderHelp("Chốt từ",
-                      "Thời gian chờ giữa hai phím trước khi chốt từ. Mặc định 1500 ms.");
+                      "Thời gian chờ giữa hai phím trước khi chốt từ. Mặc định 0 ms (Tắt / không giới hạn).");
     int timeout = (int)config_.typing_timeout_ms;
     ImGui::SetNextItemWidth(Px(260.0f));
-    if (ImGui::SliderInt("##TimeoutSlider", &timeout, 500, 5000, "%d ms")) {
+    const char* timeout_fmt = (timeout == 0) ? "Tắt (không giới hạn)" : "%d ms";
+    if (ImGui::SliderInt("##TimeoutSlider", &timeout, 0, 10000, timeout_fmt)) {
         config_.typing_timeout_ms = (uint64_t)timeout;
         SaveConfig();
     }
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.58f, 0.67f, 1.00f));
-    ImGui::TextUnformatted("Thời gian chờ giữa hai phím (mặc định 1500 ms).");
+    ImGui::TextUnformatted("Thời gian chờ giữa hai phím (mặc định: Tắt, giống UniKey / EVKey).");
     ImGui::PopStyleColor();
 
     ImGui::Dummy(ImVec2(0.0f, Px(20.0f)));

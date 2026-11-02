@@ -1,0 +1,229 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <Package Name="VietFlow"
+           Manufacturer="VietFlow Team"
+           Version="$(var.Version)"
+           UpgradeCode="B9A5320F-D409-4BFB-A63A-9E3DA4D3A1F8"
+           Scope="perMachine"
+           Language="1033"
+           Codepage="65001">
+
+    <SummaryInformation Description="VietFlow - Bộ gõ tiếng Việt hiện đại" Manufacturer="VietFlow Team" />
+
+    <MajorUpgrade DowngradeErrorMessage="Một phiên bản mới hơn của VietFlow đã được cài đặt."
+                  AllowSameVersionUpgrades="yes" />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- Add/Remove Programs (ARP) Metadata -->
+    <Icon Id="AppIcon.ico" SourceFile="$(var.SourceDir)\assets\VietFlow.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+    <Property Id="ARPSIZE" Value="3500" />
+    <Property Id="ARPCOMMENTS" Value="Bộ gõ tiếng Việt hiện đại, thông minh, độ trễ 0ms cho Windows" />
+    <Property Id="ARPCONTACT" Value="VietFlow Team" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/KienPC1234/VietFlow/issues" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/KienPC1234/VietFlow" />
+    <Property Id="ARPURLUPDATEINFO" Value="https://github.com/KienPC1234/VietFlow/releases" />
+    <Property Id="ARPHELPTELEPHONE" Value="https://github.com/KienPC1234/VietFlow" />
+    <Property Id="ARPREADME" Value="https://github.com/KienPC1234/VietFlow#readme" />
+    <Property Id="ARPNOREPAIR" Value="yes" />
+
+    <!-- Close running instances before installation/uninstallation -->
+    <util:CloseApplication Target="VietFlow.exe" CloseMessage="yes" RebootPrompt="no" PromptToContinue="no" />
+
+    <!-- Custom Actions -->
+    <CustomAction Id="CleanupShortcutsOnUninstall"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[#VietFlowExe]&quot; --clean-shortcuts"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <CustomAction Id="UnregisterTSF"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[#VietFlowExe]&quot; --unregister-tsf"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <CustomAction Id="UnregisterTipDllDirect"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="regsvr32.exe /u /s &quot;[#VietFlowTipDll]&quot;"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <CustomAction Id="RegisterTSF"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[#VietFlowExe]&quot; --register-tsf"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <CustomAction Id="LaunchApplication"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[#VietFlowExe]&quot;"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="asyncNoWait" />
+
+    <InstallExecuteSequence>
+      <Custom Action="UnregisterTSF" Before="RemoveFiles" Condition="(Installed AND (REMOVE=&quot;ALL&quot; OR Upgrading OR (&amp;TsfFeature = 2)))" />
+      <Custom Action="UnregisterTipDllDirect" Before="RemoveFiles" Condition="(Installed AND (REMOVE=&quot;ALL&quot; OR Upgrading OR (&amp;TsfFeature = 2)))" />
+      <Custom Action="CleanupShortcutsOnUninstall" Before="RemoveFiles" Condition="(Installed AND (REMOVE=&quot;ALL&quot; OR Upgrading))" />
+      <Custom Action="RegisterTSF" After="InstallFiles" Condition="(NOT Installed OR Upgrading) AND ((&amp;TsfFeature = 3) OR (REGISTER_TSF = &quot;1&quot;))" />
+    </InstallExecuteSequence>
+
+    <!-- UI Configuration -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <WixVariable Id="WixUIBannerBmp" Value="$(var.SourceDir)\assets\wix_banner.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="$(var.SourceDir)\assets\wix_dialog.bmp" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Khởi chạy VietFlow ngay bây giờ" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="REGISTER_TSF" Value="1" />
+
+    <UI>
+      <!-- Dialog sequence: WelcomeDlg -> InstallDirDlg -> OptionsDlg -> VerifyReadyDlg -->
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Order="2" />
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="OptionsDlg" Order="4" Condition="WIXUI_DONTVALIDATEPATH OR WIXUI_INSTALLDIR_VALID=&quot;1&quot;" />
+
+      <!-- OptionsDlg Navigation -->
+      <Publish Dialog="OptionsDlg" Control="Back" Event="NewDialog" Value="InstallDirDlg" />
+      <Publish Dialog="OptionsDlg" Control="Next" Event="AddLocal" Value="TsfFeature" Condition="REGISTER_TSF = &quot;1&quot;" />
+      <Publish Dialog="OptionsDlg" Control="Next" Event="Remove" Value="TsfFeature" Condition="NOT REGISTER_TSF OR REGISTER_TSF = &quot;0&quot;" />
+      <Publish Dialog="OptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" />
+
+      <!-- VerifyReadyDlg Back Navigation -->
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="OptionsDlg" Order="2" Condition="NOT Installed" />
+
+      <!-- Launch on finish -->
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApplication" Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed" />
+
+      <!-- Custom Options Dialog -->
+      <Dialog Id="OptionsDlg" Width="370" Height="270" Title="!(loc.InstallDirDlg_Title)">
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.InstallDirDlgBannerBitmap)" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Tùy chọn cài đặt" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="Chọn các tính năng bổ sung cho VietFlow" />
+
+        <Control Id="TsfGroup" Type="GroupBox" X="20" Y="60" Width="330" Height="95" Text="Tính năng: VietFlow TSF IME" />
+        <Control Id="TsfCheckBox" Type="CheckBox" X="30" Y="82" Width="310" Height="18"
+                 Property="REGISTER_TSF" CheckBoxValue="1"
+                 Text="Cài đặt và đăng ký tính năng VietFlow TSF IME" />
+        <Control Id="TsfDescription" Type="Text" X="30" Y="104" Width="310" Height="40"
+                 Text="Hỗ trợ gõ trực tiếp không nhấp nháy con trỏ và không gạch chân trong Office, Edge, Chrome." />
+      </Dialog>
+    </UI>
+
+    <!-- Directories and Components -->
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="VietFlow">
+        <Component Id="MainExecutable" Guid="3E47A55A-5DFB-4710-9E1D-5F6D9BF2A101">
+          <File Id="VietFlowExe" Source="$(var.BinaryPath)" KeyPath="yes" />
+        </Component>
+
+        <Component Id="TsfLibrary" Guid="8C9D18FE-4B33-4D90-951E-C9A149802B02">
+          <File Id="VietFlowTipDll" Source="$(var.SourceDir)\dist\vietflow_tip.dll" KeyPath="yes" />
+        </Component>
+
+        <Component Id="MsiMarker" Guid="A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D">
+          <File Id="MsiMarkerFile" Source="$(var.SourceDir)\assets\.installed" KeyPath="yes" />
+        </Component>
+
+        <Component Id="InstallFolderConfig" Guid="5B8C1E2A-3D4F-4E5A-9B6C-7D8E9F0A1B2C">
+          <CreateFolder>
+            <util:PermissionEx User="Users" GenericAll="yes" />
+          </CreateFolder>
+          <RemoveFile Id="CleanInstallFolderConfig" Name="vietflow_config.json" On="uninstall" />
+          <RemoveFile Id="CleanInstallFolderFiles" Name="*.*" On="uninstall" />
+        </Component>
+
+        <Component Id="AssetsComponent" Guid="F49E013A-38E2-46A2-9BF1-92D1D70B5B03">
+          <File Id="NotificationSound" Source="$(var.SourceDir)\assets\notification.wav" KeyPath="yes" />
+          <File Id="AppIconFile" Source="$(var.SourceDir)\assets\VietFlow.ico" />
+          <File Id="ChangelogFile" Source="$(var.SourceDir)\CHANGELOG.md" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Start Menu Shortcut -->
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcutComponent" Guid="72D6D860-24B3-4A59-A925-BDDE1A9B6104">
+        <Shortcut Id="ApplicationStartMenuShortcut"
+                  Name="VietFlow"
+                  Description="Bộ gõ tiếng Việt hiện đại VietFlow"
+                  Target="[!VietFlowExe]"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon.ico" />
+        <RemoveFile Id="CleanStartMenuLnk" Name="VietFlow.lnk" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\VietFlow" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <!-- Desktop Shortcut -->
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopShortcutComponent" Guid="A859E91E-D0B3-4FE0-9B2F-9B6CF5C38105">
+        <Shortcut Id="ApplicationDesktopShortcut"
+                  Name="VietFlow"
+                  Description="Bộ gõ tiếng Việt hiện đại VietFlow"
+                  Target="[!VietFlowExe]"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon.ico" />
+        <RemoveFile Id="CleanDesktopLnk" Name="VietFlow.lnk" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\VietFlow" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <!-- Common Shared Directory (%ProgramData%\VietFlow) fallback with full user permissions -->
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="CommonAppDataVietFlow" Name="VietFlow">
+        <Component Id="CommonAppDataComponent" Guid="A9C8D7E6-F5B4-4321-8765-FEDCBA098765">
+          <CreateFolder>
+            <util:PermissionEx User="Users" GenericAll="yes" />
+          </CreateFolder>
+          <RemoveFile Id="CleanCommonAppDataConfig" Name="vietflow_config.json" On="uninstall" />
+          <RemoveFile Id="CleanCommonAppDataFiles" Name="*.*" On="uninstall" />
+          <RemoveFolder Id="RemoveCommonAppDataFolder" On="uninstall" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Registry cleanup on uninstall -->
+    <Component Id="RegistryCleanup" Guid="D5A910E4-3A4B-4E38-9BF4-436DFB69C106" Directory="INSTALLFOLDER">
+      <RegistryValue Root="HKCU" Key="Software\VietFlow" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+      <RemoveRegistryKey Root="HKCU" Key="Software\VietFlow" Action="removeOnUninstall" />
+    </Component>
+
+    <Feature Id="MainFeature"
+             Title="VietFlow"
+             Description="Bộ gõ tiếng Việt VietFlow (Chế độ Hook tiêu chuẩn)."
+             Level="1"
+             Display="expand">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="MsiMarker" />
+      <ComponentRef Id="InstallFolderConfig" />
+      <ComponentRef Id="AssetsComponent" />
+      <ComponentRef Id="StartMenuShortcutComponent" />
+      <ComponentRef Id="DesktopShortcutComponent" />
+      <ComponentRef Id="CommonAppDataComponent" />
+      <ComponentRef Id="RegistryCleanup" />
+
+      <Feature Id="TsfFeature"
+               Title="VietFlow TSF IME"
+               Description="Dịch vụ nhập liệu Text Services Framework (TSF IME), hỗ trợ gõ trực tiếp không nhấp nháy trong Microsoft Office, Edge, Chrome."
+               Level="2">
+        <ComponentRef Id="TsfLibrary" />
+      </Feature>
+    </Feature>
+
+  </Package>
+</Wix>

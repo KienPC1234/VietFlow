@@ -15,6 +15,11 @@
 imgui.ini
 *.user
 *.pdb
+*.cab
+*.wixobj
+*.wixlib
+*.wixpdb
+.wix/
 *.log
 vietflow_config.json
 .vs/

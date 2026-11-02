@@ -370,7 +370,7 @@ impl Default for EngineOptions {
             foreign_initials: vec!['f', 'j', 'w', 'z'],
             custom_english_keywords: Vec::new(),
             removed_english_keywords: Vec::new(),
-            typing_timeout_ms: 1500,
+            typing_timeout_ms: crate::constants::DEFAULT_TYPING_TIMEOUT_MS,
             custom_keymap: CustomKeymap::default(),
         }
     }

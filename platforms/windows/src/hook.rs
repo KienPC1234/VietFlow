@@ -1,6 +1,7 @@
 // VietFlow Windows - Low-Level Keyboard Hook (WH_KEYBOARD_LL) & App Exclusion
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
+use std::collections::HashMap;
 use std::ptr::null_mut;
 use std::sync::{mpsc, Mutex, OnceLock};
 use vietflow_core::models::{CharsetId, EngineOptions, InputMethod};
@@ -59,6 +60,10 @@ extern "system" {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetTickCount64() -> u64;
+}
+
+pub fn get_tick_count_64() -> u64 {
+    unsafe { GetTickCount64() }
 }
 
 /// A short, clean uncompressed 16-bit 48kHz PCM notification chime.
@@ -155,7 +160,7 @@ pub extern "C" fn vf_reinstall_tsf() -> bool {
 
 use crate::config::{normalize_injection_mode, AppConfig, AppProfile};
 use crate::inject::{send_atomic_batch_with_mode, VIETFLOW_MAGIC};
-use crate::process::{get_process_name_for_window, is_app_excluded, profile_for_app};
+use crate::process::{get_process_name_for_window, is_app_excluded, is_auto_excluded_app, profile_for_app};
 use crate::startup::set_start_with_windows;
 use crate::tray::{WM_CONVERT, WM_SETTINGS, WM_TRAYICON};
 
@@ -178,6 +183,10 @@ pub struct HookState {
     /// Most recent excluded process, remembered through a tray/shell focus
     /// change so clicking the tray icon can still target the game/app.
     pub last_game_process: Option<String>,
+    /// Currently focused process name for dynamic per-app mode tracking.
+    pub current_process: Option<String>,
+    /// Memory map of per-app mode settings (lowercase process name -> is_vietnamese).
+    pub per_app_modes: HashMap<String, bool>,
     /// Once the user explicitly enabled temporary mode for an excluded app,
     /// the V/E hotkey may toggle it on and off until they leave that app.
     pub override_unlocked: bool,
@@ -303,6 +312,12 @@ impl HookState {
     pub fn toggle_language(&mut self) {
         self.user_enabled = !self.user_enabled;
         self.config.enabled = self.user_enabled;
+        if self.config.remember_per_app_mode && !self.is_foreground_excluded {
+            if let Some(proc) = &self.current_process {
+                self.per_app_modes.insert(proc.to_lowercase(), self.user_enabled);
+                self.config.per_app_modes = self.per_app_modes.clone();
+            }
+        }
         self.engine.reset();
         self.macro_buffer.clear();
     }
@@ -477,7 +492,18 @@ pub unsafe fn check_foreground_change(foreground: HWND) {
     let old_effective = state.effective_enabled();
 
     let proc_name = get_process_name_for_window(foreground);
-    let excluded = is_app_excluded(proc_name.as_deref(), &state.config.excluded_apps);
+    let mut excluded = is_app_excluded(
+        proc_name.as_deref(),
+        &state.config.excluded_apps,
+        state.config.smart_prefix_matching,
+    );
+    if !excluded && state.config.auto_exclude_apps {
+        if let Some(proc) = proc_name.as_deref() {
+            if is_auto_excluded_app(proc) {
+                excluded = true;
+            }
+        }
+    }
     let shell = is_shell_window(foreground);
 
     state.last_foreground = foreground;
@@ -485,14 +511,32 @@ pub unsafe fn check_foreground_change(foreground: HWND) {
     state.update_override_for_foreground(proc_name.as_deref(), excluded, shell);
 
     state.is_foreground_excluded = excluded;
+    if !shell && proc_name.is_some() {
+        state.current_process = proc_name.clone();
+        if state.config.remember_per_app_mode && !excluded {
+            if let Some(proc) = &proc_name {
+                let key = proc.to_lowercase();
+                if let Some(&saved_mode) = state.per_app_modes.get(&key) {
+                    state.user_enabled = saved_mode;
+                } else {
+                    state.per_app_modes.insert(key, state.user_enabled);
+                }
+            }
+        }
+    }
     state.non_us_layout = state.config.disable_on_non_us_layout && is_non_us_layout(foreground);
     state.non_unicode_window =
         state.config.disable_on_non_unicode_window && is_non_unicode_window(foreground);
-    state.active_profile =
-        profile_for_app(proc_name.as_deref(), &state.config.app_profiles).cloned();
+    state.active_profile = profile_for_app(
+        proc_name.as_deref(),
+        &state.config.app_profiles,
+        state.config.smart_prefix_matching,
+    )
+    .cloned();
     state.apply_runtime_profile();
 
     let effective = state.effective_enabled();
+    crate::tsf::sync_tsf_config(&state.config, effective);
     if old_excluded != state.is_foreground_excluded
         || old_non_us != state.non_us_layout
         || old_non_unicode != state.non_unicode_window
@@ -535,14 +579,19 @@ pub unsafe fn apply_config(config: AppConfig) {
     } else {
         get_process_name_for_window(foreground)
     };
-    let active_profile = profile_for_app(proc_name.as_deref(), &config.app_profiles).cloned();
+    let active_profile =
+        profile_for_app(proc_name.as_deref(), &config.app_profiles, config.smart_prefix_matching).cloned();
     let non_us = config.disable_on_non_us_layout
         && !foreground.is_null()
         && is_non_us_layout(foreground);
     let non_unicode = config.disable_on_non_unicode_window
         && !foreground.is_null()
         && is_non_unicode_window(foreground);
-    let excluded = is_app_excluded(proc_name.as_deref(), &config.excluded_apps);
+    let excluded = is_app_excluded(
+        proc_name.as_deref(),
+        &config.excluded_apps,
+        config.smart_prefix_matching,
+    );
     let shell = !foreground.is_null() && is_shell_window(foreground);
     let start_with_windows = config.start_with_windows;
     let startup_changed = state.config.start_with_windows != start_with_windows;
@@ -554,6 +603,9 @@ pub unsafe fn apply_config(config: AppConfig) {
     state.non_us_layout = non_us;
     state.non_unicode_window = non_unicode;
     state.active_profile = active_profile;
+    for (k, v) in &config.per_app_modes {
+        state.per_app_modes.entry(k.clone()).or_insert(*v);
+    }
     state.config = config;
     state.apply_runtime_profile();
     state.load_macros();
@@ -579,15 +631,34 @@ pub unsafe fn apply_config(config: AppConfig) {
 }
 
 pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
-    let user_enabled = config.enabled;
-
     let initial_foreground = GetForegroundWindow();
     let initial_proc = get_process_name_for_window(initial_foreground);
-    let initial_excluded = is_app_excluded(initial_proc.as_deref(), &config.excluded_apps);
+    let initial_excluded = is_app_excluded(
+        initial_proc.as_deref(),
+        &config.excluded_apps,
+        config.smart_prefix_matching,
+    );
+    let mut user_enabled = config.enabled;
+    let mut per_app_modes = config.per_app_modes.clone();
+    if config.remember_per_app_mode {
+        if let Some(proc) = &initial_proc {
+            let key = proc.to_lowercase();
+            if let Some(&saved_mode) = per_app_modes.get(&key) {
+                user_enabled = saved_mode;
+            } else if !initial_excluded {
+                per_app_modes.insert(key, user_enabled);
+            }
+        }
+    }
     let initial_non_us = config.disable_on_non_us_layout && is_non_us_layout(initial_foreground);
     let initial_non_unicode =
         config.disable_on_non_unicode_window && is_non_unicode_window(initial_foreground);
-    let initial_profile = profile_for_app(initial_proc.as_deref(), &config.app_profiles).cloned();
+    let initial_profile = profile_for_app(
+        initial_proc.as_deref(),
+        &config.app_profiles,
+        config.smart_prefix_matching,
+    )
+    .cloned();
     let options = engine_options_from_config(&config, initial_profile.as_ref());
     let charset = charset_from_config(&config, initial_profile.as_ref());
     let injection_mode = normalize_injection_mode(
@@ -647,6 +718,8 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         manual_override: false,
         override_process: None,
         last_game_process: if initial_excluded { initial_proc.clone() } else { None },
+        current_process: initial_proc.clone(),
+        per_app_modes,
         override_unlocked: false,
         non_us_layout: initial_non_us,
         non_unicode_window: initial_non_unicode,
@@ -856,11 +929,17 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         }
     }
 
-    // In TSF mode: if TSF is enabled in config and registered in Windows,
-    // yield typing input to the in-process TSF TIP (which composes directly without backspaces).
-    // Hotkeys (Ctrl+Shift, Alt+Z, Win+Space, etc.) were already intercepted above.
+    // In TSF mode: if TSF is enabled in config and registered, yield typing input to the in-process TSF TIP
+    // ONLY IF the foreground process is actively handled by TSF (has focus in TSF).
+    // Otherwise, Hook mode seamlessly processes keystrokes (fallback for games, legacy apps, consoles).
     if state.config.use_tsf && state.tsf_registered {
-        return CallNextHookEx(null_mut(), n_code, w_param, l_param);
+        let mut fg_pid = 0u32;
+        if !state.last_foreground.is_null() {
+            unsafe { GetWindowThreadProcessId(state.last_foreground, &mut fg_pid) };
+        }
+        if fg_pid != 0 && crate::tsf::is_tsf_active_for_pid(fg_pid) {
+            return CallNextHookEx(null_mut(), n_code, w_param, l_param);
+        }
     }
 
     // When Vietnamese typing is off, never run the Vietnamese engine. If the
@@ -1216,6 +1295,8 @@ mod tests {
             manual_override,
             override_process: None,
             last_game_process: None,
+            current_process: None,
+            per_app_modes: HashMap::new(),
             override_unlocked: false,
             non_us_layout: false,
             non_unicode_window: false,
@@ -1324,6 +1405,41 @@ mod tests {
         state.config.lock_hotkeys_in_excluded_apps = false;
         assert!(!state.hotkeys_locked());
         assert!(!hook_state(false, false, true).hotkeys_locked());
+    }
+
+    #[test]
+    fn test_remember_per_app_mode() {
+        let mut state = hook_state(false, false, true);
+        state.config.remember_per_app_mode = true;
+
+        // Start in code.exe
+        state.current_process = Some("Code.exe".to_string());
+        state.per_app_modes.insert("code.exe".to_string(), true);
+        assert!(state.user_enabled);
+
+        // Toggle to English in code.exe
+        state.toggle_language();
+        assert!(!state.user_enabled);
+        assert_eq!(state.per_app_modes.get("code.exe"), Some(&false));
+
+        // Switch to chrome.exe (user enables Vietnamese)
+        state.current_process = Some("chrome.exe".to_string());
+        state.per_app_modes.insert("chrome.exe".to_string(), true);
+        state.user_enabled = true;
+
+        // Switch back to code.exe -> restored to English
+        let code_key = "code.exe";
+        if let Some(&saved) = state.per_app_modes.get(code_key) {
+            state.user_enabled = saved;
+        }
+        assert!(!state.user_enabled);
+
+        // Switch back to chrome.exe -> restored to Vietnamese
+        let chrome_key = "chrome.exe";
+        if let Some(&saved) = state.per_app_modes.get(chrome_key) {
+            state.user_enabled = saved;
+        }
+        assert!(state.user_enabled);
     }
 
     #[test]

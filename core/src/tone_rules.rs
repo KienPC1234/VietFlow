@@ -310,9 +310,14 @@ pub fn is_valid_initial_with_vowel(initial: &[char], first_vowel: VnLexiName) ->
         return matches!(norm_v, VnLexiName::E | VnLexiName::Er | VnLexiName::I);
     }
 
-    // 'g', 'ng' cannot pair with e, ê, i (must use 'gh', 'ngh')
-    if lower_slice == ['g'] || lower_slice == ['n', 'g'] {
+    // 'ng' cannot pair with e, ê, i (must use 'ngh')
+    if lower_slice == ['n', 'g'] {
         return !matches!(norm_v, VnLexiName::E | VnLexiName::Er | VnLexiName::I);
+    }
+
+    // 'g' cannot pair with e, ê (must use 'gh'). Note: 'g' + 'i' forms 'gi' ('gì', 'gìn', 'gí', etc.)
+    if lower_slice == ['g'] {
+        return !matches!(norm_v, VnLexiName::E | VnLexiName::Er);
     }
 
     // 'c' does not pair with e, ê, i, y

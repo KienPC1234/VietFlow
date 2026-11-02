@@ -42,10 +42,10 @@ impl TrayIcon {
         nid.uID = 1;
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
-        nid.hIcon = if is_tsf_mode { icon_tsf } else { icon_v };
+        nid.hIcon = icon_v;
 
         let tip = if is_tsf_mode {
-            "VietFlow - Cài đặt [TSF IME]\0"
+            "VietFlow - Bộ gõ tiếng Việt [TSF IME]\0"
         } else {
             "VietFlow - Bộ gõ tiếng Việt\0"
         };
@@ -110,35 +110,29 @@ impl TrayIcon {
     }
 
     pub unsafe fn update_status(&mut self, is_vietnamese: bool) {
-        if self.is_tsf_mode {
-            self.nid.hIcon = self.icon_tsf;
-            let tip_str = "VietFlow - Cài đặt [TSF IME]\0";
-            let mut tip_buf = [0u16; 128];
-            for (i, c) in tip_str.encode_utf16().take(127).enumerate() {
-                tip_buf[i] = c;
+        self.nid.hIcon = if is_vietnamese { self.icon_v } else { self.icon_e };
+        let tip_str = if self.is_tsf_mode {
+            if is_vietnamese {
+                "VietFlow - Tiếng Việt [TSF V]\0"
+            } else {
+                "VietFlow - English [TSF E]\0"
             }
-            std::ptr::copy_nonoverlapping(
-                tip_buf.as_ptr(),
-                std::ptr::addr_of_mut!(self.nid.szTip) as *mut u16,
-                128,
-            );
         } else {
-            self.nid.hIcon = if is_vietnamese { self.icon_v } else { self.icon_e };
-            let tip_str = if is_vietnamese {
+            if is_vietnamese {
                 "VietFlow - Tiếng Việt [V]\0"
             } else {
                 "VietFlow - English [E]\0"
-            };
-            let mut tip_buf = [0u16; 128];
-            for (i, c) in tip_str.encode_utf16().take(127).enumerate() {
-                tip_buf[i] = c;
             }
-            std::ptr::copy_nonoverlapping(
-                tip_buf.as_ptr(),
-                std::ptr::addr_of_mut!(self.nid.szTip) as *mut u16,
-                128,
-            );
+        };
+        let mut tip_buf = [0u16; 128];
+        for (i, c) in tip_str.encode_utf16().take(127).enumerate() {
+            tip_buf[i] = c;
         }
+        std::ptr::copy_nonoverlapping(
+            tip_buf.as_ptr(),
+            std::ptr::addr_of_mut!(self.nid.szTip) as *mut u16,
+            128,
+        );
         Shell_NotifyIconW(NIM_MODIFY, &self.nid);
     }
 

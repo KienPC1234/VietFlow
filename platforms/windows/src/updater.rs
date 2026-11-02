@@ -28,8 +28,10 @@ const VERSION_ASSET_URL: &str =
 const API_URL: &str = "https://api.github.com/repos/KienPC1234/VietFlow/releases/latest";
 
 const MAX_BODY_BYTES: usize = 64 * 1024;
+const MAX_MSI_BYTES: usize = 50 * 1024 * 1024; // 50 MB
 const NOTES_LIMIT: usize = 900;
 const TIMEOUT_MS: u32 = 8_000;
+const DOWNLOAD_TIMEOUT_MS: u32 = 30_000;
 
 const INTERNET_OPEN_TYPE_DIRECT: u32 = 1;
 const INTERNET_OPTION_CONNECT_TIMEOUT: u32 = 2;
@@ -184,10 +186,14 @@ fn open_browser(url: &str) {
 }
 
 unsafe fn set_timeout(handle: *mut c_void, option: u32) {
+    set_timeout_ms(handle, option, TIMEOUT_MS);
+}
+
+unsafe fn set_timeout_ms(handle: *mut c_void, option: u32, timeout_ms: u32) {
     if handle.is_null() {
         return;
     }
-    let mut timeout = TIMEOUT_MS;
+    let mut timeout = timeout_ms;
     InternetSetOptionW(
         handle,
         option,
@@ -280,6 +286,77 @@ fn fetch_url(url: &str) -> Result<String, FetchError> {
     }
 }
 
+/// Download a file (e.g. MSI installer) directly to disk using streaming buffer.
+fn download_file(url: &str, destination: &std::path::Path) -> Result<(), FetchError> {
+    use std::io::Write;
+    unsafe {
+        let agent = to_wide("VietFlow-Updater/1");
+        let session = InternetHandle(InternetOpenW(
+            agent.as_ptr(),
+            INTERNET_OPEN_TYPE_DIRECT,
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+        ));
+        if session.0.is_null() {
+            return Err(FetchError::new("Không thể khởi tạo kết nối WinINet"));
+        }
+        set_timeout_ms(session.0, INTERNET_OPTION_CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
+        set_timeout_ms(session.0, INTERNET_OPTION_SEND_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
+        set_timeout_ms(session.0, INTERNET_OPTION_RECEIVE_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
+
+        let wide_url = to_wide(url);
+        let headers = to_wide("User-Agent: VietFlow\r\nAccept: application/octet-stream, */*\r\n");
+        let request = InternetHandle(InternetOpenUrlW(
+            session.0,
+            wide_url.as_ptr(),
+            headers.as_ptr(),
+            headers.len() as u32 - 1,
+            FETCH_FLAGS,
+            0,
+        ));
+        if request.0.is_null() {
+            return Err(FetchError::new("Không thể mở đường dẫn tải tệp"));
+        }
+        set_timeout_ms(request.0, INTERNET_OPTION_SEND_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
+        set_timeout_ms(request.0, INTERNET_OPTION_RECEIVE_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
+
+        if let Some(status) = query_http_status(request.0) {
+            if status != 200 {
+                return Err(FetchError::http(status));
+            }
+        }
+
+        let mut file = std::fs::File::create(destination)
+            .map_err(|e| FetchError::new(format!("Không thể tạo tệp tạm: {e}")))?;
+
+        let mut buffer = [0u8; 64 * 1024];
+        let mut total_bytes: usize = 0;
+        loop {
+            let mut read = 0u32;
+            let ok = InternetReadFile(
+                request.0,
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                &mut read,
+            );
+            if ok == 0 || read == 0 {
+                break;
+            }
+            total_bytes += read as usize;
+            if total_bytes > MAX_MSI_BYTES {
+                let _ = std::fs::remove_file(destination);
+                return Err(FetchError::new("Tệp tải về vượt quá giới hạn cho phép"));
+            }
+            file.write_all(&buffer[..read as usize])
+                .map_err(|e| FetchError::new(format!("Lỗi ghi tệp cài đặt: {e}")))?;
+        }
+        file.flush()
+            .map_err(|e| FetchError::new(format!("Lỗi ghi tệp cài đặt: {e}")))?;
+        Ok(())
+    }
+}
+
 fn normalize_version(value: &str) -> String {
     value
         .trim()
@@ -291,27 +368,11 @@ pub fn is_installed_via_msi() -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
-    // 1. Velopack MSI drops `.msi-installed` into the root install directory.
-    if let Some(parent) = exe.parent() {
-        if parent.join(".msi-installed").exists() {
-            return true;
-        }
-        if let Some(grandparent) = parent.parent() {
-            if grandparent.join(".msi-installed").exists() {
-                return true;
-            }
-        }
-    }
-    // 2. Machine-wide installation under Program Files
-    let exe_str = exe.to_string_lossy();
-    for var in &["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"] {
-        if let Ok(dir) = std::env::var(var) {
-            if !dir.is_empty() && exe_str.starts_with(&dir) {
-                return true;
-            }
-        }
-    }
-    false
+    let Some(dir) = exe.parent() else {
+        return false;
+    };
+    // Explicit installation marker deployed by native MSI installer (.installed / msi.tag)
+    dir.join(".installed").is_file() || dir.join("msi.tag").is_file()
 }
 
 pub(crate) fn parse_manifest_for_arch(
@@ -344,11 +405,8 @@ pub(crate) fn parse_manifest_for_arch(
             .filter(|value| !value.is_empty())
             .map(|value| value.to_string())
     } else {
-        json.get("downloads")
-            .and_then(|downloads| downloads.get(arch_key))
-            .and_then(|value| value.as_str())
-            .filter(|value| !value.is_empty())
-            .map(|value| value.to_string())
+        // Portable mode does not auto-download binary; directs user to release page
+        None
     };
 
     Some(ReleaseInfo {
@@ -519,15 +577,53 @@ fn prompt_update(info: &ReleaseInfo) {
         message.push_str(&notes);
         message.push_str("\n\n");
     }
-    if is_installed_via_msi() {
-        message.push_str("Bạn đang sử dụng bản cài đặt MSI. Bạn có muốn tải bản MSI mới nhất để nâng cấp không?");
-    } else {
-        message.push_str("Bạn có muốn mở trang tải bản cập nhật trên GitHub không?");
-    }
 
-    if show_msg(&message, "Cập nhật VietFlow", MB_YESNO | MB_ICONQUESTION) == IDYES {
-        let target = info.download.as_deref().unwrap_or(&info.url);
-        open_browser(target);
+    if is_installed_via_msi() {
+        message.push_str("Bạn đang sử dụng bản cài đặt (MSI).\nBạn có muốn tự động tải bản MSI mới nhất và tiến hành nâng cấp ngay không?");
+        if show_msg(&message, "Cập nhật VietFlow", MB_YESNO | MB_ICONQUESTION) == IDYES {
+            if let Some(download_url) = &info.download {
+                let temp_msi = std::env::temp_dir().join(format!("VietFlow-v{}-Setup.msi", info.version));
+
+                show_msg(
+                    "Đang tiến hành tải bản cài đặt MSI trong nền...\nCửa sổ cài đặt sẽ tự động xuất hiện sau vài giây.",
+                    "Cập nhật VietFlow",
+                    MB_OK | MB_ICONINFORMATION,
+                );
+
+                match download_file(download_url, &temp_msi) {
+                    Ok(()) => {
+                        let wide_path = to_wide(&temp_msi.to_string_lossy());
+                        unsafe {
+                            windows_sys::Win32::UI::Shell::ShellExecuteW(
+                                0 as _,
+                                to_wide("open").as_ptr(),
+                                wide_path.as_ptr(),
+                                std::ptr::null(),
+                                std::ptr::null(),
+                                1, // SW_SHOWNORMAL
+                            );
+                        }
+                        std::process::exit(0);
+                    }
+                    Err(err) => {
+                        let err_msg = format!(
+                            "Tải bản cài đặt thất bại: {}\n\nBạn có muốn mở trang GitHub để tải thủ công không?",
+                            err.message
+                        );
+                        if show_msg(&err_msg, "Lỗi cập nhật VietFlow", MB_YESNO | MB_ICONWARNING) == IDYES {
+                            open_browser(&info.url);
+                        }
+                    }
+                }
+            } else {
+                open_browser(&info.url);
+            }
+        }
+    } else {
+        message.push_str("Bạn đang sử dụng bản Portable.\nBạn có muốn mở trang phát hành trên GitHub để tải bản mới về không?");
+        if show_msg(&message, "Cập nhật VietFlow", MB_YESNO | MB_ICONQUESTION) == IDYES {
+            open_browser(&info.url);
+        }
     }
 }
 
@@ -597,6 +693,7 @@ mod tests {
         assert_eq!(info.version, "0.2.0");
         assert_eq!(info.notes, "hello");
         assert_eq!(info.url, "https://example.test");
+        assert_eq!(info.download, None);
         assert!(parse_manifest("{}").is_none());
         assert!(parse_manifest("not json").is_none());
     }
@@ -608,33 +705,25 @@ mod tests {
             "notes": "release notes",
             "url": "https://example.test/release",
             "downloads": {
-                "x64": "https://example.test/VietFlow-win-x64-Setup.exe",
+                "x64": "https://example.test/VietFlow-x64.exe",
                 "msi_x64": "https://example.test/VietFlow-win-x64.msi",
-                "x86": "https://example.test/VietFlow-win-x86-Setup.exe",
+                "x86": "https://example.test/VietFlow-x86.exe",
                 "msi_x86": "https://example.test/VietFlow-win-x86.msi",
-                "arm64": "https://example.test/VietFlow-win-arm64-Setup.exe",
+                "arm64": "https://example.test/VietFlow-arm64.exe",
                 "msi_arm64": "https://example.test/VietFlow-win-arm64.msi"
             }
         }"#;
 
-        // Non-MSI (Setup.exe) resolution
-        let setup_x64 = parse_manifest_for_arch(manifest_json, false, "x64").unwrap();
-        assert_eq!(
-            setup_x64.download.as_deref(),
-            Some("https://example.test/VietFlow-win-x64-Setup.exe")
-        );
+        // Portable mode: download is None (directs user to url)
+        let portable_x64 = parse_manifest_for_arch(manifest_json, false, "x64").unwrap();
+        assert_eq!(portable_x64.download, None);
+        assert_eq!(portable_x64.url, "https://example.test/release");
 
-        let setup_x86 = parse_manifest_for_arch(manifest_json, false, "x86").unwrap();
-        assert_eq!(
-            setup_x86.download.as_deref(),
-            Some("https://example.test/VietFlow-win-x86-Setup.exe")
-        );
+        let portable_x86 = parse_manifest_for_arch(manifest_json, false, "x86").unwrap();
+        assert_eq!(portable_x86.download, None);
 
-        let setup_arm64 = parse_manifest_for_arch(manifest_json, false, "arm64").unwrap();
-        assert_eq!(
-            setup_arm64.download.as_deref(),
-            Some("https://example.test/VietFlow-win-arm64-Setup.exe")
-        );
+        let portable_arm64 = parse_manifest_for_arch(manifest_json, false, "arm64").unwrap();
+        assert_eq!(portable_arm64.download, None);
 
         // MSI package resolution
         let msi_x64 = parse_manifest_for_arch(manifest_json, true, "x64").unwrap();

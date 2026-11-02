@@ -120,9 +120,9 @@ impl VietFlowEngine {
     }
 
     /// Evaluates word-break actions (macro expansion, English auto-restore) for IME preedit.
-    /// Returns Some(replacement) if the word was expanded or restored.
+    /// Returns the finalized string (expanded macro, restored raw word, or formatted composed word).
     /// Resets the engine word buffer in all cases.
-    pub fn finish_composition_on_break(&mut self, _break_char: char) -> Option<String> {
+    pub fn finish_composition_on_break(&mut self, _break_char: char) -> String {
         // 1. Check macro expansion
         if self.options.enable_macro
             && !self.macros.is_empty()
@@ -130,24 +130,28 @@ impl VietFlowEngine {
         {
             if let Some(replacement) = self.lookup_raw_macro() {
                 self.reset_word();
-                return Some(replacement);
+                return replacement;
             }
         }
 
         // 2. Check English auto-restore on invalid Vietnamese syllable
-        if !self.buffer.is_empty()
-            && self.options.spell_check
+        let should_restore = self.options.spell_check
             && self.options.auto_non_vn_restore
-            && (self.has_any_vietnamese_mark() || self.matches_raw_english_keyword())
-            && !self.is_valid_vietnamese_word()
-        {
+            && !self.buffer.is_empty()
+            && (
+                self.matches_raw_english_keyword()
+                || (!self.temp_disabled && self.has_any_vietnamese_mark() && !self.is_valid_vietnamese_word())
+            );
+
+        if should_restore {
             let raw: String = self.raw_chars.iter().collect();
             self.reset_word();
-            return Some(raw);
+            return raw;
         }
 
+        let current = self.current_preedit_text();
         self.reset_word();
-        None
+        current
     }
 
     fn reset_word(&mut self) {
@@ -282,7 +286,7 @@ impl VietFlowEngine {
         // let all subsequent alphabetic letters pass through without forming Vietnamese marks.
         if self.temp_disabled {
             if is_letter_fast(c) {
-                return self.process_subsequent_letter(c);
+                return self.append_non_vn_letter(c);
             }
             let char_type = get_char_type(c, self.options.method, &self.options.custom_keymap);
             if matches!(char_type, CharType::WordBreak | CharType::Reset) || is_word_break_fast(c) {
@@ -539,6 +543,7 @@ impl VietFlowEngine {
     }
 
     fn append_non_vn_letter(&mut self, c: char) -> (usize, KeyText) {
+        self.raw_chars.push(c);
         let slot = Slot::new(c);
         self.buffer.push(slot);
         self.word_form = WordForm::NonVn;
@@ -702,6 +707,7 @@ impl VietFlowEngine {
                         last_slot.modified = false;
                         self.temp_disabled = true;
                         self.buffer.push(Slot::new(raw_key));
+                        self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                         return Some(self.rebuild_current_word());
                     }
 
@@ -730,6 +736,7 @@ impl VietFlowEngine {
                                 slot.modified = false;
                                 self.temp_disabled = true;
                                 self.buffer.push(Slot::new(raw_key));
+                                self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                                 return Some(self.rebuild_current_word());
                             }
                             slot.lexi = if slot.is_upper { VnLexiName::DD } else { VnLexiName::dd };
@@ -751,6 +758,7 @@ impl VietFlowEngine {
                         last_slot.modified = false;
                         self.temp_disabled = true;
                         self.buffer.push(Slot::new(raw_key));
+                        self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                         return Some(self.rebuild_current_word());
                     }
 
@@ -784,6 +792,7 @@ impl VietFlowEngine {
                                         slot.modified = false;
                                         self.temp_disabled = true;
                                         self.buffer.push(Slot::new(raw_key));
+                                        self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                                         return Some(self.rebuild_current_word());
                                     }
 
@@ -866,7 +875,9 @@ impl VietFlowEngine {
                                 let plain = iso_to_vn_lexi(c);
                                 slot.lexi = if slot.is_upper { plain.to_upper() } else { plain };
                                 slot.modified = false;
+                                self.temp_disabled = true;
                                 self.buffer.push(Slot::new(raw_key));
+                                self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                                 return Some(self.rebuild_current_word());
                             }
                             slot.lexi = match c {
@@ -1022,8 +1033,10 @@ impl VietFlowEngine {
                 self.buffer[o].lexi = if self.buffer[o].is_upper { VnLexiName::O } else { VnLexiName::o };
                 self.buffer[u].modified = false;
                 self.buffer[o].modified = false;
+                self.temp_disabled = true;
                 self.refresh_tone_position();
                 self.buffer.push(Slot::new(raw_key));
+                self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                 return Some(self.rebuild_current_word());
             }
 
@@ -1031,8 +1044,10 @@ impl VietFlowEngine {
                 // uơ + w -> uo + w (undo)
                 self.buffer[o].lexi = if self.buffer[o].is_upper { VnLexiName::O } else { VnLexiName::o };
                 self.buffer[o].modified = false;
+                self.temp_disabled = true;
                 self.refresh_tone_position();
                 self.buffer.push(Slot::new(raw_key));
+                self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                 return Some(self.rebuild_current_word());
             }
 
@@ -1104,8 +1119,10 @@ impl VietFlowEngine {
                     plain
                 };
                 slot.modified = false;
+                self.temp_disabled = true;
                 self.refresh_tone_position();
                 self.buffer.push(Slot::new(raw_key));
+                self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                 return Some(self.rebuild_current_word());
             }
         }
@@ -1163,12 +1180,15 @@ impl VietFlowEngine {
             }
         }
 
-        if !self.buffer.is_empty()
-            && self.options.spell_check
+        let should_restore = self.options.spell_check
             && self.options.auto_non_vn_restore
-            && (self.has_any_vietnamese_mark() || self.matches_raw_english_keyword())
-            && !self.is_valid_vietnamese_word()
-        {
+            && !self.buffer.is_empty()
+            && (
+                self.matches_raw_english_keyword()
+                || (!self.temp_disabled && self.has_any_vietnamese_mark() && !self.is_valid_vietnamese_word())
+            );
+
+        if should_restore {
             // Restore raw keystrokes
             let mut match_len = 0;
             while match_len < self.buffer.len()
@@ -1238,12 +1258,16 @@ impl VietFlowEngine {
     }
 
     fn process_backspace(&mut self) -> (usize, KeyText) {
+        if self.temp_disabled {
+            self.temp_disabled = false;
+            self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
+        }
+
         if !self.raw_chars.is_empty() {
             self.raw_chars.pop();
         }
 
         if self.buffer.is_empty() {
-            self.temp_disabled = false;
             return (0, KeyText::new());
         }
 

@@ -140,6 +140,7 @@ mod tests {
             ("toans", "toán"),
             ("toanss", "toans"),
             ("aaa", "aa"),
+            ("aaa ", "aa "),
             ("eee", "ee"),
             ("ooo", "oo"),
             ("aww", "aw"),
@@ -158,6 +159,20 @@ mod tests {
             ("ddd", "dd"),
             ("asz", "a"),
             ("vieetjz", "viêt"),
+            ("gif ", "gì "),
+            ("gis ", "gí "),
+            ("ginf ", "gìn "),
+            ("curr ", "cur "),
+            ("corr ", "cor "),
+            ("cass ", "cas "),
+            ("mass ", "mas "),
+            ("tuss ", "tus "),
+            ("ddd ", "dd "),
+            ("uoww ", "uow "),
+            ("theme ", "thêm "),
+            ("theeme ", "theme "),
+            ("dangd ", "đang "),
+            ("ddangd ", "dangd "),
         ];
 
         for (input, expected) in cases {
@@ -165,6 +180,30 @@ mod tests {
             let actual = process_string(&mut engine, input);
             assert_eq!(actual, expected, "Failed undo for: {input}");
         }
+    }
+
+    #[test]
+    fn test_undo_and_backspace_resumption() {
+        let mut engine = VietFlowEngine::default();
+
+        // 1. "củ" + "r" -> "cur", backspace -> deletes 'r' (1 backspace, suffix ""), screen is "cu", type "r" -> "củ"
+        assert_eq!(process_string(&mut engine, "curr"), "cur");
+        let (bs, out) = engine.process_key('\x08');
+        assert_eq!(bs, 1);
+        assert_eq!(out.as_str(), "");
+        let (bs, out) = engine.process_key('r');
+        assert_eq!(bs, 1);
+        assert_eq!(out.as_str(), "ủ");
+
+        // 2. "đ" + "d" -> "dd", backspace -> deletes 'd' (1 backspace, suffix ""), screen is "d", type "d" -> "đ"
+        engine.reset();
+        assert_eq!(process_string(&mut engine, "ddd"), "dd");
+        let (bs, out) = engine.process_key('\x08');
+        assert_eq!(bs, 1);
+        assert_eq!(out.as_str(), "");
+        let (bs, out) = engine.process_key('d');
+        assert_eq!(bs, 1);
+        assert_eq!(out.as_str(), "đ");
     }
 
     #[test]
@@ -270,21 +309,21 @@ mod tests {
             let _ = engine.process_key(c);
         }
         assert_eq!(engine.current_preedit_text(), "việt");
-        assert_eq!(engine.finish_composition_on_break(' '), None);
+        assert_eq!(engine.finish_composition_on_break(' '), "việt");
 
         // 2. English word auto-restore on break
         for c in "word".chars() {
             let _ = engine.process_key(c);
         }
         assert_eq!(engine.current_preedit_text(), "ưởd");
-        assert_eq!(engine.finish_composition_on_break(' '), Some("word".to_string()));
+        assert_eq!(engine.finish_composition_on_break(' '), "word");
 
         // 3. Macro expansion on break
         for c in "vn".chars() {
             let _ = engine.process_key(c);
         }
         assert_eq!(engine.current_preedit_text(), "vn");
-        assert_eq!(engine.finish_composition_on_break(' '), Some("Việt Nam".to_string()));
+        assert_eq!(engine.finish_composition_on_break(' '), "Việt Nam");
     }
 
     #[test]

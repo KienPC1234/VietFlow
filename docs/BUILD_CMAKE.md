@@ -35,8 +35,8 @@ git submodule update --init --recursive
 # All three
 .\scripts\build.ps1 -Arch All
 
-# With Velopack installers
-.\scripts\build.ps1 -Arch All -Velopack
+# With native WiX MSI installers
+.\scripts\build.ps1 -Arch All -Msi
 
 # Dynamic CRT (needs VC++ 2015-2022 Redistributable, smaller exe)
 .\scripts\build.ps1 -DynamicCrt
@@ -54,7 +54,7 @@ Output:
 - `dist\VietFlow-x86.exe` (x86)
 - `dist\VietFlow-arm64.exe` (ARM64)
 - `dist\latest.json`, `dist\version.txt`, `dist\CHANGELOG.md`
-- `releases\VietFlow-win-<arch>-Setup.exe` with `-Velopack`
+- `releases\VietFlow-win-<arch>.msi` with `-Msi`
 
 ---
 

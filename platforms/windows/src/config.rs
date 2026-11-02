@@ -10,6 +10,11 @@ use std::sync::OnceLock;
 /// The daemon checks this path every 250 ms. Building a PathBuf and calling
 /// create_dir_all on every timer tick was unnecessary allocator and disk work.
 static CONFIG_PATH: OnceLock<PathBuf> = OnceLock::new();
+static CUSTOM_CONFIG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_custom_config_path(path: PathBuf) {
+    let _ = CUSTOM_CONFIG_PATH.set(path);
+}
 
 /// Per-application overrides. All fields are optional: `None` means "inherit
 /// the global setting". The map is keyed by executable name.
@@ -113,10 +118,24 @@ pub struct AppConfig {
 
     #[serde(default = "default_excluded_apps")]
     pub excluded_apps: Vec<String>,
+    /// When enabled, configured patterns of 4+ characters can match processes starting with that prefix.
+    /// Disabled by default to prevent false-positive matches (e.g. 'code' matching 'codeblocks.exe').
+    /// Users can also use explicit wildcards like 'roblox*' or '*terminal*'.
+    #[serde(default)]
+    pub smart_prefix_matching: bool,
     /// Lock V/E, settings and converter hotkeys while an excluded app is in
     /// front. The tray/menu override remains available.
     #[serde(default = "default_true")]
     pub lock_hotkeys_in_excluded_apps: bool,
+    /// Remember Vietnamese/English typing mode per application and switch dynamically.
+    #[serde(default)]
+    pub remember_per_app_mode: bool,
+    /// Automatically exclude terminal and console applications from Vietnamese typing.
+    #[serde(default)]
+    pub auto_exclude_apps: bool,
+    /// Dynamic per-application mode memory map (process_name.toLowerCase -> is_vietnamese).
+    #[serde(default)]
+    pub per_app_modes: HashMap<String, bool>,
     #[serde(default)]
     pub app_profiles: HashMap<String, AppProfile>,
     #[serde(default = "default_macros")]
@@ -132,7 +151,7 @@ fn default_auto_capitalize_chars() -> String {
     ".!?\r\n".to_string()
 }
 fn default_timeout() -> u64 {
-    1500
+    0
 }
 fn default_hotkey_mode() -> String {
     "CtrlShift".to_string()
@@ -309,7 +328,7 @@ impl Default for AppConfig {
             use_tsf: false,
             start_with_windows: false,
             notification_sound: false,
-            typing_timeout_ms: 1500,
+            typing_timeout_ms: default_timeout(),
             hotkey_mode: default_hotkey_mode(),
             hotkey_settings: default_hotkey_settings(),
             hotkey_converter: default_hotkey_converter(),
@@ -327,7 +346,11 @@ impl Default for AppConfig {
             tray_icon_e_border: true,
             tray_icon_e_border_color: default_blue(),
             excluded_apps: default_excluded_apps(),
+            smart_prefix_matching: false,
             lock_hotkeys_in_excluded_apps: true,
+            remember_per_app_mode: false,
+            auto_exclude_apps: false,
+            per_app_modes: HashMap::new(),
             app_profiles: HashMap::new(),
             macros: default_macros(),
             custom_keymap: CustomKeymapConfig::default(),
@@ -343,6 +366,41 @@ pub fn normalize_injection_mode(mode: u8) -> u8 {
     }
 }
 
+fn is_dir_writable(dir: &std::path::Path) -> bool {
+    let test_file = dir.join(format!(".w_test_{}.tmp", std::process::id()));
+    match fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&test_file)
+    {
+        Ok(f) => {
+            drop(f);
+            let _ = fs::remove_file(&test_file);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn shared_common_config_path() -> Option<PathBuf> {
+    // 1. Common Application Data (%ProgramData%\VietFlow\config.json) - shared for all users
+    if let Ok(programdata) = std::env::var("ProgramData") {
+        let p = PathBuf::from(programdata).join(crate::constants::APP_DIR_NAME);
+        if (p.is_dir() || fs::create_dir_all(&p).is_ok()) && is_dir_writable(&p) {
+            return Some(p.join(crate::constants::CONFIG_FILE_NAME));
+        }
+    }
+    // 2. Per-user Application Data (%APPDATA%\VietFlow\config.json)
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let p = PathBuf::from(appdata).join(crate::constants::APP_DIR_NAME);
+        if p.is_dir() || fs::create_dir_all(&p).is_ok() {
+            return Some(p.join(crate::constants::CONFIG_FILE_NAME));
+        }
+    }
+    None
+}
+
 impl AppConfig {
     pub fn normalize(&mut self) {
         self.injection_mode = normalize_injection_mode(self.injection_mode);
@@ -354,13 +412,50 @@ impl AppConfig {
     }
 
     fn build_config_path() -> PathBuf {
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            let mut p = PathBuf::from(appdata);
-            p.push(crate::constants::APP_DIR_NAME);
-            let _ = fs::create_dir_all(&p);
-            p.push(crate::constants::CONFIG_FILE_NAME);
-            return p;
+        if let Some(custom) = CUSTOM_CONFIG_PATH.get() {
+            return custom.clone();
         }
+
+        // If installed via MSI:
+        if crate::updater::is_installed_via_msi() {
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(dir) = exe.parent() {
+                    let msi_config = dir.join(crate::constants::CONFIG_FILE_NAME);
+                    // Check if installation directory has write permission
+                    if is_dir_writable(dir) {
+                        // Migrate existing config from shared directory if upgrading
+                        if !msi_config.is_file() {
+                            if let Some(shared) = shared_common_config_path() {
+                                if shared.is_file() {
+                                    let _ = fs::copy(&shared, &msi_config);
+                                }
+                            }
+                        }
+                        return msi_config;
+                    }
+                }
+            }
+            // If the installation directory encounters a permission error, fallback to shared common directory
+            if let Some(shared) = shared_common_config_path() {
+                return shared;
+            }
+        }
+
+        // Portable mode: if local config.json exists beside exe and directory is writable, prioritize it
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let local_cfg = dir.join(crate::constants::CONFIG_FILE_NAME);
+                if local_cfg.is_file() || is_dir_writable(dir) {
+                    return local_cfg;
+                }
+            }
+        }
+
+        // Shared common fallback for portable mode
+        if let Some(shared) = shared_common_config_path() {
+            return shared;
+        }
+
         PathBuf::from(crate::constants::CONFIG_FILE_NAME)
     }
 
@@ -389,7 +484,15 @@ impl AppConfig {
     pub fn save(&self) {
         let path = Self::config_path_ref();
         if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = fs::write(path, json);
+            if fs::write(path, &json).is_err() {
+                // If writing to cached path fails due to permission error,
+                // fallback to saving in shared common directory (%ProgramData% or %APPDATA%)
+                if let Some(shared) = shared_common_config_path() {
+                    if &shared != path {
+                        let _ = fs::write(&shared, &json);
+                    }
+                }
+            }
         }
     }
 

@@ -440,8 +440,8 @@ impl VietFlowTip_Impl {
 
     fn finish_composition(&self, context: &ITfContext, break_char: char) {
         let replacement = self.engine.borrow_mut().finish_composition_on_break(break_char);
-        if let Some(rep) = replacement {
-            let rep = expand_clipboard(rep);
+        if !replacement.is_empty() {
+            let rep = expand_clipboard(replacement);
             self.replace_and_end_active_composition(context, &rep);
         } else {
             self.end_active_composition(context);
