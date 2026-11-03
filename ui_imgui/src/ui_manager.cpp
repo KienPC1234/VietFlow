@@ -1204,42 +1204,107 @@ void UiManager::PageTyping() {
 
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(Px(640.0f), Px(500.0f)), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(Px(640.0f), Px(520.0f)), ImGuiCond_Appearing);
     if (ImGui::BeginPopupModal("Từ tiếng Anh", nullptr, ImGuiWindowFlags_NoResize)) {
-        ImGui::TextDisabled("Không thêm dấu cho các từ này.");
-        ImGui::SetNextItemWidth(-Px(10.0f));
-        ImGui::InputTextWithHint("##EngFilter", "Tìm từ...", english_keyword_filter_, sizeof(english_keyword_filter_));
+        ImGui::TextDisabled("Các từ trong danh sách này sẽ được giữ nguyên tiếng Anh (không thêm dấu) khi gõ.");
         ImGui::Spacing();
 
-        std::vector<std::string> words = english_defaults_;
-        for (const auto& raw : config_.english_keywords) {
-            std::string word = TrimLower(raw.c_str());
-            if (!word.empty() && !ContainsWord(words, word)) words.push_back(word);
+        ImGui::SetNextItemWidth(Px(220.0f));
+        ImGui::InputTextWithHint("##EngFilter", "Tìm từ...", english_keyword_filter_, sizeof(english_keyword_filter_));
+        ImGui::SameLine();
+
+        size_t custom_count = config_.english_keywords.size();
+        size_t default_count = english_defaults_.size() - config_.english_keywords_removed.size();
+        size_t total_count = custom_count + default_count;
+
+        std::string all_label = "Tất cả (" + std::to_string(total_count) + ")";
+        std::string custom_label = "Tự thêm (" + std::to_string(custom_count) + ")";
+        std::string default_label = "Mặc định (" + std::to_string(default_count) + ")";
+
+        if (ImGui::RadioButton(all_label.c_str(), english_filter_mode_ == 0)) {
+            english_filter_mode_ = 0;
         }
-        words.erase(std::remove_if(words.begin(), words.end(), [&](const std::string& word) {
-            return ContainsWord(config_.english_keywords_removed, word);
-        }), words.end());
-        SortUnique(words);
+        ImGui::SameLine();
+        if (ImGui::RadioButton(custom_label.c_str(), english_filter_mode_ == 1)) {
+            english_filter_mode_ = 1;
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton(default_label.c_str(), english_filter_mode_ == 2)) {
+            english_filter_mode_ = 2;
+        }
+
+        ImGui::Spacing();
+
+        struct KeywordItem {
+            std::string word;
+            bool is_custom;
+            bool is_disabled;
+        };
+        std::vector<KeywordItem> display_list;
+
+        if (english_filter_mode_ == 0 || english_filter_mode_ == 1) {
+            for (const auto& w : config_.english_keywords) {
+                display_list.push_back({w, true, false});
+            }
+        }
+        if (english_filter_mode_ == 0 || english_filter_mode_ == 2) {
+            for (const auto& w : english_defaults_) {
+                bool is_disabled = ContainsWord(config_.english_keywords_removed, w);
+                if (!is_disabled || english_filter_mode_ == 2) {
+                    display_list.push_back({w, false, is_disabled});
+                }
+            }
+        }
+        std::sort(display_list.begin(), display_list.end(), [](const KeywordItem& a, const KeywordItem& b) {
+            return a.word < b.word;
+        });
 
         const std::string filter = TrimLower(english_keyword_filter_);
-        if (ImGui::BeginChild("##EngList", ImVec2(0.0f, Px(300.0f)), true)) {
+        if (ImGui::BeginChild("##EngList", ImVec2(0.0f, Px(270.0f)), true)) {
             int shown = 0;
-            for (const auto& word : words) {
-                if (!filter.empty() && word.find(filter) == std::string::npos) continue;
+            for (const auto& item : display_list) {
+                if (!filter.empty() && item.word.find(filter) == std::string::npos) continue;
                 ++shown;
-                ImGui::PushID(word.c_str());
-                ImGui::TextUnformatted(word.c_str());
-                ImGui::SameLine(ImGui::GetContentRegionAvail().x - Px(60.0f));
-                if (ImGui::SmallButton(NF_TRASH " Xóa")) {
-                    config_.english_keywords.erase(
-                        std::remove(config_.english_keywords.begin(), config_.english_keywords.end(), word),
-                        config_.english_keywords.end());
-                    if (ContainsWord(english_defaults_, word) &&
-                        !ContainsWord(config_.english_keywords_removed, word)) {
-                        config_.english_keywords_removed.push_back(word);
-                        SortUnique(config_.english_keywords_removed);
+                ImGui::PushID(item.word.c_str());
+
+                if (item.is_disabled) {
+                    ImGui::TextDisabled("%s", item.word.c_str());
+                } else {
+                    ImGui::TextUnformatted(item.word.c_str());
+                }
+
+                ImGui::SameLine(Px(220.0f));
+                if (item.is_custom) {
+                    ImGui::TextColored(ImVec4(0.35f, 0.75f, 1.0f, 1.0f), "[Tự thêm]");
+                } else if (item.is_disabled) {
+                    ImGui::TextColored(ImVec4(0.7f, 0.4f, 0.4f, 1.0f), "[Đã tắt]");
+                } else {
+                    ImGui::TextDisabled("[Mặc định]");
+                }
+
+                ImGui::SameLine(ImGui::GetContentRegionAvail().x - Px(70.0f));
+                if (item.is_custom) {
+                    if (ImGui::SmallButton(NF_TRASH " Xóa")) {
+                        config_.english_keywords.erase(
+                            std::remove(config_.english_keywords.begin(), config_.english_keywords.end(), item.word),
+                            config_.english_keywords.end());
+                        SaveConfig();
                     }
-                    SaveConfig();
+                } else {
+                    if (item.is_disabled) {
+                        if (ImGui::SmallButton("Bật lại")) {
+                            config_.english_keywords_removed.erase(
+                                std::remove(config_.english_keywords_removed.begin(), config_.english_keywords_removed.end(), item.word),
+                                config_.english_keywords_removed.end());
+                            SaveConfig();
+                        }
+                    } else {
+                        if (ImGui::SmallButton("Tắt")) {
+                            config_.english_keywords_removed.push_back(item.word);
+                            SortUnique(config_.english_keywords_removed);
+                            SaveConfig();
+                        }
+                    }
                 }
                 ImGui::PopID();
             }
@@ -1250,30 +1315,98 @@ void UiManager::PageTyping() {
         ImGui::EndChild();
 
         ImGui::SetNextItemWidth(-Px(100.0f));
-        ImGui::InputTextWithHint("##EngNew", "Thêm từ tiếng Anh...", new_english_kw_, sizeof(new_english_kw_));
+        ImGui::InputTextWithHint("##EngNew", "Thêm từ (cách nhau bởi khoảng trắng hoặc phẩy)...", new_english_kw_, sizeof(new_english_kw_));
         ImGui::SameLine();
         if (ImGui::Button(NF_PLUS "  Thêm", ImVec2(Px(90.0f), Px(26.0f)))) {
-            std::string word = TrimLower(new_english_kw_);
-            if (!word.empty()) {
-                config_.english_keywords_removed.erase(
-                    std::remove(config_.english_keywords_removed.begin(), config_.english_keywords_removed.end(), word),
-                    config_.english_keywords_removed.end());
-                if (!ContainsWord(english_defaults_, word) &&
-                    !ContainsWord(config_.english_keywords, word)) {
-                    config_.english_keywords.push_back(word);
-                    SortUnique(config_.english_keywords);
+            std::string input(new_english_kw_);
+            std::vector<std::string> tokens;
+            size_t pos = 0;
+            while (pos < input.size()) {
+                while (pos < input.size() && (input[pos] == ' ' || input[pos] == ',' || input[pos] == ';' || input[pos] == '\t' || input[pos] == '\n' || input[pos] == '\r')) {
+                    ++pos;
                 }
+                if (pos >= input.size()) break;
+                size_t next = pos;
+                while (next < input.size() && input[next] != ' ' && input[next] != ',' && input[next] != ';' && input[next] != '\t' && input[next] != '\n' && input[next] != '\r') {
+                    ++next;
+                }
+                tokens.push_back(input.substr(pos, next - pos));
+                pos = next;
+            }
+
+            static const char* s_vn_collisions[] = {
+                "an", "ba", "ca", "co", "da", "di", "do", "du", "em", "ha", "he",
+                "la", "ma", "me", "mo", "mu", "na", "no", "nu", "on", "ra", "so",
+                "ta", "ti", "to", "tu", "va", "ve", "xa", "xe", "xu", "cho", "con",
+                "cua", "lam", "nam", "nha", "qua"
+            };
+
+            bool added_any = false;
+            std::string warning;
+            for (const auto& raw_token : tokens) {
+                std::string token = TrimLower(raw_token.c_str());
+                if (token.size() < 2 || token.size() > 32) continue;
+                bool valid_chars = true;
+                for (char ch : token) {
+                    if (!std::isalnum(static_cast<unsigned char>(ch))) {
+                        valid_chars = false;
+                        break;
+                    }
+                }
+                if (!valid_chars) continue;
+
+                for (const char* vn : s_vn_collisions) {
+                    if (token == vn) {
+                        if (!warning.empty()) warning += ", ";
+                        warning += "'" + token + "'";
+                        break;
+                    }
+                }
+
+                config_.english_keywords_removed.erase(
+                    std::remove(config_.english_keywords_removed.begin(), config_.english_keywords_removed.end(), token),
+                    config_.english_keywords_removed.end());
+
+                if (!ContainsWord(english_defaults_, token) && !ContainsWord(config_.english_keywords, token)) {
+                    config_.english_keywords.push_back(token);
+                    added_any = true;
+                }
+            }
+
+            if (!warning.empty()) {
+                english_keyword_warning_ = "Lưu ý: Từ " + warning + " trùng với từ tiếng Việt thông dụng, có thể gây khó khăn khi gõ tiếng Việt.";
+            } else {
+                english_keyword_warning_.clear();
+            }
+
+            if (added_any || !tokens.empty()) {
+                SortUnique(config_.english_keywords);
                 new_english_kw_[0] = '\0';
                 SaveConfig();
             }
         }
 
-        if (ImGui::Button("Khôi phục từ mặc định", ImVec2(0.0f, Px(26.0f)))) {
+        if (!english_keyword_warning_.empty()) {
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "%s", english_keyword_warning_.c_str());
+        }
+
+        ImGui::Spacing();
+
+        if (ImGui::Button("Khôi phục mặc định", ImVec2(Px(150.0f), Px(26.0f)))) {
             config_.english_keywords_removed.clear();
+            english_keyword_warning_.clear();
             SaveConfig();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Đóng", ImVec2(Px(90.0f), Px(26.0f)))) {
+        if (ImGui::Button("Xóa từ tự thêm", ImVec2(Px(140.0f), Px(26.0f)))) {
+            config_.english_keywords.clear();
+            english_keyword_warning_.clear();
+            SaveConfig();
+        }
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - Px(80.0f));
+        if (ImGui::Button("Đóng", ImVec2(Px(80.0f), Px(26.0f)))) {
+            english_keyword_warning_.clear();
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();

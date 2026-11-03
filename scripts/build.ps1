@@ -334,6 +334,14 @@ if ($Msi) {
     if (Test-Path $changelogFile) {
         Copy-Item -Path $changelogFile -Destination $releasesDir -Force
     }
+    foreach ($a in $archs) {
+        $candidate = Join-Path $DistDir "VietFlow-$a.exe"
+        if (Test-Path $candidate) {
+            Copy-Item $candidate (Join-Path $releasesDir "VietFlow-$a.exe") -Force
+        } elseif (Test-Path $builtDist[$a]) {
+            Copy-Item $builtDist[$a] (Join-Path $releasesDir "VietFlow-$a.exe") -Force
+        }
+    }
 
     Write-Host "MSI releases ready in: $releasesDir" -ForegroundColor Green
     Write-Host "Upload these assets to the GitHub release:" -ForegroundColor Green

@@ -790,6 +790,29 @@ mod tests {
     }
 
     #[test]
+    fn parses_real_release_manifest_file() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("releases")
+            .join("latest.json");
+        if path.is_file() {
+            let content = std::fs::read_to_string(&path).expect("read latest.json");
+            let msi_x64 = parse_manifest_for_arch(&content, true, "x64").unwrap();
+            assert_eq!(msi_x64.version, "0.1.3");
+            assert!(msi_x64.download.as_deref().unwrap().contains("VietFlow-win-x64.msi"));
+            assert!(!msi_x64.notes.is_empty());
+
+            let port_x64 = parse_manifest_for_arch(&content, false, "x64").unwrap();
+            assert_eq!(port_x64.version, "0.1.3");
+            assert_eq!(port_x64.download, None);
+            assert!(!port_x64.notes.is_empty());
+        }
+    }
+
+    #[test]
     #[ignore = "network: requires a published GitHub release"]
     fn live_release_manifest() {
         let info = fetch_release_info().expect("live release manifest");

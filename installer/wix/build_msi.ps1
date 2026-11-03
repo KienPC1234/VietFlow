@@ -96,6 +96,12 @@ foreach ($a in $archList) {
         exit $LASTEXITCODE
     }
 
+    $injectScript = Join-Path $vietflowRoot "scripts\inject_msi_bitmaps.ps1"
+    if (Test-Path $injectScript) {
+        Write-Host "Optimizing MSI database with ActionText & dialog bitmaps..." -ForegroundColor Cyan
+        & pwsh -NoProfile -NonInteractive -File $injectScript -MsiPath $outputMsi
+    }
+
     $sizeMb = [math]::Round(((Get-Item $outputMsi).Length / 1MB), 2)
     Write-Host "Successfully generated: $outputMsi ($sizeMb MB)" -ForegroundColor Green
 }

@@ -68,6 +68,8 @@ private:
 
     // English keyword editor
     char english_keyword_filter_[128] = {0};
+    int english_filter_mode_ = 0; // 0 = All, 1 = Custom, 2 = Default
+    std::string english_keyword_warning_;
     std::vector<std::string> english_defaults_;
 
     // Hotkey recorder target: 1 = settings

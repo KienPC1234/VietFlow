@@ -209,8 +209,6 @@ pub struct HookState {
     pub english_word_valid: bool,
     /// Timestamp (GetTickCount64) until which AutoSwitch is paused after manual hotkey toggle.
     pub auto_pause_until_ms: u64,
-    /// Flag indicating if the most recent output was an AutoSwitch conversion.
-    pub was_last_action_auto_switch: bool,
     pub tray_hwnd: HWND,
     pub hook_handle: HHOOK,
     pub mouse_hook_handle: HHOOK,
@@ -525,7 +523,6 @@ pub unsafe fn check_foreground_change(foreground: HWND) {
     state.macro_buffer.clear();
     state.english_word_buffer.clear();
     state.english_word_valid = true;
-    state.was_last_action_auto_switch = false;
     state.update_override_for_foreground(proc_name.as_deref(), excluded, shell);
 
     state.is_foreground_excluded = excluded;
@@ -741,7 +738,6 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         english_word_buffer: String::new(),
         english_word_valid: true,
         auto_pause_until_ms: 0,
-        was_last_action_auto_switch: false,
         tray_hwnd,
         hook_handle,
         mouse_hook_handle,
@@ -786,7 +782,6 @@ pub unsafe extern "system" fn low_level_mouse_proc(
                     state.macro_buffer.clear();
                     state.english_word_buffer.clear();
                     state.english_word_valid = true;
-                    state.was_last_action_auto_switch = false;
                 }
             }
         }
@@ -989,25 +984,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     // is registered because standard TSF TIP is dormant in English mode.
     if !state.effective_enabled() {
         if is_key_down {
-            // 1. Backspace Undo check for previous AutoSwitch
             if vk == VK_BACK {
-                if state.was_last_action_auto_switch {
-                    state.was_last_action_auto_switch = false;
-                    if let Some((bs, text)) = state.engine.last_auto_switch_undo.take() {
-                        state.send_engine_output(bs, &text);
-                        state.toggle_language();
-                        let effective = state.effective_enabled();
-                        crate::tsf::sync_tsf_config(&state.config, effective);
-                        let tray_hwnd = state.tray_hwnd;
-                        let play_sound = state.config.notification_sound;
-                        drop(lock);
-                        PostMessageW(tray_hwnd, WM_TRAYICON, 0, if effective { 1 } else { 0 });
-                        if play_sound {
-                            play_notification_sound();
-                        }
-                        return 1;
-                    }
-                }
                 state.english_word_buffer.pop();
                 if state.english_word_buffer.is_empty() {
                     state.english_word_valid = true;
@@ -1017,9 +994,6 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                 }
                 return CallNextHookEx(null_mut(), n_code, w_param, l_param);
             }
-
-            // Any non-backspace keystroke cancels the immediate undo capability
-            state.was_last_action_auto_switch = false;
 
             let ctrl_down = state.ctrl_pressed;
             let alt_down = state.alt_pressed;
@@ -1096,7 +1070,6 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                                 SendInput(2, inputs.as_mut_ptr(), std::mem::size_of::<INPUT>() as i32);
                             }
                         }
-                        state.was_last_action_auto_switch = true;
                         state.toggle_language();
                         let effective = state.effective_enabled();
                         crate::tsf::sync_tsf_config(&state.config, effective);
@@ -1145,29 +1118,11 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     if is_key_down && matches!(vk, VK_ESCAPE | VK_RETURN | VK_TAB | 0x21..=0x28 | 0x2E) {
         state.engine.reset();
         state.macro_buffer.clear();
-        state.was_last_action_auto_switch = false;
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
     // Backspace handling
     if is_key_down && vk == VK_BACK {
-        if state.was_last_action_auto_switch {
-            state.was_last_action_auto_switch = false;
-            if let Some((bs, text)) = state.engine.last_auto_switch_undo.take() {
-                state.send_engine_output(bs, &text);
-                state.toggle_language();
-                let effective = state.effective_enabled();
-                crate::tsf::sync_tsf_config(&state.config, effective);
-                let tray_hwnd = state.tray_hwnd;
-                let play_sound = state.config.notification_sound;
-                drop(lock);
-                PostMessageW(tray_hwnd, WM_TRAYICON, 0, if effective { 1 } else { 0 });
-                if play_sound {
-                    play_notification_sound();
-                }
-                return 1;
-            }
-        }
         let (backspaces, text) = state.engine.process_key('\x08');
         if backspaces > 0 || !text.is_empty() {
             state.send_engine_output(backspaces, &text);
@@ -1184,7 +1139,6 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     if ctrl_down || alt_down || win_down {
         state.engine.reset();
         state.macro_buffer.clear();
-        state.was_last_action_auto_switch = false;
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
@@ -1224,7 +1178,6 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             if let Some(target_lang) = auto_switch_req {
                 if !target_lang && state.config.auto_switch_by_typing {
                     // Switch from Vietnamese to English
-                    state.was_last_action_auto_switch = true;
                     state.toggle_language();
                     let effective = state.effective_enabled();
                     crate::tsf::sync_tsf_config(&state.config, effective);
@@ -1538,7 +1491,6 @@ mod tests {
             english_word_buffer: String::new(),
             english_word_valid: true,
             auto_pause_until_ms: 0,
-            was_last_action_auto_switch: false,
             tray_hwnd: std::ptr::null_mut(),
             hook_handle: std::ptr::null_mut(),
             mouse_hook_handle: std::ptr::null_mut(),
@@ -1779,6 +1731,23 @@ mod tests {
         println!("Space: bk={}, out='{}'", bk, out.as_str());
         assert_eq!(bk, 0);
         assert_eq!(out.as_str(), " ");
+    }
+
+    #[test]
+    fn test_backspace_after_space_does_not_explode_word() {
+        let mut engine = vietflow_core::VietFlowEngine::default();
+        for c in "tiengs".chars() {
+            engine.process_key_with_time(c, 0);
+        }
+        let (bk, out) = engine.process_key_with_time(' ', 0);
+        assert_eq!(bk, 0);
+        assert_eq!(out.as_str(), " ");
+
+        // Engine word buffer is empty after space delimiter.
+        // Backspace should not produce backspaces or inject raw keystrokes.
+        let (bk_bs, out_bs) = engine.process_key_with_time('\x08', 0);
+        assert_eq!(bk_bs, 0);
+        assert_eq!(out_bs.as_str(), "");
     }
 
     #[test]

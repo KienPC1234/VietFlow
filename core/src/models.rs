@@ -348,6 +348,15 @@ pub struct EngineOptions {
     pub custom_keymap: CustomKeymap,
 }
 
+impl EngineOptions {
+    pub fn normalize_keywords(&mut self) {
+        self.custom_english_keywords.sort();
+        self.custom_english_keywords.dedup();
+        self.removed_english_keywords.sort();
+        self.removed_english_keywords.dedup();
+    }
+}
+
 impl Default for EngineOptions {
     fn default() -> Self {
         Self {

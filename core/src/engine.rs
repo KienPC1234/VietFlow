@@ -70,7 +70,6 @@ pub struct VietFlowEngine {
     pub lookback: crate::autoswitch::LookbackBuffer,
     pub auto_switch_requested: Option<bool>,
     pub pending_doubled_fix: bool,
-    pub last_auto_switch_undo: Option<(usize, String)>,
 }
 
 impl Default for VietFlowEngine {
@@ -80,7 +79,8 @@ impl Default for VietFlowEngine {
 }
 
 impl VietFlowEngine {
-    pub fn new(options: EngineOptions, charset: CharsetId) -> Self {
+    pub fn new(mut options: EngineOptions, charset: CharsetId) -> Self {
+        options.normalize_keywords();
         Self {
             options,
             charset,
@@ -99,7 +99,6 @@ impl VietFlowEngine {
             lookback: crate::autoswitch::LookbackBuffer::new(),
             auto_switch_requested: None,
             pending_doubled_fix: false,
-            last_auto_switch_undo: None,
         }
     }
 
@@ -109,7 +108,6 @@ impl VietFlowEngine {
         self.lookback.clear();
         self.auto_switch_requested = None;
         self.pending_doubled_fix = false;
-        self.last_auto_switch_undo = None;
     }
 
     /// Returns the exact word string currently tracked in display shadow.
@@ -1220,7 +1218,10 @@ impl VietFlowEngine {
             // 2. Check AutoSwitch restore to English
             let prev_disp = self.lookback.prev_display();
             let should_switch = crate::autoswitch::should_restore_to_english(&raw_word, &display_word, prev_disp);
-            let is_english_word = should_switch || crate::autoswitch::lookup_en_score(&raw_word.to_ascii_lowercase()).is_some();
+            let is_english_keyword = self.matches_raw_english_keyword();
+            let is_english_word = is_english_keyword
+                || should_switch
+                || crate::autoswitch::lookup_en_score(&raw_word.to_ascii_lowercase()).is_some();
 
             if is_english_word {
                 // 3. Look-back Multi-Word Check (e.g. "thí makes" -> "this makes")
@@ -1235,7 +1236,7 @@ impl VietFlowEngine {
                     return (total_backspaces, out);
                 }
 
-                if should_switch {
+                if should_switch || is_english_keyword {
                     let is_already_raw = display_word == raw_word;
                     let (backspaces, out) = if is_already_raw {
                         (0, KeyText::from_char(c))
@@ -1245,9 +1246,6 @@ impl VietFlowEngine {
                         (self.display_len, o)
                     };
                     self.auto_switch_requested = Some(false);
-                    if !is_already_raw {
-                        self.last_auto_switch_undo = Some((raw_word.len() + 1, format!("{}{}", display_word, c)));
-                    }
                     self.lookback.push_word(&raw_word, &raw_word, true);
                     self.reset_word();
                     return (backspaces, out);
@@ -1630,18 +1628,34 @@ impl VietFlowEngine {
     }
 
     #[inline]
-    fn matches_english_keyword(&self, word: &str) -> bool {
-        (is_english_keyword(word)
-            && !self
-                .options
+    pub fn matches_english_keyword(&self, word: &str) -> bool {
+        let is_removed = if self.options.removed_english_keywords.is_sorted() {
+            self.options
+                .removed_english_keywords
+                .binary_search_by(|r| r.as_str().cmp(word))
+                .is_ok()
+        } else {
+            self.options
                 .removed_english_keywords
                 .iter()
-                .any(|removed| removed == word))
-            || self
-                .options
+                .any(|removed| removed == word)
+        };
+
+        if is_english_keyword(word) && !is_removed {
+            return true;
+        }
+
+        if self.options.custom_english_keywords.is_sorted() {
+            self.options
+                .custom_english_keywords
+                .binary_search_by(|k| k.as_str().cmp(word))
+                .is_ok()
+        } else {
+            self.options
                 .custom_english_keywords
                 .iter()
                 .any(|keyword| keyword == word)
+        }
     }
 
     #[inline]
@@ -1781,6 +1795,11 @@ impl VietFlowEngine {
             return None;
         }
 
+        // Custom or built-in English keywords must strictly stay in English mode
+        if self.matches_english_keyword(&raw_word.to_ascii_lowercase()) {
+            return None;
+        }
+
         let mut scratch = VietFlowEngine::new(self.options.clone(), self.charset);
         for ch in raw_word.chars() {
             scratch.process_key_with_time(ch, 0);
@@ -1799,14 +1818,6 @@ impl VietFlowEngine {
                 out.push_char(break_char);
             }
             self.auto_switch_requested = Some(true);
-            self.last_auto_switch_undo = Some((
-                composed.chars().count() + if has_break { 1 } else { 0 },
-                if has_break {
-                    format!("{}{}", raw_word, break_char)
-                } else {
-                    raw_word.to_string()
-                },
-            ));
             self.lookback.push_word(raw_word, &composed, false);
             return Some((backspaces, out));
         }

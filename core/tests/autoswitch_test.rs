@@ -236,3 +236,29 @@ fn test_plain_english_word_switch_without_jitter() {
     assert_eq!(engine.take_auto_switch_request(), Some(false), "Must switch to English");
 }
 
+#[test]
+fn test_custom_english_keywords_autoswitch() {
+    let mut engine = VietFlowEngine::new(
+        EngineOptions {
+            method: InputMethod::Telex,
+            auto_switch_by_typing: true,
+            custom_english_keywords: vec!["grpc".to_string(), "redux".to_string(), "props".to_string()],
+            ..Default::default()
+        },
+        CharsetId::Unicode,
+    );
+
+    // In English mode, custom keyword "redux" or "props" must never convert to Vietnamese
+    let check_redux = engine.check_english_word_at_break("redux", ' ');
+    assert!(check_redux.is_none(), "Custom keyword redux must stay in English mode");
+
+    let check_props = engine.check_english_word_at_break("props", ' ');
+    assert!(check_props.is_none(), "Custom keyword props must stay in English mode");
+
+    // In Vietnamese mode, typing custom keyword "redux" should restore to raw English and switch to English mode
+    engine.reset();
+    let out = process_string(&mut engine, "redux ");
+    assert_eq!(out, "redux ");
+    assert_eq!(engine.take_auto_switch_request(), Some(false));
+}
+

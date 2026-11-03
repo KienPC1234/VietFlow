@@ -6,6 +6,8 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-03
+
 ### Added
 
 - Tái cấu trúc toàn diện hệ thống điều hướng giao diện thành 6 tab chuyên biệt: Tổng quan, Gõ tiếng Việt, Gõ tắt, Ứng dụng, Biểu tượng và Thông tin. Phân bổ công thái học trên chiều rộng 760px, chấm dứt hoàn toàn tình trạng dồn nén chức năng của trang Tiện ích trước đây.
@@ -26,12 +28,17 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 - Tối ưu hóa luồng gửi phím tiếng Anh trong Hook: Loại bỏ hoàn toàn việc phát Backspace thừa khi từ hiển thị trùng khớp với từ thô, giải quyết triệt để hiện tượng giật rung con trỏ văn bản khi gõ tiếng Anh trong chế độ Hook truyền thống.
 - Tinh giản trang Tổng quan: Loại bỏ checkbox trùng lặp `remember_per_app_mode` ("Dùng E/V cho từng app"), căn chỉnh nút chuyển quyền Administrator nằm thẳng hàng cạnh nút trạng thái [V]/[E].
 - Tối ưu khoảng cách nhãn điều hướng: Bổ sung khoảng cách đệm cho biểu tượng tab Ứng dụng (`NF_GAMEPAD`) và nút chọn app đang chạy để icon không bị dính sát vào ký tự 'Ứ'.
+- Nâng cấp toàn diện tính năng Từ tiếng Anh giữ nguyên (English Keywords Whitelist):
+  - Tối ưu hóa hiệu năng động cơ: Chuẩn hóa tự động và chuyển đổi thuật toán tra cứu từ duyệt tuyến tính O(N) sang tìm kiếm nhị phân O(log N) cho cả danh sách từ tự thêm (`custom_english_keywords`) và danh sách từ đã tắt (`removed_english_keywords`).
+  - Tích hợp sâu vào cơ chế AutoSwitch hai chiều: Tự động khôi phục và chuyển sang chế độ Tiếng Anh [E] khi gõ từ trong danh sách ở chế độ [V], đồng thời ngăn chặn tuyệt đối việc chuyển nhầm sang [V] khi đang gõ các từ này ở chế độ [E].
+  - Cải tiến giao diện quản lý từ tiếng Anh: Bổ sung bộ lọc phân loại trực quan (Tất cả, Tự thêm, Mặc định kèm số lượng), gắn nhãn màu phân biệt nguồn gốc từ (`[Tự thêm]`, `[Mặc định]`, `[Đã tắt]`), hỗ trợ tắt/bật lại từng từ mặc định riêng lẻ.
+  - Hỗ trợ nhập hàng loạt và cảnh báo xung đột: Cho phép thêm nhiều từ cùng lúc (phân tách bởi khoảng trắng, dấu phẩy, chấm phẩy), chuẩn hóa định dạng ký tự và tự động hiển thị cảnh báo nếu từ thêm vào trùng với các âm tiết tiếng Việt thông dụng (như `to`, `no`, `me`, `ca`, `ma`...).
 
 ### Fixed
 
 - Nâng cấp độ nhạy và tính chuẩn xác của cơ chế tự động chuyển đổi ngôn ngữ E sang V:
   - Khắc phục hạn chế trong bộ thẩm định `should_switch_to_vietnamese`: Khi phím thô không phải là từ tiếng Anh (`en_score.is_none()`), hệ thống không còn bắt buộc âm tiết phải nằm trong danh mục unigram tần số giới hạn, cho phép tự động chuyển đổi mượt mà cho mọi âm tiết tiếng Việt hợp lệ về mặt ngữ âm học (`scratch.is_valid_vietnamese_word()`, ví dụ: `ddej` -> `đẹ`, `ddeej` -> `đệ` sau các từ ngoại lai như `alex`).
-  - Bảo toàn bộ đệm ngữ cảnh và lịch sử hoàn tác: Tối ưu phương thức `toggle_language()` trong Hook để chỉ đặt lại trạng thái cấu thành của từ đang gõ (`reset_word()`) thay vì xóa trắng toàn bộ `lookback` và `last_auto_switch_undo`; đồng thời khởi tạo lại sạch sẽ `english_word_buffer` và trạng thái `english_word_valid = true` khi chuyển chế độ, khôi phục khả năng dùng phím Backspace để hoàn tác chuyển đổi ngôn ngữ tự động.
+  - Khắc phục triệt để lỗi "bung từ" thành phím thô khi nhấn Backspace sau khoảng trắng (ví dụ: gõ `alex đệ ` rồi nhấn Backspace để xóa dấu cách thêm dấu phẩy `,` thì từ `đệ` bị bung thành phím Telex thô `ddeej` hoặc `nddeej`): Loại bỏ hoàn toàn cơ chế đánh chặn Backspace sau khi chốt từ. Khi từ đã chốt và bộ đệm rỗng, phím Backspace được chuyển tiếp nguyên bản (Native Passthrough) tới Windows để xóa đúng ký tự khoảng trắng đứng trước mà không làm phân rã từ hay hoán đổi ngôn ngữ.
 - Khắc phục lỗi tự động chuyển E sang V bị bỏ sót khi gõ tiếng Việt: Xử lý yêu cầu chuyển đổi tự động vô điều kiện trên mọi sự kiện phím thay vì phụ thuộc vào trạng thái rỗng của bộ đệm.
 - Sửa lỗi nuốt phím khi gõ lặp dấu thanh tiếng Anh (ví dụ gõ `mixx` bị nuốt thành `mix` thay vì giữ nguyên `mixx`).
 - Hoàn thiện thuật toán đặt dấu tự do (Free Marking): Xử lý chính xác các chuỗi nguyên âm ghép phức tạp (ví dụ gõ `lieuej` cho ra kết quả `liệu`), đồng thời hỗ trợ đầy đủ phím 'd' biến đổi âm đầu cho các từ không có phụ âm cuối (ví dụ gõ `did` thành `đi`, `dad` thành `đa`, `dieeud` thành `điêu`).
