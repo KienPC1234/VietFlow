@@ -3,6 +3,7 @@
 #include "config.h"
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace vietflow {
 
@@ -10,9 +11,8 @@ enum class Page {
     Overview,
     Typing,
     Macros,
-    Exclusions,
-    Converter,
-    Advanced,
+    Apps,
+    TrayIcon,
     About
 };
 
@@ -34,9 +34,8 @@ private:
     void PageOverview();
     void PageTyping();
     void PageMacros();
-    void PageExclusions();
-    void PageConverter();
-    void PageAdvanced();
+    void PageApps();
+    void PageTrayIcon();
     void PageAbout();
 
     Config config_;
@@ -51,15 +50,17 @@ private:
     float saved_toast_timer_ = 0.0f;
     std::function<void()> on_saved_cb_;
 
-    // Macro page temp buffers
+    // Macro temp buffers
     char new_macro_key_[64] = {0};
     char new_macro_val_[256] = {0};
     char macro_filter_[128] = {0};
+    std::string macro_status_msg_;
+    bool macro_status_ok_ = true;
 
     // System state
     bool is_running_as_admin_ = false;
 
-    // Exclusion page temp buffer & running apps picker
+    // Exclusion temp buffer & running apps picker
     char new_excluded_app_[128] = {0};
     char new_profile_app_[128] = {0};
     char app_search_filter_[128] = {0};
@@ -69,28 +70,15 @@ private:
     char english_keyword_filter_[128] = {0};
     std::vector<std::string> english_defaults_;
 
-    // Hotkey recorder target: 1 = settings, 2 = converter
+    // Hotkey recorder target: 1 = settings
     int recording_hotkey_target_ = 0;
 
     // Typing page temp buffer
     char new_english_kw_[128] = {0};
     char foreign_initials_buf_[64] = {0};
-    char auto_capitalize_buf_[64] = {0};
 
-    // Other global hotkeys (settings / converter)
+    // Other global hotkeys (settings)
     char hotkey_settings_buf_[64] = {0};
-    char hotkey_converter_buf_[64] = {0};
-
-    // Converter page state
-    int conv_src_cs_ = 2; // TCVN3
-    int conv_dst_cs_ = 0; // Unicode
-    bool conv_uppercase_ = false;
-    bool conv_lowercase_ = false;
-    bool conv_strip_accents_ = false;
-    std::string conv_status_msg_;
-    bool conv_status_ok_ = true;
-    std::string macro_status_msg_;
-    bool macro_status_ok_ = true;
 
     // Custom keymap buffers & helpers
     char custom_acute_[16] = {0};

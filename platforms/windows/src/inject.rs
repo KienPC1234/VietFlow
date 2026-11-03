@@ -18,7 +18,7 @@ extern "system" {
 
 const ATOMIC_BACKSPACE_LIMIT: usize = 16;
 const ATOMIC_CHAR_LIMIT: usize = 32;
-const MAX_ATOMIC_INPUTS: usize = (ATOMIC_BACKSPACE_LIMIT + ATOMIC_CHAR_LIMIT + 4) * 2;
+const MAX_ATOMIC_INPUTS: usize = (ATOMIC_BACKSPACE_LIMIT + 2 + ATOMIC_CHAR_LIMIT + 4) * 2;
 
 #[inline]
 pub fn create_vk_input(vk: u16, key_up: bool) -> INPUT {
@@ -94,6 +94,7 @@ fn send_unicode_batch(backspaces: usize, text: &str) -> bool {
         // Fixed-size stack buffer: a normal keystroke must not hit the allocator.
         let mut inputs: [INPUT; MAX_ATOMIC_INPUTS] = unsafe { std::mem::zeroed() };
         let mut count = 0usize;
+
         let back_scan = unsafe { MapVirtualKeyW(VK_BACK as u32, 0) as u16 };
 
         for _ in 0..backspaces {

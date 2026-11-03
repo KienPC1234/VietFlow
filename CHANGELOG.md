@@ -8,6 +8,9 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
 ### Added
 
+- Tái cấu trúc toàn diện hệ thống điều hướng giao diện thành 6 tab chuyên biệt: Tổng quan, Gõ tiếng Việt, Gõ tắt, Ứng dụng, Biểu tượng và Thông tin. Phân bổ công thái học trên chiều rộng 760px, chấm dứt hoàn toàn tình trạng dồn nén chức năng của trang Tiện ích trước đây.
+- Tách riêng các trang quản lý độc lập trong giao diện: Gõ tắt (`PageMacros`), Quản lý Ứng dụng & Loại trừ (`PageApps`), Tùy biến Biểu tượng khay (`PageTrayIcon`) kèm bảng tra cứu và bộ công cụ cấu hình trực quan.
+- Thuật toán chuyển đổi E/V tự động hai chiều thông minh: Nhận diện tức thì từ tiếng Anh và từ tiếng Việt khi gõ để tự động hoán đổi ngôn ngữ; tích hợp bộ lọc bảo vệ mã định danh (`snake_case`, `kebab-case`, `camelCase`) và từ viết tắt trong lập trình.
 - Tối ưu hóa trình cập nhật và phân định rõ ràng giữa bản Portable và bản Cài đặt (MSI): Loại bỏ hoàn toàn phụ thuộc Velopack và các gói delta cồng kềnh. Bản Portable chỉ mở liên kết trang phát hành GitHub để người dùng chủ động tải về; bản Cài đặt (MSI) tự động tải tệp `.msi` mới nhất về thư mục tạm và khởi chạy trình cài đặt để nâng cấp/cài đặt lại sạch sẽ.
 - Chuyển đổi hoàn toàn sang dự án WiX Toolset v5 MSI độc lập: Đóng gói gói cài đặt chuẩn Windows Installer (`.msi`) nguyên bản, cài đặt chuẩn vào `Program Files\VietFlow`, không phụ thuộc vào gói bọc Velopack.
 - Bổ sung đầy đủ siêu dữ liệu gỡ cài đặt (Add/Remove Programs): Điền chính xác đường dẫn hỗ trợ (`ARPHELPLINK`), trang chủ (`ARPURLINFOABOUT`), cập nhật (`ARPURLUPDATEINFO`), mô tả chi tiết (`ARPCOMMENTS`), biểu tượng chất lượng cao (`ARPPRODUCTICON`) trên bảng ứng dụng Windows.
@@ -18,8 +21,20 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 - Tự động bù trừ ô gợi ý Autocomplete (Chromium Omnibox, Windows Explorer, Run dialog): Chèn ký tự đệm Narrow No-Break Space (`\u{202F}`) kèm phím Backspace bù để hủy bỏ vùng bôi đen autocomplete trước khi hoàn tác ký tự, ngăn ngừa triệt để lỗi nuốt backspace gây lặp ký tự thừa.
 - Tự phục hồi biểu tượng khay hệ thống: Lắng nghe thông điệp hệ thống `TaskbarCreated` (`RegisterWindowMessageW`) để tự động gắn lại biểu tượng khay khi Explorer bị reload hoặc khởi động lại.
 
+### Changed
+
+- Tối ưu hóa luồng gửi phím tiếng Anh trong Hook: Loại bỏ hoàn toàn việc phát Backspace thừa khi từ hiển thị trùng khớp với từ thô, giải quyết triệt để hiện tượng giật rung con trỏ văn bản khi gõ tiếng Anh trong chế độ Hook truyền thống.
+- Tinh giản trang Tổng quan: Loại bỏ checkbox trùng lặp `remember_per_app_mode` ("Dùng E/V cho từng app"), căn chỉnh nút chuyển quyền Administrator nằm thẳng hàng cạnh nút trạng thái [V]/[E].
+- Tối ưu khoảng cách nhãn điều hướng: Bổ sung khoảng cách đệm cho biểu tượng tab Ứng dụng (`NF_GAMEPAD`) và nút chọn app đang chạy để icon không bị dính sát vào ký tự 'Ứ'.
+
 ### Fixed
 
+- Nâng cấp độ nhạy và tính chuẩn xác của cơ chế tự động chuyển đổi ngôn ngữ E sang V:
+  - Khắc phục hạn chế trong bộ thẩm định `should_switch_to_vietnamese`: Khi phím thô không phải là từ tiếng Anh (`en_score.is_none()`), hệ thống không còn bắt buộc âm tiết phải nằm trong danh mục unigram tần số giới hạn, cho phép tự động chuyển đổi mượt mà cho mọi âm tiết tiếng Việt hợp lệ về mặt ngữ âm học (`scratch.is_valid_vietnamese_word()`, ví dụ: `ddej` -> `đẹ`, `ddeej` -> `đệ` sau các từ ngoại lai như `alex`).
+  - Bảo toàn bộ đệm ngữ cảnh và lịch sử hoàn tác: Tối ưu phương thức `toggle_language()` trong Hook để chỉ đặt lại trạng thái cấu thành của từ đang gõ (`reset_word()`) thay vì xóa trắng toàn bộ `lookback` và `last_auto_switch_undo`; đồng thời khởi tạo lại sạch sẽ `english_word_buffer` và trạng thái `english_word_valid = true` khi chuyển chế độ, khôi phục khả năng dùng phím Backspace để hoàn tác chuyển đổi ngôn ngữ tự động.
+- Khắc phục lỗi tự động chuyển E sang V bị bỏ sót khi gõ tiếng Việt: Xử lý yêu cầu chuyển đổi tự động vô điều kiện trên mọi sự kiện phím thay vì phụ thuộc vào trạng thái rỗng của bộ đệm.
+- Sửa lỗi nuốt phím khi gõ lặp dấu thanh tiếng Anh (ví dụ gõ `mixx` bị nuốt thành `mix` thay vì giữ nguyên `mixx`).
+- Hoàn thiện thuật toán đặt dấu tự do (Free Marking): Xử lý chính xác các chuỗi nguyên âm ghép phức tạp (ví dụ gõ `lieuej` cho ra kết quả `liệu`), đồng thời hỗ trợ đầy đủ phím 'd' biến đổi âm đầu cho các từ không có phụ âm cuối (ví dụ gõ `did` thành `đi`, `dad` thành `đa`, `dieeud` thành `điêu`).
 - Khắc phục lỗi từ bắt đầu bằng 'g' kết hợp nguyên âm 'i' ('gì', 'gìn', 'gí', 'gỉ', 'gĩ', 'gịt') bị nhận diện sai chính tả khiến bộ gõ tự động hoàn tác thành 'gif', 'ginf' khi nhấn phím cách.
 - Khắc phục triệt để lỗi thừa ký tự khi hoàn tác dấu thanh Telex ('củ' + 'r' thành 'cur', không bị lặp ký tự thừa thành 'curr').
 - Điều chỉnh thời gian chờ chốt từ mặc định: chuyển sang 0 ms (Tắt / không giới hạn) theo chuẩn UniKey và EVKey, ngăn ngừa tình trạng tự động chốt từ khi người dùng dừng suy nghĩ trong lúc gõ.

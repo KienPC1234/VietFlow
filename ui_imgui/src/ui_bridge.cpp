@@ -22,7 +22,7 @@ int ShowSettingsGui(const char* config_path, void (*on_saved)()) {
 
 int ShowConverterGui(const char* config_path) {
     std::string path = config_path ? config_path : "";
-    return vietflow::RunAppWindow(path, true, nullptr);
+    return vietflow::RunAppWindow(path, false, nullptr);
 }
 
 #ifdef __cplusplus

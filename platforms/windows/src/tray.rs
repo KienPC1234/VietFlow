@@ -42,10 +42,10 @@ impl TrayIcon {
         nid.uID = 1;
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
-        nid.hIcon = icon_v;
+        nid.hIcon = if is_tsf_mode { icon_tsf } else { icon_v };
 
         let tip = if is_tsf_mode {
-            "VietFlow - Bộ gõ tiếng Việt [TSF IME]\0"
+            "VietFlow - Cài đặt [TSF IME]\0"
         } else {
             "VietFlow - Bộ gõ tiếng Việt\0"
         };
@@ -110,29 +110,35 @@ impl TrayIcon {
     }
 
     pub unsafe fn update_status(&mut self, is_vietnamese: bool) {
-        self.nid.hIcon = if is_vietnamese { self.icon_v } else { self.icon_e };
-        let tip_str = if self.is_tsf_mode {
-            if is_vietnamese {
-                "VietFlow - Tiếng Việt [TSF V]\0"
-            } else {
-                "VietFlow - English [TSF E]\0"
+        if self.is_tsf_mode {
+            self.nid.hIcon = self.icon_tsf;
+            let tip_str = "VietFlow - Cài đặt [TSF IME]\0";
+            let mut tip_buf = [0u16; 128];
+            for (i, c) in tip_str.encode_utf16().take(127).enumerate() {
+                tip_buf[i] = c;
             }
+            std::ptr::copy_nonoverlapping(
+                tip_buf.as_ptr(),
+                std::ptr::addr_of_mut!(self.nid.szTip) as *mut u16,
+                128,
+            );
         } else {
-            if is_vietnamese {
+            self.nid.hIcon = if is_vietnamese { self.icon_v } else { self.icon_e };
+            let tip_str = if is_vietnamese {
                 "VietFlow - Tiếng Việt [V]\0"
             } else {
                 "VietFlow - English [E]\0"
+            };
+            let mut tip_buf = [0u16; 128];
+            for (i, c) in tip_str.encode_utf16().take(127).enumerate() {
+                tip_buf[i] = c;
             }
-        };
-        let mut tip_buf = [0u16; 128];
-        for (i, c) in tip_str.encode_utf16().take(127).enumerate() {
-            tip_buf[i] = c;
+            std::ptr::copy_nonoverlapping(
+                tip_buf.as_ptr(),
+                std::ptr::addr_of_mut!(self.nid.szTip) as *mut u16,
+                128,
+            );
         }
-        std::ptr::copy_nonoverlapping(
-            tip_buf.as_ptr(),
-            std::ptr::addr_of_mut!(self.nid.szTip) as *mut u16,
-            128,
-        );
         Shell_NotifyIconW(NIM_MODIFY, &self.nid);
     }
 
@@ -147,9 +153,7 @@ impl TrayIcon {
         start_with_windows: bool,
         hotkey_mode: &str,
         hotkey_settings: &str,
-        hotkey_converter: &str,
         tsf_present: bool,
-        use_tsf: bool,
         tsf_registered: bool,
     ) {
         let hmenu = CreatePopupMenu();
@@ -173,19 +177,23 @@ impl TrayIcon {
         } else {
             format!(" [{}]", hotkey_settings)
         };
-        let converter_hint = if hotkey_converter.trim().is_empty() {
-            String::new()
-        } else {
-            format!(" [{}]", hotkey_converter)
-        };
 
         // Toggle item
-        let toggle_text = if is_vietnamese {
-            to_wide(&format!("Chuyển sang English [{hotkey_label}]"))
+        if tsf_present && tsf_registered {
+            AppendMenuW(
+                hmenu,
+                MF_STRING,
+                IDM_SETTINGS,
+                to_wide("Bảng điều khiển VietFlow [TSF IME]").as_ptr(),
+            );
         } else {
-            to_wide(&format!("Chuyển sang Tiếng Việt [{hotkey_label}]"))
-        };
-        AppendMenuW(hmenu, MF_STRING, IDM_TOGGLE, toggle_text.as_ptr());
+            let toggle_text = if is_vietnamese {
+                to_wide(&format!("Chuyển sang English [{hotkey_label}]"))
+            } else {
+                to_wide(&format!("Chuyển sang Tiếng Việt [{hotkey_label}]"))
+            };
+            AppendMenuW(hmenu, MF_STRING, IDM_TOGGLE, toggle_text.as_ptr());
+        }
         AppendMenuW(hmenu, MF_SEPARATOR, 0, null_mut());
 
         // Method submenu
@@ -294,12 +302,6 @@ impl TrayIcon {
 
         if tsf_present {
             let hmenu_tsf = CreatePopupMenu();
-            AppendMenuW(
-                hmenu_tsf,
-                MF_STRING | check_flag(use_tsf),
-                IDM_TSF_ENABLE,
-                to_wide("Bật chế độ TSF").as_ptr(),
-            );
             let reg_label = if tsf_registered {
                 "Hủy đăng ký TSF TIP (Unregister)..."
             } else {
@@ -320,12 +322,6 @@ impl TrayIcon {
         }
 
         AppendMenuW(hmenu, MF_SEPARATOR, 0, null_mut());
-        AppendMenuW(
-            hmenu,
-            MF_STRING,
-            IDM_CONVERT_TOOL,
-            to_wide(&format!("Công cụ chuyển mã...{converter_hint}")).as_ptr(),
-        );
         AppendMenuW(
             hmenu,
             MF_STRING,

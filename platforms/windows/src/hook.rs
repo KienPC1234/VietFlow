@@ -8,8 +8,9 @@ use vietflow_core::models::{CharsetId, EngineOptions, InputMethod};
 use vietflow_core::VietFlowEngine;
 use windows_sys::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, GetKeyState, GetKeyboardLayout, VK_BACK, VK_CAPITAL, VK_CONTROL, VK_ESCAPE,
-    VK_F1, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RETURN,
+    GetAsyncKeyState, GetKeyState, GetKeyboardLayout, SendInput, INPUT, VK_BACK, VK_CAPITAL, VK_CONTROL, VK_ESCAPE,
+    VK_F1, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_OEM_1, VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5,
+    VK_OEM_6, VK_OEM_7, VK_OEM_COMMA, VK_OEM_MINUS, VK_OEM_PERIOD, VK_OEM_PLUS, VK_RCONTROL, VK_RETURN,
     VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_TAB,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -62,6 +63,7 @@ extern "system" {
     fn GetTickCount64() -> u64;
 }
 
+#[allow(dead_code)]
 pub fn get_tick_count_64() -> u64 {
     unsafe { GetTickCount64() }
 }
@@ -162,7 +164,7 @@ use crate::config::{normalize_injection_mode, AppConfig, AppProfile};
 use crate::inject::{send_atomic_batch_with_mode, VIETFLOW_MAGIC};
 use crate::process::{get_process_name_for_window, is_app_excluded, is_auto_excluded_app, profile_for_app};
 use crate::startup::set_start_with_windows;
-use crate::tray::{WM_CONVERT, WM_SETTINGS, WM_TRAYICON};
+use crate::tray::{WM_SETTINGS, WM_TRAYICON};
 
 pub struct HookState {
     pub engine: VietFlowEngine,
@@ -201,6 +203,14 @@ pub struct HookState {
     pub injection_mode: u8,
     /// Raw characters typed while Vietnamese is disabled but macros are on.
     pub macro_buffer: String,
+    /// Keystrokes buffered in English mode for automatic smart language switching.
+    pub english_word_buffer: String,
+    /// Whether the current English word started after a valid boundary (whitespace, quotes, opening bracket).
+    pub english_word_valid: bool,
+    /// Timestamp (GetTickCount64) until which AutoSwitch is paused after manual hotkey toggle.
+    pub auto_pause_until_ms: u64,
+    /// Flag indicating if the most recent output was an AutoSwitch conversion.
+    pub was_last_action_auto_switch: bool,
     pub tray_hwnd: HWND,
     pub hook_handle: HHOOK,
     pub mouse_hook_handle: HHOOK,
@@ -303,7 +313,9 @@ impl HookState {
         } else {
             return false;
         }
-        self.engine.reset();
+        self.engine.reset_word();
+        self.english_word_buffer.clear();
+        self.english_word_valid = true;
         self.macro_buffer.clear();
         true
     }
@@ -318,7 +330,9 @@ impl HookState {
                 self.config.per_app_modes = self.per_app_modes.clone();
             }
         }
-        self.engine.reset();
+        self.engine.reset_word();
+        self.english_word_buffer.clear();
+        self.english_word_valid = true;
         self.macro_buffer.clear();
     }
 
@@ -342,7 +356,9 @@ impl HookState {
                 .and_then(|profile| profile.injection_mode)
                 .unwrap_or(self.config.injection_mode),
         );
-        self.engine.reset();
+        self.engine.reset_word();
+        self.english_word_buffer.clear();
+        self.english_word_valid = true;
         self.macro_buffer.clear();
     }
 
@@ -379,10 +395,8 @@ fn engine_options_from_config(
         modern_style: config.modern_style,
         free_marking: config.free_marking,
         auto_non_vn_restore: config.auto_restore,
+        auto_switch_by_typing: config.auto_switch_by_typing,
         fix_shift_lag: config.fix_shift_lag,
-        consonant_shortcuts: config.consonant_shortcuts,
-        auto_capitalize: config.auto_capitalize,
-        auto_capitalize_chars: config.auto_capitalize_chars.clone(),
         enable_macro: config.enable_macro
             && profile.and_then(|profile| profile.allow_macro).unwrap_or(true),
         allow_macro_when_disabled: config.allow_macro_when_disabled,
@@ -507,7 +521,11 @@ pub unsafe fn check_foreground_change(foreground: HWND) {
     let shell = is_shell_window(foreground);
 
     state.last_foreground = foreground;
+    state.engine.reset();
     state.macro_buffer.clear();
+    state.english_word_buffer.clear();
+    state.english_word_valid = true;
+    state.was_last_action_auto_switch = false;
     state.update_override_for_foreground(proc_name.as_deref(), excluded, shell);
 
     state.is_foreground_excluded = excluded;
@@ -612,13 +630,8 @@ pub unsafe fn apply_config(config: AppConfig) {
 
     let tray_hwnd = state.tray_hwnd;
     let effective = state.effective_enabled();
-    state.tsf_registered = crate::tsf::is_tsf_registered();
+    state.tsf_registered = crate::tsf::is_tsf_mode_active();
     crate::tsf::sync_tsf_config(&state.config, effective);
-    if state.config.use_tsf && state.tsf_registered {
-        crate::tsf::set_tsf_profile_active(true);
-    } else {
-        crate::tsf::set_tsf_profile_active(false);
-    }
     drop(lock);
 
     // The UI only writes the JSON file; apply the registry side-effect here so
@@ -702,7 +715,6 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
     // Keep the Run key in sync even when the daemon starts after the UI saved
     // the setting while it was not running.
     set_start_with_windows(config.start_with_windows);
-    let use_tsf = config.use_tsf;
 
     let mut lock = STATE.lock().unwrap();
     *lock = Some(HookState {
@@ -726,22 +738,21 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         active_profile: initial_profile,
         injection_mode,
         macro_buffer: String::new(),
+        english_word_buffer: String::new(),
+        english_word_valid: true,
+        auto_pause_until_ms: 0,
+        was_last_action_auto_switch: false,
         tray_hwnd,
         hook_handle,
         mouse_hook_handle,
         win_event_hook,
-        tsf_registered: crate::tsf::is_tsf_registered(),
+        tsf_registered: crate::tsf::is_tsf_mode_active(),
         held_vk: None,
     });
     drop(lock);
-
-    if use_tsf && crate::tsf::is_tsf_registered() {
-        crate::tsf::set_tsf_profile_active(true);
-    }
 }
 
 pub unsafe fn uninstall_hook() {
-    crate::tsf::set_tsf_profile_active(false);
     let mut lock = STATE.lock().unwrap();
     if let Some(state) = lock.take() {
         if !state.win_event_hook.is_null() {
@@ -773,6 +784,9 @@ pub unsafe extern "system" fn low_level_mouse_proc(
                 if let Some(state) = lock.as_mut() {
                     state.engine.reset();
                     state.macro_buffer.clear();
+                    state.english_word_buffer.clear();
+                    state.english_word_valid = true;
+                    state.was_last_action_auto_switch = false;
                 }
             }
         }
@@ -783,6 +797,50 @@ pub unsafe extern "system" fn low_level_mouse_proc(
 #[inline]
 unsafe fn is_vk_down(vk: u16) -> bool {
     (GetAsyncKeyState(vk as i32) as i16) < 0
+}
+
+#[inline]
+pub fn is_whitespace_key(vk: u16) -> bool {
+    matches!(vk, VK_SPACE | VK_RETURN | VK_TAB)
+}
+
+#[inline]
+pub fn is_word_start_key(vk: u16, shift: bool) -> bool {
+    is_whitespace_key(vk)
+        || (shift && vk == 0x39) // '(' (Shift + 9)
+        || (!shift && vk == VK_OEM_4) // '['
+        || (shift && vk == VK_OEM_4) // '{'
+        || vk == VK_OEM_7 // '\'' or '"'
+        || (!shift && vk == VK_OEM_3) // '`'
+        || (shift && vk == VK_OEM_COMMA) // '<'
+}
+
+#[inline]
+pub fn is_word_break_key(vk: u16, shift: bool) -> bool {
+    matches!(vk, VK_SPACE | VK_RETURN | VK_TAB)
+        || (!shift && vk == VK_OEM_COMMA) // ','
+        || (!shift && vk == VK_OEM_PERIOD) // '.'
+        || (!shift && vk == VK_OEM_1) // ';'
+        || (shift && vk == VK_OEM_1) // ':'
+        || (shift && vk == VK_OEM_2) // '?'
+        || (shift && vk == 0x31) // '!'
+        || vk == VK_OEM_7 // '\'' or '"'
+        || (shift && vk == 0x30) // ')'
+        || (!shift && vk == VK_OEM_6) // ']'
+        || (shift && vk == VK_OEM_6) // '}'
+        || (shift && vk == VK_OEM_PERIOD) // '>'
+}
+
+#[inline]
+pub fn is_identifier_separator(vk: u16, shift: bool) -> bool {
+    (shift && vk == VK_OEM_MINUS) // '_'
+        || (!shift && vk == VK_OEM_MINUS) // '-'
+        || (!shift && vk == VK_OEM_2) // '/'
+        || vk == VK_OEM_5 // '\' or '|'
+        || (shift && vk == 0x32) // '@'
+        || (shift && matches!(vk, 0x33..=0x38)) // '#', '$', '%', '^', '&', '*'
+        || vk == VK_OEM_PLUS // '=' or '+'
+        || (shift && vk == VK_OEM_3) // '~'
 }
 
 pub unsafe extern "system" fn low_level_keyboard_proc(
@@ -838,40 +896,27 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         state.held_vk = None;
     }
 
-    // Track modifiers
-    match vk {
-        VK_LCONTROL | VK_RCONTROL | VK_CONTROL => {
-            state.ctrl_pressed = is_key_down;
-        }
-        VK_LSHIFT | VK_RSHIFT | VK_SHIFT => {
-            state.shift_pressed = is_key_down;
-        }
-        VK_LMENU | VK_RMENU | VK_MENU => {
-            state.alt_pressed = is_key_down;
-        }
-        VK_LWIN | VK_RWIN => {
-            state.win_pressed = is_key_down;
-        }
-        _ => {}
-    }
+    // Synchronize modifiers with physical keyboard state via GetAsyncKeyState.
+    // This permanently eliminates sticky modifier flags caused by missed WM_KEYUP
+    // events during UAC elevation, Win+L lock screen, or rapid Alt-Tab switches.
+    state.ctrl_pressed = is_vk_down(VK_CONTROL) || is_vk_down(VK_LCONTROL) || is_vk_down(VK_RCONTROL);
+    state.shift_pressed = is_vk_down(VK_SHIFT) || is_vk_down(VK_LSHIFT) || is_vk_down(VK_RSHIFT);
+    state.alt_pressed = is_vk_down(VK_MENU) || is_vk_down(VK_LMENU) || is_vk_down(VK_RMENU);
+    state.win_pressed = is_vk_down(VK_LWIN) || is_vk_down(VK_RWIN);
 
     let hotkeys_locked = state.hotkeys_locked();
     let language_allowed =
         language_hotkey_allowed(hotkeys_locked, state.is_foreground_excluded, state.override_unlocked);
     if is_key_down && language_allowed {
-        let ctrl = state.ctrl_pressed || is_vk_down(VK_CONTROL);
-        let alt = state.alt_pressed || is_vk_down(VK_MENU);
-        let shift = state.shift_pressed || is_vk_down(VK_SHIFT);
-        let win = state.win_pressed || is_vk_down(VK_LWIN) || is_vk_down(VK_RWIN);
+        let ctrl = state.ctrl_pressed;
+        let alt = state.alt_pressed;
+        let shift = state.shift_pressed;
+        let win = state.win_pressed;
 
         if !hotkeys_locked {
-            // Configurable global hotkeys (defaults: Ctrl+Shift+F5 / F9).
+            // Configurable global settings hotkey (default: Ctrl+Shift+F5).
             if check_custom_hotkey(&state.config.hotkey_settings, ctrl, alt, shift, win, vk) {
                 PostMessageW(state.tray_hwnd, WM_SETTINGS, 0, 0);
-                return 1;
-            }
-            if check_custom_hotkey(&state.config.hotkey_converter, ctrl, alt, shift, win, vk) {
-                PostMessageW(state.tray_hwnd, WM_CONVERT, 0, 0);
                 return 1;
             }
         }
@@ -895,6 +940,16 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         };
 
         if is_toggle {
+            if state.tsf_registered {
+                // In TSF mode, V/E toggling is locked to Windows language manager
+                return CallNextHookEx(null_mut(), n_code, w_param, l_param);
+            }
+
+            if state.config.pause_auto_after_manual {
+                let now_tick = get_tick_count_64();
+                state.auto_pause_until_ms = now_tick + 5000;
+            }
+
             if state.is_foreground_excluded {
                 state.toggle_temporary_override();
             } else {
@@ -929,26 +984,159 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         }
     }
 
-    // In TSF mode: if TSF is enabled in config and registered, yield typing input to the in-process TSF TIP
-    // ONLY IF the foreground process is actively handled by TSF (has focus in TSF).
-    // Otherwise, Hook mode seamlessly processes keystrokes (fallback for games, legacy apps, consoles).
-    if state.config.use_tsf && state.tsf_registered {
-        let mut fg_pid = 0u32;
-        if !state.last_foreground.is_null() {
-            unsafe { GetWindowThreadProcessId(state.last_foreground, &mut fg_pid) };
+    // When Vietnamese typing is off, handle English keystroke buffering for smart
+    // AutoSwitch detection and macro expansion. This runs regardless of whether TSF
+    // is registered because standard TSF TIP is dormant in English mode.
+    if !state.effective_enabled() {
+        if is_key_down {
+            // 1. Backspace Undo check for previous AutoSwitch
+            if vk == VK_BACK {
+                if state.was_last_action_auto_switch {
+                    state.was_last_action_auto_switch = false;
+                    if let Some((bs, text)) = state.engine.last_auto_switch_undo.take() {
+                        state.send_engine_output(bs, &text);
+                        state.toggle_language();
+                        let effective = state.effective_enabled();
+                        crate::tsf::sync_tsf_config(&state.config, effective);
+                        let tray_hwnd = state.tray_hwnd;
+                        let play_sound = state.config.notification_sound;
+                        drop(lock);
+                        PostMessageW(tray_hwnd, WM_TRAYICON, 0, if effective { 1 } else { 0 });
+                        if play_sound {
+                            play_notification_sound();
+                        }
+                        return 1;
+                    }
+                }
+                state.english_word_buffer.pop();
+                if state.english_word_buffer.is_empty() {
+                    state.english_word_valid = true;
+                }
+                if state.macro_only() {
+                    return handle_macro_only(state, vk, n_code, w_param, l_param);
+                }
+                return CallNextHookEx(null_mut(), n_code, w_param, l_param);
+            }
+
+            // Any non-backspace keystroke cancels the immediate undo capability
+            state.was_last_action_auto_switch = false;
+
+            let ctrl_down = state.ctrl_pressed;
+            let alt_down = state.alt_pressed;
+            let win_down = state.win_pressed;
+
+            if ctrl_down || alt_down || win_down || matches!(vk, VK_ESCAPE | 0x21..=0x28 | 0x2E) {
+                state.english_word_buffer.clear();
+                state.english_word_valid = false;
+                if state.macro_only() {
+                    return handle_macro_only(state, vk, n_code, w_param, l_param);
+                }
+                return CallNextHookEx(null_mut(), n_code, w_param, l_param);
+            }
+
+            // Identifier separator guard (D6): '.', '_', '-', '/', '\', '@', etc. invalidate word buffer
+            if is_identifier_separator(vk, state.shift_pressed) {
+                state.english_word_buffer.clear();
+                state.english_word_valid = false;
+                state.engine.push_english_word_lookback("");
+                if state.macro_only() {
+                    return handle_macro_only(state, vk, n_code, w_param, l_param);
+                }
+                return CallNextHookEx(null_mut(), n_code, w_param, l_param);
+            }
+
+            let input_char = vk_to_char(vk, state.shift_pressed);
+            let is_vni_digit = state.config.method == 1 && (0x30..=0x39).contains(&vk) && !state.shift_pressed;
+
+            if !is_vni_digit && (0x30..=0x39).contains(&vk) && !state.shift_pressed {
+                // Digits after a space begin a new word (e.g. 5trawm -> 5trăm, D33); glued to letters, an identifier
+                state.english_word_valid = state.english_word_buffer.is_empty() && state.english_word_valid;
+                state.english_word_buffer.clear();
+                if state.macro_only() {
+                    return handle_macro_only(state, vk, n_code, w_param, l_param);
+                }
+                return CallNextHookEx(null_mut(), n_code, w_param, l_param);
+            }
+
+            if input_char.is_ascii_alphabetic() || is_vni_digit {
+                if state.english_word_valid {
+                    if state.english_word_buffer.len() < 32 {
+                        state.english_word_buffer.push(input_char);
+                    } else {
+                        state.english_word_buffer.clear();
+                        state.english_word_valid = false;
+                    }
+                }
+            } else if is_word_break_key(vk, state.shift_pressed) {
+                let is_enter = vk == VK_RETURN;
+                let break_char = if is_enter || vk == VK_TAB {
+                    '\0'
+                } else if input_char != '\0' {
+                    input_char
+                } else {
+                    ' '
+                };
+                let now_tick = get_tick_count_64();
+                let auto_switch_allowed = state.config.auto_switch_by_typing
+                    && !state.is_foreground_excluded
+                    && now_tick >= state.auto_pause_until_ms
+                    && state.english_word_valid
+                    && state.english_word_buffer.len() >= 2;
+
+                if auto_switch_allowed {
+                    let word = state.english_word_buffer.clone();
+                    if let Some((bs, text)) = state.engine.check_english_word_at_break(&word, break_char) {
+                        state.send_engine_output(bs, text.as_str());
+                        if is_enter {
+                            let mut inputs = [
+                                crate::inject::create_vk_input(VK_RETURN, false),
+                                crate::inject::create_vk_input(VK_RETURN, true),
+                            ];
+                            unsafe {
+                                SendInput(2, inputs.as_mut_ptr(), std::mem::size_of::<INPUT>() as i32);
+                            }
+                        }
+                        state.was_last_action_auto_switch = true;
+                        state.toggle_language();
+                        let effective = state.effective_enabled();
+                        crate::tsf::sync_tsf_config(&state.config, effective);
+                        let tray_hwnd = state.tray_hwnd;
+                        let play_sound = state.config.notification_sound;
+                        state.english_word_buffer.clear();
+                        state.english_word_valid = is_word_start_key(vk, state.shift_pressed);
+                        drop(lock);
+                        PostMessageW(tray_hwnd, WM_TRAYICON, 0, if effective { 1 } else { 0 });
+                        if play_sound {
+                            play_notification_sound();
+                        }
+                        return 1;
+                    }
+                }
+
+                if vk == VK_SPACE && state.english_word_valid && !state.english_word_buffer.is_empty() {
+                    let word = state.english_word_buffer.clone();
+                    state.engine.push_english_word_lookback(&word);
+                } else {
+                    state.engine.push_english_word_lookback("");
+                }
+                state.english_word_buffer.clear();
+                state.english_word_valid = is_word_start_key(vk, state.shift_pressed);
+            } else {
+                state.english_word_buffer.clear();
+                state.english_word_valid = is_word_start_key(vk, state.shift_pressed);
+            }
+
+            if state.macro_only() {
+                return handle_macro_only(state, vk, n_code, w_param, l_param);
+            }
         }
-        if fg_pid != 0 && crate::tsf::is_tsf_active_for_pid(fg_pid) {
-            return CallNextHookEx(null_mut(), n_code, w_param, l_param);
-        }
+        return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
-    // When Vietnamese typing is off, never run the Vietnamese engine. If the
-    // user allowed macros while disabled, run only the small macro tracker;
-    // otherwise this is a true pass-through (games, terminals, remote apps).
-    if !state.effective_enabled() {
-        if is_key_down && state.macro_only() {
-            return handle_macro_only(state, vk, n_code, w_param, l_param);
-        }
+    // When TSF is registered and active in Vietnamese mode, the in-process TSF TIP handles
+    // text composition. Yield typing keystrokes so the low-level hook never races with TSF.
+    if state.tsf_registered {
+        state.engine.reset();
         state.macro_buffer.clear();
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
@@ -957,11 +1145,29 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     if is_key_down && matches!(vk, VK_ESCAPE | VK_RETURN | VK_TAB | 0x21..=0x28 | 0x2E) {
         state.engine.reset();
         state.macro_buffer.clear();
+        state.was_last_action_auto_switch = false;
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
     // Backspace handling
     if is_key_down && vk == VK_BACK {
+        if state.was_last_action_auto_switch {
+            state.was_last_action_auto_switch = false;
+            if let Some((bs, text)) = state.engine.last_auto_switch_undo.take() {
+                state.send_engine_output(bs, &text);
+                state.toggle_language();
+                let effective = state.effective_enabled();
+                crate::tsf::sync_tsf_config(&state.config, effective);
+                let tray_hwnd = state.tray_hwnd;
+                let play_sound = state.config.notification_sound;
+                drop(lock);
+                PostMessageW(tray_hwnd, WM_TRAYICON, 0, if effective { 1 } else { 0 });
+                if play_sound {
+                    play_notification_sound();
+                }
+                return 1;
+            }
+        }
         let (backspaces, text) = state.engine.process_key('\x08');
         if backspaces > 0 || !text.is_empty() {
             state.send_engine_output(backspaces, &text);
@@ -970,14 +1176,15 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
-    let win_down = state.win_pressed || is_vk_down(VK_LWIN) || is_vk_down(VK_RWIN);
-    let ctrl_down = state.ctrl_pressed || is_vk_down(VK_CONTROL);
-    let alt_down = state.alt_pressed || is_vk_down(VK_MENU);
+    let win_down = state.win_pressed;
+    let ctrl_down = state.ctrl_pressed;
+    let alt_down = state.alt_pressed;
 
     // If Ctrl, Alt or Win is pressed, pass key through without processing Vietnamese
     if ctrl_down || alt_down || win_down {
         state.engine.reset();
         state.macro_buffer.clear();
+        state.was_last_action_auto_switch = false;
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
@@ -1007,13 +1214,38 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             let now_ms = unsafe { GetTickCount64() };
             let (backspaces, text) = state.engine.process_key_with_time(input_char, now_ms);
 
+            let auto_switch_req = state.engine.take_auto_switch_request();
+
             let mut char_buf = [0u8; 4];
             let char_str = input_char.encode_utf8(&mut char_buf);
             let is_plain_passthrough = backspaces == 0 && text.as_str() == char_str;
 
+            // Always handle language switch when requested by engine
+            if let Some(target_lang) = auto_switch_req {
+                if !target_lang && state.config.auto_switch_by_typing {
+                    // Switch from Vietnamese to English
+                    state.was_last_action_auto_switch = true;
+                    state.toggle_language();
+                    let effective = state.effective_enabled();
+                    crate::tsf::sync_tsf_config(&state.config, effective);
+                    let tray_hwnd = state.tray_hwnd;
+                    let play_sound = state.config.notification_sound;
+                    PostMessageW(tray_hwnd, WM_TRAYICON, 0, if effective { 1 } else { 0 });
+                    if play_sound {
+                        play_notification_sound();
+                    }
+                }
+            }
+
             if !is_plain_passthrough && (backspaces > 0 || !text.is_empty()) {
                 state.send_engine_output(backspaces, &text);
+                drop(lock);
                 return 1;
+            }
+
+            if auto_switch_req.is_some() {
+                drop(lock);
+                return CallNextHookEx(null_mut(), n_code, w_param, l_param);
             }
         }
     }
@@ -1303,6 +1535,10 @@ mod tests {
             active_profile: None,
             injection_mode: 0,
             macro_buffer: String::new(),
+            english_word_buffer: String::new(),
+            english_word_valid: true,
+            auto_pause_until_ms: 0,
+            was_last_action_auto_switch: false,
             tray_hwnd: std::ptr::null_mut(),
             hook_handle: std::ptr::null_mut(),
             mouse_hook_handle: std::ptr::null_mut(),
@@ -1528,6 +1764,21 @@ mod tests {
         let (backspaces, text) = engine.process_key_with_time('a', 120);
         assert_eq!(backspaces, 1);
         assert_eq!(text.as_str(), "â");
+    }
+
+    #[test]
+    fn test_typing_word_then_space() {
+        let mut engine = vietflow_core::VietFlowEngine::default();
+        for c in "tieng".chars() {
+            let (bk, out) = engine.process_key_with_time(c, 0);
+            println!("{}: bk={}, out='{}'", c, bk, out.as_str());
+        }
+        let (bk, out) = engine.process_key_with_time('s', 0);
+        println!("s: bk={}, out='{}'", bk, out.as_str());
+        let (bk, out) = engine.process_key_with_time(' ', 0);
+        println!("Space: bk={}, out='{}'", bk, out.as_str());
+        assert_eq!(bk, 0);
+        assert_eq!(out.as_str(), " ");
     }
 
     #[test]

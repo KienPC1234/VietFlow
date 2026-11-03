@@ -92,10 +92,9 @@ bool Config::Load(const std::string& custom_path) {
         free_marking = j.value("free_marking", free_marking);
         spell_check = j.value("spell_check", spell_check);
         auto_restore = j.value("auto_restore", auto_restore);
+        auto_switch_by_typing = j.value("auto_switch_by_typing", auto_switch_by_typing);
+        pause_auto_after_manual = j.value("pause_auto_after_manual", pause_auto_after_manual);
         fix_shift_lag = j.value("fix_shift_lag", fix_shift_lag);
-        consonant_shortcuts = j.value("consonant_shortcuts", consonant_shortcuts);
-        auto_capitalize = j.value("auto_capitalize", auto_capitalize);
-        auto_capitalize_chars = j.value("auto_capitalize_chars", auto_capitalize_chars);
         disable_on_non_us_layout = j.value("disable_on_non_us_layout", disable_on_non_us_layout);
         disable_on_non_unicode_window = j.value("disable_on_non_unicode_window", disable_on_non_unicode_window);
         enable_macro = j.value("enable_macro", enable_macro);
@@ -107,7 +106,6 @@ bool Config::Load(const std::string& custom_path) {
         typing_timeout_ms = j.value("typing_timeout_ms", typing_timeout_ms);
         hotkey_mode = j.value("hotkey_mode", hotkey_mode);
         hotkey_settings = j.value("hotkey_settings", hotkey_settings);
-        hotkey_converter = j.value("hotkey_converter", hotkey_converter);
 
         if (j.contains("english_keywords") && j["english_keywords"].is_array()) {
             english_keywords = j["english_keywords"].get<std::vector<std::string>>();
@@ -230,10 +228,9 @@ bool Config::Save(const std::string& custom_path) const {
         j["free_marking"] = free_marking;
         j["spell_check"] = spell_check;
         j["auto_restore"] = auto_restore;
+        j["auto_switch_by_typing"] = auto_switch_by_typing;
+        j["pause_auto_after_manual"] = pause_auto_after_manual;
         j["fix_shift_lag"] = fix_shift_lag;
-        j["consonant_shortcuts"] = consonant_shortcuts;
-        j["auto_capitalize"] = auto_capitalize;
-        j["auto_capitalize_chars"] = auto_capitalize_chars;
         j["disable_on_non_us_layout"] = disable_on_non_us_layout;
         j["disable_on_non_unicode_window"] = disable_on_non_unicode_window;
         j["enable_macro"] = enable_macro;
@@ -245,7 +242,6 @@ bool Config::Save(const std::string& custom_path) const {
         j["typing_timeout_ms"] = typing_timeout_ms;
         j["hotkey_mode"] = hotkey_mode;
         j["hotkey_settings"] = hotkey_settings;
-        j["hotkey_converter"] = hotkey_converter;
 
         j["english_keywords"] = english_keywords;
         j["english_keywords_removed"] = english_keywords_removed;

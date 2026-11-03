@@ -1,10 +1,10 @@
 // VietFlow Core - Ultra-High Performance Vietnamese Input Engine
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
+pub mod autoswitch;
 pub mod c_abi;
 pub mod charset;
 pub mod constants;
-pub mod converter;
 pub mod english;
 pub mod engine;
 pub mod input_proc;
@@ -15,7 +15,6 @@ pub mod tables;
 pub mod tone_rules;
 
 pub use charset::encode_slot;
-pub use converter::{convert_charset, convert_charset_bytes, strip_accents};
 pub use constants::*;
 pub use engine::{Slot, VietFlowEngine};
 pub use key_text::KeyText;
@@ -102,7 +101,34 @@ mod tests {
             ("cama", "câm"),
             ("demd", "đem"),
             ("dangd", "đang"),
+            ("did", "đi"),
+            ("didd", "did"),
+            ("dad", "đa"),
+            ("dadd", "dad"),
+            ("dud", "đu"),
+            ("dod", "đo"),
+            ("ded", "đe"),
+            ("dieud", "đieu"),
+            ("dieeud", "điêu"),
+            ("dieuejd", "điệu"),
+            ("dinhd", "đinh"),
+            ("dapd", "đap"),
+            ("dapjd", "đạp"),
             ("themee", "theme"),
+            ("lieuej", "liệu"),
+            ("lieue", "liêu"),
+            ("lieuje", "liệu"),
+            ("yeue", "yêu"),
+            ("yeuej", "yệu"),
+            ("muoio", "muôi"),
+            ("muoioj", "muội"),
+            ("muoijo", "muội"),
+            ("saua", "sâu"),
+            ("maya", "mây"),
+            ("mayas", "mấy"),
+            ("toio", "tôi"),
+            ("dduowcj", "được"),
+            ("lieuee", "lieue"),
         ];
 
         for (input, expected) in cases {
@@ -344,23 +370,6 @@ mod tests {
     }
 
     #[test]
-    fn test_strip_accents_handles_nfd() {
-        let nfd = "Tie\u{0302}\u{0301}ng Vie\u{0302}\u{0323}t";
-        assert_eq!(strip_accents(nfd), "Tieng Viet");
-        assert_eq!(
-            strip_accents("đu\u{031B}o\u{031B}\u{0300}ng"),
-            "duong",
-            "horn + grave combining marks must be removed"
-        );
-    }
-
-    #[test]
-    fn test_strip_accents() {
-        assert_eq!(strip_accents("Tiếng Việt"), "Tieng Viet");
-        assert_eq!(strip_accents("Đường hoa Nguyễn Huệ"), "Duong hoa Nguyen Hue");
-    }
-
-    #[test]
     fn test_backspace() {
         let mut engine = VietFlowEngine::default();
         assert_eq!(engine.process_key('\x08'), (0, KeyText::new()));
@@ -586,50 +595,6 @@ mod tests {
 
         let mut default_engine = VietFlowEngine::default();
         assert_eq!(process_string(&mut default_engine, "bas"), "bá");
-    }
-
-    #[test]
-    fn test_convert_charset_all_codecs() {
-        let text = "Tiếng Việt Nam đường hoa Nguyễn Huệ";
-
-        // Unicode to TCVN3 and back
-        let tcvn3 = convert_charset(text, CharsetId::Unicode, CharsetId::Tcvn3);
-        assert_ne!(tcvn3, text);
-        let back_from_tcvn3 = convert_charset(&tcvn3, CharsetId::Tcvn3, CharsetId::Unicode);
-        assert_eq!(back_from_tcvn3, text);
-
-        // Unicode to VNI Windows and back
-        let vni = convert_charset(text, CharsetId::Unicode, CharsetId::VniWindows);
-        assert_ne!(vni, text);
-        let back_from_vni = convert_charset(&vni, CharsetId::VniWindows, CharsetId::Unicode);
-        assert_eq!(back_from_vni, text);
-
-        // Unicode to Unicode Composite (NFD) and back
-        let nfd = convert_charset(text, CharsetId::Unicode, CharsetId::UnicodeComposite);
-        assert_ne!(nfd, text);
-        // Ensure NFD contains combining marks
-        assert!(nfd.contains('\u{0301}') || nfd.contains('\u{0323}'));
-        let back_from_nfd = convert_charset(&nfd, CharsetId::UnicodeComposite, CharsetId::Unicode);
-        assert_eq!(back_from_nfd, text);
-    }
-
-    #[test]
-    fn test_convert_full_nfd_composite() {
-        let nfd = "Tie\u{0302}\u{0301}ng Vie\u{0302}\u{0323}t";
-        let nfc = "Ti\u{1EBF}ng Vi\u{1EC7}t";
-
-        assert_eq!(
-            convert_charset(nfd, CharsetId::UnicodeComposite, CharsetId::Unicode),
-            nfc
-        );
-        assert_eq!(
-            convert_charset(nfc, CharsetId::Unicode, CharsetId::UnicodeComposite),
-            nfd
-        );
-        assert_eq!(
-            convert_charset(nfd, CharsetId::UnicodeComposite, CharsetId::Tcvn3),
-            convert_charset(nfc, CharsetId::Unicode, CharsetId::Tcvn3)
-        );
     }
 
     #[test]
@@ -889,22 +854,6 @@ mod tests {
     }
 
     #[test]
-    fn test_configurable_auto_capitalize_chars() {
-        let mut engine = VietFlowEngine::new(
-            EngineOptions {
-                auto_capitalize: true,
-                auto_capitalize_chars: "。\n".to_string(),
-                ..Default::default()
-            },
-            CharsetId::Unicode,
-        );
-
-        assert_eq!(process_string(&mut engine, "xin chào. bạn"), "xin chào. bạn");
-        engine.reset();
-        assert_eq!(process_string(&mut engine, "xin chào。bạn"), "xin chào。Bạn");
-    }
-
-    #[test]
     fn test_viqr_input() {
         let mut engine = VietFlowEngine::new(
             EngineOptions {
@@ -942,13 +891,14 @@ mod tests {
     fn test_words_ending_in_d_not_corrupted() {
         let mut engine = VietFlowEngine::default();
         let cases = [
-            ("dad ", "dad "),
-            ("did ", "did "),
             ("bad ", "bad "),
             ("red ", "red "),
             ("dead ", "dead "),
-            ("demd", "đem"),
-            ("dangd", "đang"),
+            ("bed ", "bed "),
+            ("card ", "card "),
+            ("word ", "word "),
+            ("hold ", "hold "),
+            ("cold ", "cold "),
         ];
 
         for (input, expected) in cases {

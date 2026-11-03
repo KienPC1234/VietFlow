@@ -47,10 +47,9 @@ struct Config {
     bool free_marking = true;
     bool spell_check = true;
     bool auto_restore = true;
+    bool auto_switch_by_typing = true;
+    bool pause_auto_after_manual = true;
     bool fix_shift_lag = true;
-    bool consonant_shortcuts = false;
-    bool auto_capitalize = false;
-    std::string auto_capitalize_chars = ".!?\r\n";
     bool disable_on_non_us_layout = false;
     bool disable_on_non_unicode_window = true;
     bool enable_macro = false;
@@ -62,7 +61,6 @@ struct Config {
     uint64_t typing_timeout_ms = 0;
     std::string hotkey_mode = "CtrlShift";
     std::string hotkey_settings = "Ctrl + Shift + F5";
-    std::string hotkey_converter = "Ctrl + Shift + F9";
 
     std::vector<std::string> english_keywords;
     std::vector<std::string> english_keywords_removed;

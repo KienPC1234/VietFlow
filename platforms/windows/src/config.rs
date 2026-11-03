@@ -48,12 +48,10 @@ pub struct AppConfig {
     pub auto_restore: bool,
     #[serde(default = "default_true")]
     pub fix_shift_lag: bool,
-    #[serde(default)]
-    pub consonant_shortcuts: bool,
-    #[serde(default)]
-    pub auto_capitalize: bool,
-    #[serde(default = "default_auto_capitalize_chars")]
-    pub auto_capitalize_chars: String,
+    #[serde(default = "default_true")]
+    pub auto_switch_by_typing: bool,
+    #[serde(default = "default_true")]
+    pub pause_auto_after_manual: bool,
     /// Disable Vietnamese input when the foreground window's keyboard layout
     /// is not US (EVKey: "Tắt TV khi Layout bàn phím khác US").
     #[serde(default)]
@@ -84,8 +82,6 @@ pub struct AppConfig {
     pub hotkey_mode: String,
     #[serde(default = "default_hotkey_settings")]
     pub hotkey_settings: String,
-    #[serde(default = "default_hotkey_converter")]
-    pub hotkey_converter: String,
 
     #[serde(default)]
     pub english_keywords: Vec<String>,
@@ -147,9 +143,6 @@ pub struct AppConfig {
 fn default_true() -> bool {
     true
 }
-fn default_auto_capitalize_chars() -> String {
-    ".!?\r\n".to_string()
-}
 fn default_timeout() -> u64 {
     0
 }
@@ -158,9 +151,6 @@ fn default_hotkey_mode() -> String {
 }
 fn default_hotkey_settings() -> String {
     "Ctrl + Shift + F5".to_string()
-}
-fn default_hotkey_converter() -> String {
-    "Ctrl + Shift + F9".to_string()
 }
 fn default_foreign_initials() -> String {
     "fjwz".to_string()
@@ -317,9 +307,8 @@ impl Default for AppConfig {
             spell_check: true,
             auto_restore: true,
             fix_shift_lag: true,
-            consonant_shortcuts: false,
-            auto_capitalize: false,
-            auto_capitalize_chars: default_auto_capitalize_chars(),
+            auto_switch_by_typing: true,
+            pause_auto_after_manual: true,
             disable_on_non_us_layout: false,
             disable_on_non_unicode_window: true,
             enable_macro: false,
@@ -331,7 +320,6 @@ impl Default for AppConfig {
             typing_timeout_ms: default_timeout(),
             hotkey_mode: default_hotkey_mode(),
             hotkey_settings: default_hotkey_settings(),
-            hotkey_converter: default_hotkey_converter(),
             english_keywords: Vec::new(),
             english_keywords_removed: Vec::new(),
             foreign_initials: default_foreign_initials(),
@@ -564,7 +552,7 @@ mod tests {
             r#"{
                 "lock_hotkeys_in_excluded_apps": false,
                 "injection_mode": 3,
-                "auto_capitalize_chars": "。\n",
+                "auto_switch_by_typing": true,
                 "app_profiles": {
                     "Code.exe": { "injection_mode": 3, "allow_macro": true },
                     "cs2": { "method": 1, "charset": 2 }
@@ -576,7 +564,7 @@ mod tests {
 
         assert!(!config.lock_hotkeys_in_excluded_apps);
         assert_eq!(config.injection_mode, 0);
-        assert_eq!(config.auto_capitalize_chars, "。\n");
+        assert!(config.auto_switch_by_typing);
         let code = config.app_profiles.get("Code.exe").unwrap();
         assert_eq!(code.injection_mode, Some(0));
         assert_eq!(code.allow_macro, Some(true));

@@ -49,6 +49,16 @@ void vf_engine_set_charset(VfEngine *engine, uint8_t charset);
 void vf_engine_set_spell_check(VfEngine *engine, bool enabled);
 void vf_engine_set_modern_style(VfEngine *engine, bool enabled);
 void vf_engine_set_auto_restore(VfEngine *engine, bool enabled);
+void vf_engine_set_free_marking(VfEngine *engine, bool enabled);
+void vf_engine_set_enable_macro(VfEngine *engine, bool enabled);
+void vf_engine_set_auto_switch_by_typing(VfEngine *engine, bool enabled);
+
+/*
+ * In-line TSF composition preedit helpers.
+ */
+bool vf_engine_get_preedit(VfEngine *engine, uint8_t *out_utf8, size_t max_out_len, size_t *out_len);
+bool vf_engine_finish_on_break(VfEngine *engine, uint32_t break_char, uint8_t *out_utf8, size_t max_out_len, size_t *out_len);
+bool vf_engine_process_backspace(VfEngine *engine, uint8_t *out_utf8, size_t max_out_len, size_t *out_len);
 
 /*
  * Process one key. `out_utf8` receives up to `max_out_len` UTF-8 bytes.
@@ -60,30 +70,8 @@ bool vf_engine_process_key(VfEngine *engine, uint32_t ch,
                            size_t *out_len, size_t *out_backspaces);
 
 /*
- * Charset conversion helpers.
- *
- * Both functions return the number of bytes required for the result. Pass
- * `out = NULL` to query the size, then call again with a buffer of at least
- * that size. At most `out_cap` bytes are written.
- */
-size_t vf_convert_charset(const uint8_t *input, size_t input_len,
-                          uint8_t source, uint8_t target,
-                          uint8_t *out, size_t out_cap);
-
-size_t vf_strip_accents(const uint8_t *input, size_t input_len,
-                        uint8_t *out, size_t out_cap);
-
-/*
- * Raw-byte charset conversion. Use this for TCVN3/VNI Windows clipboard or file
- * content, where the input/output is not UTF-8. Same size-query contract.
- */
-size_t vf_convert_charset_bytes(const uint8_t *input, size_t input_len,
-                                uint8_t source, uint8_t target,
-                                uint8_t *out, size_t out_cap);
-
-/*
  * Default English keyword list, newline-separated UTF-8. Same size-query
- * contract as vf_convert_charset: call with out = NULL to get the size, then
+ * contract as vf_english_keywords: call with out = NULL to get the size, then
  * call again with a buffer.
  */
 size_t vf_english_keywords(uint8_t *out, size_t out_cap);

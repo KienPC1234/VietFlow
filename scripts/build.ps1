@@ -201,14 +201,27 @@ foreach ($a in $archs) {
         $distName = "VietFlow-arm64.exe"
     } else {
         Write-Host "  Compiling x64 (host target)..." -ForegroundColor DarkGray
+        & cargo build --manifest-path $cargoManifest --release -p vietflow-core
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "x64 core release build failed!"
+            exit $LASTEXITCODE
+        }
         & cargo build --manifest-path $cargoManifest --release -p vietflow-windows
         if ($LASTEXITCODE -ne 0) {
             Write-Error "x64 release build failed!"
             exit $LASTEXITCODE
         }
-        & cargo build --manifest-path $cargoManifest --release -p vietflow-tsf
+        Write-Host "  Compiling x64 C++ TSF DLL..." -ForegroundColor DarkGray
+        $tsfDir = Join-Path $root "platforms/windows_tsf"
+        $tsfBuildDir = Join-Path $tsfDir "build"
+        & cmake -B $tsfBuildDir -S $tsfDir -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=$staticCrtValue
         if ($LASTEXITCODE -ne 0) {
-            Write-Error "x64 TSF DLL release build failed!"
+            Write-Error "x64 TSF CMake configure failed!"
+            exit $LASTEXITCODE
+        }
+        & cmake --build $tsfBuildDir --config Release
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "x64 TSF CMake build failed!"
             exit $LASTEXITCODE
         }
         $src = Join-Path $root "target\release\VietFlow.exe"
@@ -229,22 +242,22 @@ foreach ($a in $archs) {
     Copy-Item $built[$a] $builtDist[$a] -Force
     if ($a -eq 'x64') {
         Copy-Item $built[$a] (Join-Path $DistDir "VietFlow-x64.exe") -Force
-        $tsfDll = Join-Path $root "target\release\vietflow_tip.dll"
+        $tsfDll = Join-Path $root "platforms\windows_tsf\build\Release\vietflow_tsf.dll"
         if (Test-Path $tsfDll) {
-            $destTip = Join-Path $DistDir "vietflow_tip.dll"
+            $destTsf = Join-Path $DistDir "vietflow_tsf.dll"
             try {
-                Copy-Item $tsfDll $destTip -Force -ErrorAction Stop
+                Copy-Item $tsfDll $destTsf -Force -ErrorAction Stop
             } catch {
                 # In-process COM DLL may be loaded in Windows CTF. Move locked file with unique name then copy.
-                $tempOld = Join-Path $DistDir "vietflow_tip.dll.$([System.Guid]::NewGuid().ToString('N')).old"
-                Move-Item -LiteralPath $destTip -Destination $tempOld -Force -ErrorAction SilentlyContinue
-                Copy-Item $tsfDll $destTip -Force
+                $tempOld = Join-Path $DistDir "vietflow_tsf.dll.$([System.Guid]::NewGuid().ToString('N')).old"
+                Move-Item -LiteralPath $destTsf -Destination $tempOld -Force -ErrorAction SilentlyContinue
+                Copy-Item $tsfDll $destTsf -Force
             }
             # Best-effort purge of stale old DLLs
-            Get-ChildItem -Path $DistDir -Filter "vietflow_tip.dll.*.old" -File -ErrorAction SilentlyContinue | ForEach-Object {
+            Get-ChildItem -Path $DistDir -Filter "vietflow_tsf.dll.*.old" -File -ErrorAction SilentlyContinue | ForEach-Object {
                 Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
             }
-            Write-Host "      TSF: $($tsfDll) -> $($destTip)" -ForegroundColor Green
+            Write-Host "      TSF: $($tsfDll) -> $($destTsf)" -ForegroundColor Green
         }
     }
 }

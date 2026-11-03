@@ -2,125 +2,12 @@
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
 use std::ffi::c_void;
-use crate::converter::{convert_charset, convert_charset_bytes, strip_accents};
 use crate::english::default_english_keywords;
 use crate::engine::VietFlowEngine;
 use crate::models::{CharsetId, InputMethod};
 
-fn charset_from_id(id: u8) -> CharsetId {
-    match id {
-        1 => CharsetId::UnicodeComposite,
-        2 => CharsetId::Tcvn3,
-        3 => CharsetId::VniWindows,
-        4 => CharsetId::Viqr,
-        _ => CharsetId::Unicode,
-    }
-}
-
-/// Convert a UTF-8 string between charsets.
-///
-/// Returns the number of bytes required for the converted output. When `out` is
-/// null (or `out_cap` is smaller than the output) nothing beyond `out_cap` bytes
-/// is written, allowing callers to query the size first and then allocate.
-///
-/// # Safety
-/// Caller must ensure `input` points to at least `input_len` readable bytes,
-/// and `out` (if non-null) points to at least `out_cap` writable bytes.
-#[no_mangle]
-pub unsafe extern "C" fn vf_convert_charset(
-    input: *const u8,
-    input_len: usize,
-    source: u8,
-    target: u8,
-    out: *mut u8,
-    out_cap: usize,
-) -> usize {
-    if input.is_null() {
-        return 0;
-    }
-    let bytes = std::slice::from_raw_parts(input, input_len);
-    let text = match std::str::from_utf8(bytes) {
-        Ok(text) => text,
-        Err(_) => return 0,
-    };
-
-    let converted = convert_charset(text, charset_from_id(source), charset_from_id(target));
-    let converted = converted.as_bytes();
-
-    if !out.is_null() && out_cap > 0 {
-        let to_write = converted.len().min(out_cap);
-        std::ptr::copy_nonoverlapping(converted.as_ptr(), out, to_write);
-    }
-
-    converted.len()
-}
-
-/// Convert raw bytes between Unicode, TCVN3 and VNI Windows. Unlike
-/// `vf_convert_charset`, this function does not require UTF-8 input and returns
-/// the raw bytes expected by legacy applications. Same size-query contract.
-///
-/// # Safety
-/// Caller must ensure `input` points to at least `input_len` readable bytes,
-/// and `out` (if non-null) points to at least `out_cap` writable bytes.
-#[no_mangle]
-pub unsafe extern "C" fn vf_convert_charset_bytes(
-    input: *const u8,
-    input_len: usize,
-    source: u8,
-    target: u8,
-    out: *mut u8,
-    out_cap: usize,
-) -> usize {
-    if input.is_null() {
-        return 0;
-    }
-    let bytes = std::slice::from_raw_parts(input, input_len);
-    let converted = convert_charset_bytes(bytes, charset_from_id(source), charset_from_id(target));
-
-    if !out.is_null() && out_cap > 0 {
-        let to_write = converted.len().min(out_cap);
-        std::ptr::copy_nonoverlapping(converted.as_ptr(), out, to_write);
-    }
-
-    converted.len()
-}
-
-/// Strip Vietnamese diacritics from a UTF-8 string (same size-query contract as
-/// `vf_convert_charset`).
-///
-/// # Safety
-/// Caller must ensure `input` points to at least `input_len` readable bytes,
-/// and `out` (if non-null) points to at least `out_cap` writable bytes.
-#[no_mangle]
-pub unsafe extern "C" fn vf_strip_accents(
-    input: *const u8,
-    input_len: usize,
-    out: *mut u8,
-    out_cap: usize,
-) -> usize {
-    if input.is_null() {
-        return 0;
-    }
-    let bytes = std::slice::from_raw_parts(input, input_len);
-    let text = match std::str::from_utf8(bytes) {
-        Ok(text) => text,
-        Err(_) => return 0,
-    };
-
-    let stripped = strip_accents(text);
-    let stripped = stripped.as_bytes();
-
-    if !out.is_null() && out_cap > 0 {
-        let to_write = stripped.len().min(out_cap);
-        std::ptr::copy_nonoverlapping(stripped.as_ptr(), out, to_write);
-    }
-
-    stripped.len()
-}
-
-/// Newline-separated default English keyword list (UTF-8). Same size-query
-/// contract as `vf_convert_charset`, so the settings UI can fetch it for the
-/// keyword editor without duplicating the list in C++.
+/// Newline-separated default English keyword list (UTF-8). The settings UI
+/// can fetch it for the keyword editor without duplicating the list in C++.
 ///
 /// # Safety
 /// Caller must ensure `out` (if non-null) points to at least `out_cap` writable bytes.
@@ -173,7 +60,7 @@ pub unsafe extern "C" fn vf_engine_reset(engine: *mut c_void) {
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_set_method(engine: *mut c_void, method: u8) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
-        engine.options.method = match method {
+        let new_method = match method {
             0 => InputMethod::Telex,
             1 => InputMethod::Vni,
             2 => InputMethod::Viqr,
@@ -183,7 +70,10 @@ pub unsafe extern "C" fn vf_engine_set_method(engine: *mut c_void, method: u8) {
             6 => InputMethod::UserCustom,
             _ => InputMethod::Telex,
         };
-        engine.reset();
+        if engine.options.method != new_method {
+            engine.options.method = new_method;
+            engine.reset();
+        }
     }
 }
 
@@ -194,7 +84,7 @@ pub unsafe extern "C" fn vf_engine_set_method(engine: *mut c_void, method: u8) {
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_set_charset(engine: *mut c_void, charset: u8) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
-        engine.charset = match charset {
+        let new_charset = match charset {
             0 => CharsetId::Unicode,
             1 => CharsetId::UnicodeComposite,
             2 => CharsetId::Tcvn3,
@@ -202,7 +92,10 @@ pub unsafe extern "C" fn vf_engine_set_charset(engine: *mut c_void, charset: u8)
             4 => CharsetId::Viqr,
             _ => CharsetId::Unicode,
         };
-        engine.reset();
+        if engine.charset != new_charset {
+            engine.charset = new_charset;
+            engine.reset();
+        }
     }
 }
 
@@ -213,8 +106,10 @@ pub unsafe extern "C" fn vf_engine_set_charset(engine: *mut c_void, charset: u8)
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_set_spell_check(engine: *mut c_void, enabled: bool) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
-        engine.options.spell_check = enabled;
-        engine.reset();
+        if engine.options.spell_check != enabled {
+            engine.options.spell_check = enabled;
+            engine.reset();
+        }
     }
 }
 
@@ -225,8 +120,10 @@ pub unsafe extern "C" fn vf_engine_set_spell_check(engine: *mut c_void, enabled:
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_set_modern_style(engine: *mut c_void, enabled: bool) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
-        engine.options.modern_style = enabled;
-        engine.reset();
+        if engine.options.modern_style != enabled {
+            engine.options.modern_style = enabled;
+            engine.reset();
+        }
     }
 }
 
@@ -237,8 +134,10 @@ pub unsafe extern "C" fn vf_engine_set_modern_style(engine: *mut c_void, enabled
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_set_auto_restore(engine: *mut c_void, enabled: bool) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
-        engine.options.auto_non_vn_restore = enabled;
-        engine.reset();
+        if engine.options.auto_non_vn_restore != enabled {
+            engine.options.auto_non_vn_restore = enabled;
+            engine.reset();
+        }
     }
 }
 
@@ -288,126 +187,107 @@ pub unsafe extern "C" fn vf_engine_process_key(
     true
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Returns the current preedit text for in-line IME composition.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_get_preedit(
+    engine: *mut c_void,
+    out_utf8: *mut u8,
+    max_out_len: usize,
+    out_len: *mut usize,
+) -> bool {
+    let engine = match (engine as *mut VietFlowEngine).as_mut() {
+        Some(e) => e,
+        None => return false,
+    };
 
-    unsafe fn convert_via_abi(text: &str, source: u8, target: u8) -> String {
-        let input = text.as_bytes();
-        let needed = vf_convert_charset(
-            input.as_ptr(),
-            input.len(),
-            source,
-            target,
-            std::ptr::null_mut(),
-            0,
-        );
-        assert!(needed > 0);
+    let text = engine.current_preedit_text();
+    let bytes = text.as_bytes();
+    let to_write = bytes.len().min(max_out_len);
 
-        let mut output = vec![0u8; needed];
-        let written = vf_convert_charset(
-            input.as_ptr(),
-            input.len(),
-            source,
-            target,
-            output.as_mut_ptr(),
-            output.len(),
-        );
-        assert_eq!(written, needed);
-        String::from_utf8(output).expect("converter must emit UTF-8")
+    if !out_utf8.is_null() && to_write > 0 {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_utf8, to_write);
     }
+    if !out_len.is_null() {
+        *out_len = to_write;
+    }
+    true
+}
 
-    #[test]
-    fn convert_charset_abi_matches_core() {
-        let text = "Tiếng Việt";
-        unsafe {
-            let via_abi = convert_via_abi(text, 0, 2);
-            let expected = convert_charset(text, CharsetId::Unicode, CharsetId::Tcvn3);
-            assert_eq!(via_abi, expected);
+/// Finalizes composition on a word break delimiter (Space, punctuation, Enter).
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_finish_on_break(
+    engine: *mut c_void,
+    break_char: u32,
+    out_utf8: *mut u8,
+    max_out_len: usize,
+    out_len: *mut usize,
+) -> bool {
+    let engine = match (engine as *mut VietFlowEngine).as_mut() {
+        Some(e) => e,
+        None => return false,
+    };
 
-            let roundtrip = convert_via_abi(&via_abi, 2, 0);
-            assert_eq!(roundtrip, text);
+    let c = char::from_u32(break_char).unwrap_or(' ');
+    let text = engine.finish_composition_on_break(c);
+    let bytes = text.as_bytes();
+    let to_write = bytes.len().min(max_out_len);
+
+    if !out_utf8.is_null() && to_write > 0 {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_utf8, to_write);
+    }
+    if !out_len.is_null() {
+        *out_len = to_write;
+    }
+    true
+}
+
+/// Process backspace in composition mode and return the updated preedit string.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_process_backspace(
+    engine: *mut c_void,
+    out_utf8: *mut u8,
+    max_out_len: usize,
+    out_len: *mut usize,
+) -> bool {
+    let engine = match (engine as *mut VietFlowEngine).as_mut() {
+        Some(e) => e,
+        None => return false,
+    };
+
+    let _ = engine.process_key('\x08');
+    let text = engine.current_preedit_text();
+    let bytes = text.as_bytes();
+    let to_write = bytes.len().min(max_out_len);
+
+    if !out_utf8.is_null() && to_write > 0 {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_utf8, to_write);
+    }
+    if !out_len.is_null() {
+        *out_len = to_write;
+    }
+    true
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_set_free_marking(engine: *mut c_void, enabled: bool) {
+    if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
+        if engine.options.free_marking != enabled {
+            engine.options.free_marking = enabled;
+            engine.reset();
         }
     }
+}
 
-    #[test]
-    fn raw_charset_conversion_roundtrip() {
-        let text = "tiếng việt";
-        let tcvn3 = convert_charset_bytes(text.as_bytes(), CharsetId::Unicode, CharsetId::Tcvn3);
-        assert!(tcvn3.iter().any(|byte| *byte > 0x7F));
-        let back = convert_charset_bytes(&tcvn3, CharsetId::Tcvn3, CharsetId::Unicode);
-        assert_eq!(String::from_utf8(back).unwrap(), text);
-
-        let vni = convert_charset_bytes(text.as_bytes(), CharsetId::Unicode, CharsetId::VniWindows);
-        assert!(vni.iter().any(|byte| *byte > 0x7F));
-        let back = convert_charset_bytes(&vni, CharsetId::VniWindows, CharsetId::Unicode);
-        assert_eq!(String::from_utf8(back).unwrap(), text);
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_set_enable_macro(engine: *mut c_void, enabled: bool) {
+    if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
+        engine.options.enable_macro = enabled;
     }
+}
 
-    #[test]
-    fn raw_charset_abi_size_query() {
-        let text = "Việt";
-        let input = text.as_bytes();
-        let needed = unsafe {
-            vf_convert_charset_bytes(
-                input.as_ptr(),
-                input.len(),
-                0,
-                2,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        assert!(needed > 0);
-        let mut output = vec![0u8; needed];
-        let written = unsafe {
-            vf_convert_charset_bytes(
-                input.as_ptr(),
-                input.len(),
-                0,
-                2,
-                output.as_mut_ptr(),
-                output.len(),
-            )
-        };
-        assert_eq!(written, needed);
-    }
-
-    #[test]
-    fn strip_accents_abi() {
-        let text = "Đường hoa Nguyễn Huệ";
-        let input = text.as_bytes();
-        unsafe {
-            let needed = vf_strip_accents(input.as_ptr(), input.len(), std::ptr::null_mut(), 0);
-            assert!(needed > 0);
-            let mut output = vec![0u8; needed];
-            let written = vf_strip_accents(
-                input.as_ptr(),
-                input.len(),
-                output.as_mut_ptr(),
-                output.len(),
-            );
-            assert_eq!(written, needed);
-            assert_eq!(String::from_utf8(output).unwrap(), "Duong hoa Nguyen Hue");
-        }
-    }
-
-    #[test]
-    fn size_query_never_overflows_buffer() {
-        let text = "Việt Nam";
-        let input = text.as_bytes();
-        unsafe {
-            let mut small = [0u8; 2];
-            let needed = vf_convert_charset(
-                input.as_ptr(),
-                input.len(),
-                0,
-                0,
-                small.as_mut_ptr(),
-                small.len(),
-            );
-            assert_eq!(needed, text.len());
-            assert_eq!(&small, &input[..2]);
-        }
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_set_auto_switch_by_typing(engine: *mut c_void, enabled: bool) {
+    if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
+        engine.options.auto_switch_by_typing = enabled;
     }
 }

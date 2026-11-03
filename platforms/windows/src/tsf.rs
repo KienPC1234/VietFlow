@@ -21,7 +21,7 @@ use windows_sys::Win32::System::Memory::{
     MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READWRITE,
 };
 use windows_sys::Win32::System::Registry::{
-    RegCloseKey, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ,
+    RegCloseKey, RegOpenKeyExW, HKEY, HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ,
 };
 use windows_sys::Win32::System::Threading::{
     GetExitCodeProcess, WaitForSingleObject,
@@ -43,7 +43,7 @@ pub struct TsfSharedConfig {
     pub spell_check: u32,
     pub free_marking: u32,
     pub auto_restore: u32,
-    pub consonant_shortcuts: u32,
+    pub auto_switch_by_typing: u32,
     pub enable_macro: u32,
     pub version: u32,
     pub last_active_tick: u64,
@@ -61,7 +61,7 @@ impl Default for TsfSharedConfig {
             spell_check: 1,
             free_marking: 1,
             auto_restore: 1,
-            consonant_shortcuts: 0,
+            auto_switch_by_typing: 1,
             enable_macro: 1,
             version: 1,
             last_active_tick: 0,
@@ -159,7 +159,20 @@ impl Drop for SharedConfigWriter {
 
 static SHARED_WRITER: Mutex<Option<SharedConfigWriter>> = Mutex::new(None);
 
+/// TSF mode is defined solely by the Windows registration of the TIP. Once
+/// registered, the in-process TIP owns typing and Windows language switching
+/// (Win+Space) controls V/E state.
+pub fn is_tsf_mode_active() -> bool {
+    is_tsf_registered() && is_tsf_dll_present()
+}
+
+/// Publishes engine options to the in-process TIP instances.
+///
+/// `enabled` is written as 1 only while TSF mode is active and Vietnamese input
+/// is currently enabled. When the user switches to English or an excluded app is
+/// focused, `enabled` is 0 so the TIP passes all keystrokes untouched.
 pub fn sync_tsf_config(config: &AppConfig, enabled: bool) {
+    let tip_enabled = is_tsf_mode_active() && enabled;
     let mut lock = match SHARED_WRITER.lock() {
         Ok(l) => l,
         Err(_) => return,
@@ -182,14 +195,14 @@ pub fn sync_tsf_config(config: &AppConfig, enabled: bool) {
             (0, 0, 0)
         };
         let tsf_cfg = TsfSharedConfig {
-            enabled: if enabled { 1 } else { 0 },
+            enabled: if tip_enabled { 1 } else { 0 },
             method: config.method as u32,
             charset: config.charset as u32,
             modern_style: if config.modern_style { 1 } else { 0 },
             spell_check: if config.spell_check { 1 } else { 0 },
             free_marking: if config.free_marking { 1 } else { 0 },
             auto_restore: if config.auto_restore { 1 } else { 0 },
-            consonant_shortcuts: if config.consonant_shortcuts { 1 } else { 0 },
+            auto_switch_by_typing: if config.auto_switch_by_typing { 1 } else { 0 },
             enable_macro: if config.enable_macro { 1 } else { 0 },
             version: 1,
             last_active_tick: prev_tick,
@@ -200,48 +213,41 @@ pub fn sync_tsf_config(config: &AppConfig, enabled: bool) {
     }
 }
 
-pub fn is_tsf_active_for_pid(pid: u32) -> bool {
-    let lock = match SHARED_WRITER.lock() {
-        Ok(l) => l,
-        Err(_) => return false,
-    };
-    if let Some(writer) = lock.as_ref() {
-        if !writer.view.is_null() {
-            unsafe {
-                let last_pid = (*writer.view).last_active_pid;
-                let last_tick = (*writer.view).last_active_tick;
-                let now = crate::hook::get_tick_count_64();
-                if last_pid == pid && now.saturating_sub(last_tick) < 3000 {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
+pub const CLSID_STR: &str = "{02B8B9EC-2D3E-42B6-97C0-26043A29BFCB}";
+pub const PROFILE_STR: &str = "{FBA81B7C-5EAD-454F-9F81-413780E9A0BA}";
 
-/// Locates the `vietflow_tip.dll` file.
+pub const LEGACY_CLSID_STR: &str = "{7C2B5E10-9A31-4B8F-B623-192E48270101}";
+pub const LEGACY_PROFILE_STR: &str = "{7C2B5E11-9A31-4B8F-B623-192E48270102}";
+
+/// Locates the `vietflow_tsf.dll` (or legacy `vietflow_tip.dll`) file.
 /// First checks the same directory as the executable, then working directory and target dirs.
 pub fn tsf_dll_path() -> Option<PathBuf> {
+    let dll_names = ["vietflow_tsf.dll", "vietflow_tip.dll"];
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            let direct = parent.join("vietflow_tip.dll");
-            if direct.is_file() {
-                return Some(direct);
+            for name in &dll_names {
+                let direct = parent.join(name);
+                if direct.is_file() {
+                    return Some(direct);
+                }
             }
             if let Some(grandparent) = parent.parent() {
-                let in_profile = grandparent.join("vietflow_tip.dll");
-                if in_profile.is_file() {
-                    return Some(in_profile);
+                for name in &dll_names {
+                    let in_profile = grandparent.join(name);
+                    if in_profile.is_file() {
+                        return Some(in_profile);
+                    }
                 }
                 if let Some(great) = grandparent.parent() {
-                    let in_release = great.join("release").join("vietflow_tip.dll");
-                    if in_release.is_file() {
-                        return Some(in_release);
-                    }
-                    let in_debug = great.join("debug").join("vietflow_tip.dll");
-                    if in_debug.is_file() {
-                        return Some(in_debug);
+                    for name in &dll_names {
+                        let in_release = great.join("release").join(name);
+                        if in_release.is_file() {
+                            return Some(in_release);
+                        }
+                        let in_debug = great.join("debug").join(name);
+                        if in_debug.is_file() {
+                            return Some(in_debug);
+                        }
                     }
                 }
             }
@@ -249,17 +255,19 @@ pub fn tsf_dll_path() -> Option<PathBuf> {
     }
     if let Ok(mut dir) = std::env::current_dir() {
         for _ in 0..4 {
-            let direct = dir.join("vietflow_tip.dll");
-            if direct.is_file() {
-                return Some(direct);
-            }
-            let target_rel = dir.join("target").join("release").join("vietflow_tip.dll");
-            if target_rel.is_file() {
-                return Some(target_rel);
-            }
-            let dist_rel = dir.join("dist").join("vietflow_tip.dll");
-            if dist_rel.is_file() {
-                return Some(dist_rel);
+            for name in &dll_names {
+                let direct = dir.join(name);
+                if direct.is_file() {
+                    return Some(direct);
+                }
+                let target_rel = dir.join("target").join("release").join(name);
+                if target_rel.is_file() {
+                    return Some(target_rel);
+                }
+                let dist_rel = dir.join("dist").join(name);
+                if dist_rel.is_file() {
+                    return Some(dist_rel);
+                }
             }
             if !dir.pop() {
                 break;
@@ -269,41 +277,82 @@ pub fn tsf_dll_path() -> Option<PathBuf> {
     None
 }
 
-/// Returns true if `vietflow_tip.dll` is present on the system.
+/// Returns true if `vietflow_tsf.dll` (or `vietflow_tip.dll`) is present on the system.
 /// If false, any TSF IME options must be completely hidden from user.
 pub fn is_tsf_dll_present() -> bool {
     tsf_dll_path().is_some()
 }
 
-/// Checks whether the VietFlow TIP COM CLSID and LanguageProfile are registered in HKLM CTF.
+/// Checks whether the VietFlow TIP COM CLSID and LanguageProfile are genuinely registered.
+/// Validates both the COM InprocServer32 registration and HKLM CTF profile, and checks
+/// HKCU to ensure the profile is not disabled (Enable == 0).
 pub fn is_tsf_registered() -> bool {
     unsafe {
-        let subkey = to_wide("SOFTWARE\\Microsoft\\CTF\\TIP\\{7C2B5E10-9A31-4B8F-B623-192E48270101}\\LanguageProfile\\0x00000409\0");
+        // 1. Verify COM InprocServer32 exists. Without COM registration, Windows cannot load the TIP.
+        let clsid_subkey = to_wide(&format!("SOFTWARE\\Classes\\CLSID\\{CLSID_STR}\\InprocServer32\0"));
         let mut hkey: HKEY = std::ptr::null_mut();
-        let res = RegOpenKeyExW(
-            HKEY_LOCAL_MACHINE,
-            subkey.as_ptr(),
-            0,
-            KEY_READ,
-            &mut hkey,
-        );
-        if res == 0 {
+        let mut com_registered = RegOpenKeyExW(HKEY_LOCAL_MACHINE, clsid_subkey.as_ptr(), 0, KEY_READ, &mut hkey) == 0;
+        if com_registered {
             RegCloseKey(hkey);
-            true
         } else {
-            false
+            let clsid_hkcr = to_wide(&format!("CLSID\\{CLSID_STR}\\InprocServer32\0"));
+            if RegOpenKeyExW(HKEY_CLASSES_ROOT, clsid_hkcr.as_ptr(), 0, KEY_READ, &mut hkey) == 0 {
+                com_registered = true;
+                RegCloseKey(hkey);
+            }
         }
+        if !com_registered {
+            return false;
+        }
+
+        // 2. Verify CTF TIP LanguageProfile exists in HKLM or HKCU
+        let tip_subkey_hklm = to_wide(&format!("SOFTWARE\\Microsoft\\CTF\\TIP\\{CLSID_STR}\\LanguageProfile\\0x00000409\\{PROFILE_STR}\0"));
+        let mut hkey_tip: HKEY = std::ptr::null_mut();
+        let hklm_profile_ok = RegOpenKeyExW(HKEY_LOCAL_MACHINE, tip_subkey_hklm.as_ptr(), 0, KEY_READ, &mut hkey_tip) == 0;
+        if hklm_profile_ok {
+            RegCloseKey(hkey_tip);
+        }
+
+        let tip_subkey_hkcu = to_wide(&format!("Software\\Microsoft\\CTF\\TIP\\{CLSID_STR}\\LanguageProfile\\0x00000409\\{PROFILE_STR}\0"));
+        let mut hkey_hkcu_prof: HKEY = std::ptr::null_mut();
+        let hkcu_profile_ok = RegOpenKeyExW(HKEY_CURRENT_USER, tip_subkey_hkcu.as_ptr(), 0, KEY_READ, &mut hkey_hkcu_prof) == 0;
+        if hkcu_profile_ok {
+            RegCloseKey(hkey_hkcu_prof);
+        }
+
+        if !hklm_profile_ok && !hkcu_profile_ok {
+            return false;
+        }
+
+        // 3. If present in HKCU, make sure Enable != 0
+        let hkcu_subkey = to_wide(&format!("Software\\Microsoft\\CTF\\TIP\\{CLSID_STR}\\LanguageProfile\\0x00000409\\{PROFILE_STR}\0"));
+        let mut hkey_hkcu: HKEY = std::ptr::null_mut();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, hkcu_subkey.as_ptr(), 0, KEY_READ, &mut hkey_hkcu) == 0 {
+            let mut enable_val: u32 = 0;
+            let mut val_type: u32 = 0;
+            let mut val_size: u32 = std::mem::size_of::<u32>() as u32;
+            let enable_name = to_wide("Enable\0");
+            let query_res = windows_sys::Win32::System::Registry::RegQueryValueExW(
+                hkey_hkcu,
+                enable_name.as_ptr(),
+                std::ptr::null_mut(),
+                &mut val_type,
+                &mut enable_val as *mut u32 as *mut u8,
+                &mut val_size,
+            );
+            RegCloseKey(hkey_hkcu);
+            if query_res == 0 && enable_val == 0 {
+                return false;
+            }
+        }
+
+        true
     }
 }
 
-/// Activates or deactivates the VietFlow TSF profile in the system.
-/// Dynamic invocation of SetDefaultLayoutOrTip at runtime causes Explorer to synchronously
-/// tear down and reload all input stacks across all threads, leading to shell hang and crash.
-/// TSF active state and options are synchronized cleanly across processes via shared memory (sync_tsf_config).
-pub fn set_tsf_profile_active(_active: bool) {
-    // Intentionally omitted at runtime to prevent explorer.exe reload and shell hangs.
-}
-
+/// Note: SetDefaultLayoutOrTip is deliberately not called at runtime. It makes
+/// Explorer synchronously tear down and reload every input stack, which hangs
+/// the shell. Runtime state reaches the TIP through shared memory instead.
 pub fn call_set_default_layout_or_tip(layout_str: &str) -> bool {
     unsafe {
         let input_mod = LoadLibraryW(to_wide("input.dll\0").as_ptr());
@@ -403,9 +452,27 @@ fn run_elevated_wait(file: &str, params: &str) -> Result<(), String> {
     }
 }
 
+unsafe fn delete_hkcu_tree(subkey: &str) {
+    let wide = to_wide(&format!("{subkey}\0"));
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn RegDeleteTreeW(hKey: HKEY, lpSubKey: *const u16) -> i32;
+    }
+    let _ = RegDeleteTreeW(HKEY_CURRENT_USER, wide.as_ptr());
+}
+
 /// Registers the VietFlow TSF in-process COM DLL via regsvr32 with elevation.
 pub fn register_tsf() -> Result<(), String> {
-    let dll = tsf_dll_path().ok_or_else(|| "vietflow_tip.dll không tồn tại.".to_string())?;
+    let dll = tsf_dll_path().ok_or_else(|| "vietflow_tsf.dll không tồn tại.".to_string())?;
+
+    // 0. Remove legacy layouts and purge legacy HKCU entries
+    call_install_layout_or_tip(&format!("0409:{LEGACY_CLSID_STR}{LEGACY_PROFILE_STR}"), true);
+    call_install_layout_or_tip(&format!("042a:{LEGACY_CLSID_STR}{LEGACY_PROFILE_STR}"), true);
+    unsafe {
+        delete_hkcu_tree(&format!("Software\\Microsoft\\CTF\\TIP\\{LEGACY_CLSID_STR}"));
+        delete_hkcu_tree(&format!("Software\\Microsoft\\CTF\\SortOrder\\Language\\00000409\\{LEGACY_CLSID_STR}"));
+        delete_hkcu_tree(&format!("Software\\Classes\\CLSID\\{LEGACY_CLSID_STR}"));
+    }
 
     // 1. Run elevated regsvr32 to register COM server and HKLM CTF TIP entries
     let params = format!("/s \"{}\"", dll.to_string_lossy());
@@ -413,12 +480,11 @@ pub fn register_tsf() -> Result<(), String> {
 
     // 2. Add layout to active user keyboard layout list via input.dll (English US only)
     call_install_layout_or_tip(
-        "0409:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        &format!("0409:{CLSID_STR}{PROFILE_STR}"),
         false,
     );
-    // Explicitly uninstall 042a in case an older build registered it, preventing Windows from pulling in Vietnamese
     call_install_layout_or_tip(
-        "042a:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        &format!("042a:{CLSID_STR}{PROFILE_STR}"),
         true,
     );
 
@@ -429,18 +495,37 @@ pub fn register_tsf() -> Result<(), String> {
 pub fn unregister_tsf() -> Result<(), String> {
     // 1. Remove layout from active user keyboard layout list so Windows immediately deactivates it
     call_install_layout_or_tip(
-        "0409:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        &format!("0409:{CLSID_STR}{PROFILE_STR}"),
         true,
     );
     call_install_layout_or_tip(
-        "042a:{7c2b5e10-9a31-4b8f-b623-192e48270101}{7c2b5e11-9a31-4b8f-b623-192e48270102}",
+        &format!("042a:{CLSID_STR}{PROFILE_STR}"),
+        true,
+    );
+    call_install_layout_or_tip(
+        &format!("0409:{LEGACY_CLSID_STR}{LEGACY_PROFILE_STR}"),
+        true,
+    );
+    call_install_layout_or_tip(
+        &format!("042a:{LEGACY_CLSID_STR}{LEGACY_PROFILE_STR}"),
         true,
     );
 
-    // 2. Run elevated regsvr32 /u to wipe COM and HKLM CTF TIP registrations
-    let dll = tsf_dll_path().ok_or_else(|| "vietflow_tip.dll không tồn tại.".to_string())?;
-    let params = format!("/u /s \"{}\"", dll.to_string_lossy());
-    run_elevated_wait("regsvr32.exe", &params)?;
+    // 2. Wipe HKCU entries directly in current user hive so is_tsf_registered() does not report false positive
+    unsafe {
+        delete_hkcu_tree(&format!("Software\\Microsoft\\CTF\\TIP\\{CLSID_STR}"));
+        delete_hkcu_tree(&format!("Software\\Microsoft\\CTF\\TIP\\{LEGACY_CLSID_STR}"));
+        delete_hkcu_tree(&format!("Software\\Microsoft\\CTF\\SortOrder\\Language\\00000409\\{CLSID_STR}"));
+        delete_hkcu_tree(&format!("Software\\Microsoft\\CTF\\SortOrder\\Language\\00000409\\{LEGACY_CLSID_STR}"));
+        delete_hkcu_tree(&format!("Software\\Classes\\CLSID\\{CLSID_STR}"));
+        delete_hkcu_tree(&format!("Software\\Classes\\CLSID\\{LEGACY_CLSID_STR}"));
+    }
+
+    // 3. Run elevated regsvr32 /u to wipe COM and HKLM CTF TIP registrations
+    if let Some(dll) = tsf_dll_path() {
+        let params = format!("/u /s \"{}\"", dll.to_string_lossy());
+        let _ = run_elevated_wait("regsvr32.exe", &params);
+    }
 
     Ok(())
 }
@@ -450,7 +535,6 @@ pub fn reinstall_tsf() -> Result<(), String> {
     let _ = unregister_tsf();
     std::thread::sleep(std::time::Duration::from_millis(300));
     register_tsf()?;
-    set_tsf_profile_active(true);
     let config = AppConfig::load();
     sync_tsf_config(&config, config.enabled);
     Ok(())
@@ -466,7 +550,7 @@ mod tests {
         let cfg = TsfSharedConfig::default();
         assert_eq!(cfg.enabled, 1);
         assert_eq!(cfg.method, 0);
-        assert_eq!(cfg.consonant_shortcuts, 0);
+        assert_eq!(cfg.auto_switch_by_typing, 1);
         assert_eq!(cfg.enable_macro, 1);
         assert_eq!(cfg.version, 1);
         assert_eq!(cfg.last_active_pid, 0);
@@ -480,6 +564,9 @@ mod tests {
 
     #[test]
     fn test_tsf_registration_lifecycle() {
-        let _ = is_tsf_registered();
+        if is_tsf_registered() {
+            let _ = unregister_tsf();
+        }
+        assert!(!is_tsf_registered());
     }
 }

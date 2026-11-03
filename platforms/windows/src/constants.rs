@@ -37,7 +37,6 @@ pub const IDM_CHECK_UPDATE: usize = 1070;
 pub const IDM_ABOUT: usize = 1071;
 pub const IDM_RESTART_ADMIN: usize = 1072;
 
-pub const IDM_TSF_ENABLE: usize = 1080;
 pub const IDM_TSF_REGISTER: usize = 1081;
 
 // Windows Class Names & IPC Identifiers

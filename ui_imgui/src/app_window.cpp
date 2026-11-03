@@ -205,9 +205,7 @@ int RunAppWindow(const std::string& config_path, bool convert_mode, void (*on_sa
         pos_y = (GetSystemMetrics(SM_CYSCREEN) - init_h) / 2;
     }
 
-    const wchar_t* window_title = convert_mode
-        ? WINDOW_TITLE_CONVERT
-        : WINDOW_TITLE_SETTINGS;
+    const wchar_t* window_title = WINDOW_TITLE_SETTINGS;
 
     HWND hwnd = CreateWindowW(wc.lpszClassName, window_title,
                               WS_OVERLAPPEDWINDOW, pos_x, pos_y, init_w, init_h,
