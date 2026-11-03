@@ -18,7 +18,7 @@ extern "system" {
 
 const ATOMIC_BACKSPACE_LIMIT: usize = 16;
 const ATOMIC_CHAR_LIMIT: usize = 32;
-const MAX_ATOMIC_INPUTS: usize = (ATOMIC_BACKSPACE_LIMIT + 2 + ATOMIC_CHAR_LIMIT + 4) * 2;
+const MAX_ATOMIC_INPUTS: usize = (ATOMIC_BACKSPACE_LIMIT + 2) * 2 + (ATOMIC_CHAR_LIMIT + 4) * 4;
 
 #[inline]
 pub fn create_vk_input(vk: u16, key_up: bool) -> INPUT {
@@ -43,13 +43,13 @@ fn create_vk_input_scanned(vk: u16, scan: u16, key_up: bool) -> INPUT {
 }
 
 #[inline]
-pub fn create_unicode_input(c: char, key_up: bool) -> INPUT {
+pub fn create_utf16_input(code_unit: u16, key_up: bool) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: 0,
-                wScan: c as u16,
+                wScan: code_unit,
                 dwFlags: KEYEVENTF_UNICODE | (if key_up { KEYEVENTF_KEYUP } else { 0 }),
                 time: 0,
                 dwExtraInfo: VIETFLOW_MAGIC,
@@ -58,34 +58,49 @@ pub fn create_unicode_input(c: char, key_up: bool) -> INPUT {
     }
 }
 
+#[allow(dead_code)]
+#[inline]
+pub fn create_unicode_input(c: char, key_up: bool) -> INPUT {
+    let mut buf = [0u16; 2];
+    let encoded = c.encode_utf16(&mut buf);
+    create_utf16_input(encoded[0], key_up)
+}
+
 /// Sends backspaces and replacement Unicode characters to the active window.
 /// Normal keystroke adjustments (<= 8 backspaces, <= 32 chars) are sent in ONE
 /// atomic SendInput call so the caret never visibly jumps or flickers.
 /// Large macro restorations pace backspaces with a tiny delay to prevent apps from dropping them.
 /// Select the output strategy before every batch. 0/Auto and 1/Unicode use the
 /// normal atomic Unicode path; 0/Auto retries paced Unicode if the atomic batch
-/// is rejected. Legacy mode 3 (removed Clipboard) also maps to Safe so old
-/// configs cannot bring clipboard injection back.
+/// was completely rejected (0 events inserted).
 pub fn send_atomic_batch_with_mode(backspaces: usize, text: &str, mode: u8) {
     match mode {
         2 => send_scancode_batch(backspaces, text),
         3 | 4 => send_safe_batch(backspaces, text),
         1 => {
-            send_unicode_batch(backspaces, text);
+            let _ = send_unicode_batch_status(backspaces, text);
         }
         _ => {
-            // Auto: Unicode first; if Windows rejects the atomic batch, retry
-            // paced Unicode. Never switch to the clipboard automatically.
-            if !send_unicode_batch(backspaces, text) {
+            // Auto: Unicode first; if Windows rejected the batch completely (0 events),
+            // fall back to paced safe batch. Never blindly retry if partial insertion occurred.
+            let (success, total_inserted) = send_unicode_batch_status(backspaces, text);
+            if !success && total_inserted == 0 {
                 send_safe_batch(backspaces, text);
             }
         }
     }
 }
 
-fn send_unicode_batch(backspaces: usize, text: &str) -> bool {
+#[allow(dead_code)]
+pub fn send_unicode_batch(backspaces: usize, text: &str) -> bool {
+    let (success, _) = send_unicode_batch_status(backspaces, text);
+    success
+}
+
+/// Dispatches unicode batch returning (all_inserted, total_events_inserted)
+fn send_unicode_batch_status(backspaces: usize, text: &str) -> (bool, u32) {
     if backspaces == 0 && text.is_empty() {
-        return true;
+        return (true, 0);
     }
 
     let char_count = text.chars().count();
@@ -103,18 +118,22 @@ fn send_unicode_batch(backspaces: usize, text: &str) -> bool {
             count += 2;
         }
 
+        let mut utf16_buf = [0u16; 2];
         for c in text.chars() {
-            inputs[count] = create_unicode_input(c, false);
-            inputs[count + 1] = create_unicode_input(c, true);
-            count += 2;
+            for unit in c.encode_utf16(&mut utf16_buf).iter().copied() {
+                inputs[count] = create_utf16_input(unit, false);
+                inputs[count + 1] = create_utf16_input(unit, true);
+                count += 2;
+            }
         }
 
         let inserted =
             unsafe { SendInput(count as u32, inputs.as_ptr(), size_of::<INPUT>() as i32) };
-        return inserted == count as u32;
+        return (inserted == count as u32, inserted);
     }
 
     // Large restorations or macro expansions
+    let mut total_inserted = 0u32;
     let mut ok = true;
     if backspaces > 0 {
         let mut back_inputs = Vec::with_capacity(backspaces * 2);
@@ -129,15 +148,19 @@ fn send_unicode_batch(backspaces: usize, text: &str) -> bool {
                 size_of::<INPUT>() as i32,
             )
         };
+        total_inserted += inserted;
         ok &= inserted == back_inputs.len() as u32;
         sleep(Duration::from_millis(3));
     }
 
     if !text.is_empty() {
-        let mut char_inputs = Vec::with_capacity(char_count * 2);
+        let mut char_inputs = Vec::with_capacity(char_count * 4);
+        let mut utf16_buf = [0u16; 2];
         for c in text.chars() {
-            char_inputs.push(create_unicode_input(c, false));
-            char_inputs.push(create_unicode_input(c, true));
+            for unit in c.encode_utf16(&mut utf16_buf).iter().copied() {
+                char_inputs.push(create_utf16_input(unit, false));
+                char_inputs.push(create_utf16_input(unit, true));
+            }
         }
         let inserted = unsafe {
             SendInput(
@@ -146,9 +169,10 @@ fn send_unicode_batch(backspaces: usize, text: &str) -> bool {
                 size_of::<INPUT>() as i32,
             )
         };
+        total_inserted += inserted;
         ok &= inserted == char_inputs.len() as u32;
     }
-    ok
+    (ok, total_inserted)
 }
 
 /// Scan-code mode for DirectInput-style windows. ASCII characters use the
@@ -165,6 +189,7 @@ fn send_scancode_batch(backspaces: usize, text: &str) {
         inputs.push(create_vk_input(VK_BACK, true));
     }
 
+    let mut utf16_buf = [0u16; 2];
     for c in text.chars() {
         if c.is_ascii() {
             let mapped = unsafe { VkKeyScanW(c as u16) };
@@ -182,8 +207,10 @@ fn send_scancode_batch(backspaces: usize, text: &str) {
                 continue;
             }
         }
-        inputs.push(create_unicode_input(c, false));
-        inputs.push(create_unicode_input(c, true));
+        for unit in c.encode_utf16(&mut utf16_buf).iter().copied() {
+            inputs.push(create_utf16_input(unit, false));
+            inputs.push(create_utf16_input(unit, true));
+        }
     }
 
     if !inputs.is_empty() {
@@ -216,14 +243,42 @@ fn send_safe_batch(backspaces: usize, text: &str) {
         sleep(Duration::from_millis(4));
     }
 
+    let mut utf16_buf = [0u16; 2];
     for c in text.chars() {
-        let one = [
-            create_unicode_input(c, false),
-            create_unicode_input(c, true),
-        ];
-        unsafe {
-            SendInput(2, one.as_ptr(), size_of::<INPUT>() as i32);
+        for unit in c.encode_utf16(&mut utf16_buf).iter().copied() {
+            let one = [
+                create_utf16_input(unit, false),
+                create_utf16_input(unit, true),
+            ];
+            unsafe {
+                SendInput(2, one.as_ptr(), size_of::<INPUT>() as i32);
+            }
         }
         sleep(Duration::from_millis(1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_utf16_input_surrogate_pairs() {
+        let crab = '🦀'; // U+1F980 => 0xD83E, 0xDD80
+        let mut buf = [0u16; 2];
+        let units = crab.encode_utf16(&mut buf);
+        assert_eq!(units.len(), 2);
+        assert_eq!(units[0], 0xD83E);
+        assert_eq!(units[1], 0xDD80);
+
+        let input_high = create_utf16_input(units[0], false);
+        let input_low = create_utf16_input(units[1], false);
+
+        unsafe {
+            assert_eq!(input_high.Anonymous.ki.wScan, 0xD83E);
+            assert_eq!(input_high.Anonymous.ki.dwFlags, KEYEVENTF_UNICODE);
+            assert_eq!(input_low.Anonymous.ki.wScan, 0xDD80);
+            assert_eq!(input_low.Anonymous.ki.dwFlags, KEYEVENTF_UNICODE);
+        }
     }
 }

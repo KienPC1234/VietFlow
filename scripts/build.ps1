@@ -30,6 +30,22 @@ New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+function Get-PeArchitecture([string]$filePath) {
+    if (-not (Test-Path $filePath)) { return $null }
+    $bytes = [System.IO.File]::ReadAllBytes($filePath)
+    if ($bytes.Length -lt 64) { return $null }
+    if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { return $null }
+    $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3C)
+    if ($bytes.Length -lt ($peOffset + 6)) { return $null }
+    $machine = [System.BitConverter]::ToUInt16($bytes, $peOffset + 4)
+    switch ($machine) {
+        0x014C { return "x86" }
+        0x8664 { return "x64" }
+        0xAA64 { return "arm64" }
+        default { return "unknown" }
+    }
+}
+
 function Write-Utf8NoBom([string]$Path, [string]$Content) {
     $encoding = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $Content, $encoding)
@@ -171,19 +187,52 @@ $cargoManifest = Join-Path $root "Cargo.toml"
 foreach ($a in $archs) {
     if ($a -eq 'x86') {
         Write-Host "  Compiling x86 (i686-pc-windows-msvc)..." -ForegroundColor DarkGray
+        & cargo build --manifest-path $cargoManifest --release --target i686-pc-windows-msvc -p vietflow-core
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "x86 core release build failed!"
+            exit $LASTEXITCODE
+        }
         & cargo build --manifest-path $cargoManifest --release --target i686-pc-windows-msvc -p vietflow-windows
         if ($LASTEXITCODE -ne 0) {
             Write-Error "x86 release build failed!"
+            exit $LASTEXITCODE
+        }
+        Write-Host "  Compiling x86 C++ TSF DLL..." -ForegroundColor DarkGray
+        $tsfDir = Join-Path $root "platforms/windows_tsf"
+        $tsfBuildDir = Join-Path $tsfDir "build-x86"
+        & cmake -B $tsfBuildDir -S $tsfDir -A Win32 -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=$staticCrtValue
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "x86 TSF CMake configure failed!"
+            exit $LASTEXITCODE
+        }
+        & cmake --build $tsfBuildDir --config Release
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "x86 TSF CMake build failed!"
             exit $LASTEXITCODE
         }
         $src = Join-Path $root "target\i686-pc-windows-msvc\release\VietFlow.exe"
         $distName = "VietFlow-x86.exe"
     } elseif ($a -eq 'arm64') {
         Write-Host "  Compiling ARM64 (aarch64-pc-windows-msvc)..." -ForegroundColor DarkGray
+        & cargo build --manifest-path $cargoManifest --release --target aarch64-pc-windows-msvc -p vietflow-core
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "ARM64 core release build failed!"
+            exit $LASTEXITCODE
+        }
         & cargo build --manifest-path $cargoManifest --release --target aarch64-pc-windows-msvc -p vietflow-windows
         if ($LASTEXITCODE -ne 0) {
             Write-Error "ARM64 release build failed!"
             exit $LASTEXITCODE
+        }
+        $tsfDir = Join-Path $root "platforms/windows_tsf"
+        $tsfBuildDir = Join-Path $tsfDir "build-arm64"
+        try {
+            & cmake -B $tsfBuildDir -S $tsfDir -A ARM64 -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=$staticCrtValue
+            if ($LASTEXITCODE -eq 0) {
+                & cmake --build $tsfBuildDir --config Release
+            }
+        } catch {
+            Write-Warning "ARM64 TSF compilation skipped (cross-compilation toolchain not installed)."
         }
         $src = Join-Path $root "target\aarch64-pc-windows-msvc\release\VietFlow.exe"
         $distName = "VietFlow-arm64.exe"
@@ -245,7 +294,21 @@ foreach ($a in $archs) {
             Get-ChildItem -Path $DistDir -Filter "vietflow_tsf.dll.*.old" -File -ErrorAction SilentlyContinue | ForEach-Object {
                 Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
             }
-            Write-Host "      TSF: $($tsfDll) -> $($destTsf)" -ForegroundColor Green
+            Write-Host "      TSF (x64): $($tsfDll) -> $($destTsf)" -ForegroundColor Green
+        }
+    } elseif ($a -eq 'x86') {
+        $tsfDll86 = Join-Path $root "platforms\windows_tsf\build-x86\Release\vietflow_tsf.dll"
+        if (Test-Path $tsfDll86) {
+            $destTsf86 = Join-Path $DistDir "vietflow_tsf_x86.dll"
+            Copy-Item $tsfDll86 $destTsf86 -Force
+            Write-Host "      TSF (x86): $($tsfDll86) -> $($destTsf86)" -ForegroundColor Green
+        }
+    } elseif ($a -eq 'arm64') {
+        $tsfDllArm = Join-Path $root "platforms\windows_tsf\build-arm64\Release\vietflow_tsf.dll"
+        if (Test-Path $tsfDllArm) {
+            $destTsfArm = Join-Path $DistDir "vietflow_tsf_arm64.dll"
+            Copy-Item $tsfDllArm $destTsfArm -Force
+            Write-Host "      TSF (ARM64): $($tsfDllArm) -> $($destTsfArm)" -ForegroundColor Green
         }
     }
 }
@@ -350,17 +413,36 @@ if ($Msi) {
         }
 
         # Architecture-specific TSF DLL
-        $tsfDll = switch ($a) {
-            'x86' { Join-Path $root "platforms\windows_tsf\build-x86\Release\vietflow_tsf.dll" }
-            'arm64' { Join-Path $root "platforms\windows_tsf\build-arm64\Release\vietflow_tsf.dll" }
-            default { Join-Path $DistDir "vietflow_tsf.dll" }
+        $tsfCandidates = switch ($a) {
+            'x86' { 
+                @(
+                    (Join-Path $root "platforms\windows_tsf\build-x86\Release\vietflow_tsf.dll"),
+                    (Join-Path $DistDir "vietflow_tsf_x86.dll")
+                )
+            }
+            'arm64' { 
+                @(
+                    (Join-Path $root "platforms\windows_tsf\build-arm64\Release\vietflow_tsf.dll"),
+                    (Join-Path $DistDir "vietflow_tsf_arm64.dll")
+                )
+            }
+            default {
+                @(
+                    (Join-Path $root "platforms\windows_tsf\build\Release\vietflow_tsf.dll"),
+                    (Join-Path $DistDir "vietflow_tsf.dll"),
+                    (Join-Path $DistDir "vietflow_tsf_x64.dll")
+                )
+            }
         }
-        if (-not (Test-Path $tsfDll)) {
-            $tsfDll = Join-Path $DistDir "vietflow_tsf.dll"
+        $tsfDll = $tsfCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (-not $tsfDll) {
+            throw "Architecture-matched TSF DLL for $a was not found in: $($tsfCandidates -join ', '). Packaging aborted to prevent shipping mismatched binary."
         }
-        if (Test-Path $tsfDll) {
-            Copy-Item $tsfDll (Join-Path $tmpDir "vietflow_tsf.dll") -Force
+        $tsfPe = Get-PeArchitecture $tsfDll
+        if ($tsfPe -and $tsfPe -ne $a) {
+            throw "TSF DLL architecture mismatch for portable zip: expected $a, but $tsfDll is $tsfPe"
         }
+        Copy-Item $tsfDll (Join-Path $tmpDir "vietflow_tsf.dll") -Force
 
         $icon = Join-Path $root "assets\VietFlow.ico"
         if (Test-Path $icon) { Copy-Item $icon $tmpDir -Force }

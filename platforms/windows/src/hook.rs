@@ -215,6 +215,7 @@ pub struct HookState {
     pub win_event_hook: HWINEVENTHOOK,
     pub tsf_registered: bool,
     pub held_vk: Option<u16>,
+    pub foreground_pid: u32,
 }
 
 unsafe impl Send for HookState {}
@@ -518,6 +519,10 @@ pub unsafe fn check_foreground_change(foreground: HWND) {
     }
     let shell = is_shell_window(foreground);
 
+    let mut current_pid = 0u32;
+    GetWindowThreadProcessId(foreground, &mut current_pid);
+    state.foreground_pid = current_pid;
+
     state.last_foreground = foreground;
     state.engine.reset();
     state.macro_buffer.clear();
@@ -713,6 +718,11 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
     // the setting while it was not running.
     set_start_with_windows(config.start_with_windows);
 
+    let mut initial_pid = 0u32;
+    if !initial_foreground.is_null() {
+        GetWindowThreadProcessId(initial_foreground, &mut initial_pid);
+    }
+
     let mut lock = STATE.lock().unwrap();
     *lock = Some(HookState {
         engine,
@@ -744,6 +754,7 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         win_event_hook,
         tsf_registered: crate::tsf::is_tsf_mode_active(),
         held_vk: None,
+        foreground_pid: initial_pid,
     });
     drop(lock);
 }
@@ -1106,9 +1117,12 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
-    // When TSF is registered and active in Vietnamese mode, the in-process TSF TIP handles
-    // text composition. Yield typing keystrokes so the low-level hook never races with TSF.
-    if state.tsf_registered {
+    // If the foreground application is actively handled by the in-process TSF TIP,
+    // yield typing keystrokes so the low-level hook never races with TSF.
+    // If the application is NOT handled by TSF (e.g. console, games, non-TSF apps),
+    // let the hook handle it seamlessly as fallback.
+    let foreground_pid = state.foreground_pid;
+    if state.tsf_registered && crate::tsf::is_tsf_active_for_pid(foreground_pid) {
         state.engine.reset();
         state.macro_buffer.clear();
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
@@ -1497,6 +1511,7 @@ mod tests {
             win_event_hook: std::ptr::null_mut(),
             tsf_registered: false,
             held_vk: None,
+            foreground_pid: 0,
         }
     }
 

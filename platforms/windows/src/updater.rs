@@ -28,7 +28,9 @@ const VERSION_ASSET_URL: &str =
 const API_URL: &str = "https://api.github.com/repos/KienPC1234/VietFlow/releases/latest";
 
 const MAX_BODY_BYTES: usize = 64 * 1024;
+const MIN_MSI_BYTES: usize = 500 * 1024; // At least 500 KB for a valid VietFlow MSI
 const MAX_MSI_BYTES: usize = 50 * 1024 * 1024; // 50 MB
+const MSI_MAGIC_HEADER: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
 const NOTES_LIMIT: usize = 900;
 const TIMEOUT_MS: u32 = 8_000;
 const DOWNLOAD_TIMEOUT_MS: u32 = 30_000;
@@ -286,74 +288,128 @@ fn fetch_url(url: &str) -> Result<String, FetchError> {
     }
 }
 
+pub fn is_trusted_download_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    if !lower.starts_with("https://") {
+        return false;
+    }
+    lower.starts_with("https://github.com/kienpc1234/vietflow/")
+        || lower.starts_with("https://objects.githubusercontent.com/")
+        || lower.starts_with("https://github-releases.githubusercontent.com/")
+        || lower.starts_with("https://raw.githubusercontent.com/kienpc1234/vietflow/")
+}
+
 /// Download a file (e.g. MSI installer) directly to disk using streaming buffer.
+/// Implements HTTPS origin verification, fail-closed read checks, minimum size verification,
+/// OLE2 compound document magic header validation, and atomic staging.
 fn download_file(url: &str, destination: &std::path::Path) -> Result<(), FetchError> {
-    use std::io::Write;
-    unsafe {
-        let agent = to_wide("VietFlow-Updater/1");
-        let session = InternetHandle(InternetOpenW(
-            agent.as_ptr(),
-            INTERNET_OPEN_TYPE_DIRECT,
-            std::ptr::null(),
-            std::ptr::null(),
-            0,
+    use std::io::{Read, Write};
+
+    if !is_trusted_download_url(url) {
+        return Err(FetchError::new(
+            "Đường dẫn tải tệp không thuộc nguồn tin cậy (chỉ chấp nhận HTTPS GitHub chính thức)",
         ));
-        if session.0.is_null() {
-            return Err(FetchError::new("Không thể khởi tạo kết nối WinINet"));
-        }
-        set_timeout_ms(session.0, INTERNET_OPTION_CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
-        set_timeout_ms(session.0, INTERNET_OPTION_SEND_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
-        set_timeout_ms(session.0, INTERNET_OPTION_RECEIVE_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
+    }
 
-        let wide_url = to_wide(url);
-        let headers = to_wide("User-Agent: VietFlow\r\nAccept: application/octet-stream, */*\r\n");
-        let request = InternetHandle(InternetOpenUrlW(
-            session.0,
-            wide_url.as_ptr(),
-            headers.as_ptr(),
-            headers.len() as u32 - 1,
-            FETCH_FLAGS,
-            0,
-        ));
-        if request.0.is_null() {
-            return Err(FetchError::new("Không thể mở đường dẫn tải tệp"));
-        }
-        set_timeout_ms(request.0, INTERNET_OPTION_SEND_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
-        set_timeout_ms(request.0, INTERNET_OPTION_RECEIVE_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
+    let temp_dest = destination.with_extension("tmp");
+    let _ = std::fs::remove_file(&temp_dest);
 
-        if let Some(status) = query_http_status(request.0) {
-            if status != 200 {
-                return Err(FetchError::http(status));
+    let download_result = (|| -> Result<(), FetchError> {
+        unsafe {
+            let agent = to_wide("VietFlow-Updater/1");
+            let session = InternetHandle(InternetOpenW(
+                agent.as_ptr(),
+                INTERNET_OPEN_TYPE_DIRECT,
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+            ));
+            if session.0.is_null() {
+                return Err(FetchError::new("Không thể khởi tạo kết nối WinINet"));
             }
-        }
+            set_timeout_ms(session.0, INTERNET_OPTION_CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
+            set_timeout_ms(session.0, INTERNET_OPTION_SEND_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
+            set_timeout_ms(session.0, INTERNET_OPTION_RECEIVE_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
 
-        let mut file = std::fs::File::create(destination)
-            .map_err(|e| FetchError::new(format!("Không thể tạo tệp tạm: {e}")))?;
+            let wide_url = to_wide(url);
+            let headers = to_wide("User-Agent: VietFlow\r\nAccept: application/octet-stream, */*\r\n");
+            let request = InternetHandle(InternetOpenUrlW(
+                session.0,
+                wide_url.as_ptr(),
+                headers.as_ptr(),
+                headers.len() as u32 - 1,
+                FETCH_FLAGS,
+                0,
+            ));
+            if request.0.is_null() {
+                return Err(FetchError::new("Không thể mở đường dẫn tải tệp"));
+            }
+            set_timeout_ms(request.0, INTERNET_OPTION_SEND_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
+            set_timeout_ms(request.0, INTERNET_OPTION_RECEIVE_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
 
-        let mut buffer = [0u8; 64 * 1024];
-        let mut total_bytes: usize = 0;
-        loop {
-            let mut read = 0u32;
-            let ok = InternetReadFile(
-                request.0,
-                buffer.as_mut_ptr(),
-                buffer.len() as u32,
-                &mut read,
-            );
-            if ok == 0 || read == 0 {
-                break;
+            if let Some(status) = query_http_status(request.0) {
+                if status != 200 {
+                    return Err(FetchError::http(status));
+                }
             }
-            total_bytes += read as usize;
-            if total_bytes > MAX_MSI_BYTES {
-                let _ = std::fs::remove_file(destination);
-                return Err(FetchError::new("Tệp tải về vượt quá giới hạn cho phép"));
+
+            let mut file = std::fs::File::create(&temp_dest)
+                .map_err(|e| FetchError::new(format!("Không thể tạo tệp tạm: {e}")))?;
+
+            let mut buffer = [0u8; 64 * 1024];
+            let mut total_bytes: usize = 0;
+            loop {
+                let mut read = 0u32;
+                let ok = InternetReadFile(
+                    request.0,
+                    buffer.as_mut_ptr(),
+                    buffer.len() as u32,
+                    &mut read,
+                );
+                if ok == 0 {
+                    let err = windows_sys::Win32::Foundation::GetLastError();
+                    return Err(FetchError::new(format!("Lỗi mạng khi tải tệp (mã lỗi {err})")));
+                }
+                if read == 0 {
+                    break;
+                }
+                total_bytes += read as usize;
+                if total_bytes > MAX_MSI_BYTES {
+                    return Err(FetchError::new("Tệp tải về vượt quá giới hạn cho phép"));
+                }
+                file.write_all(&buffer[..read as usize])
+                    .map_err(|e| FetchError::new(format!("Lỗi ghi tệp cài đặt: {e}")))?;
             }
-            file.write_all(&buffer[..read as usize])
+            file.flush()
                 .map_err(|e| FetchError::new(format!("Lỗi ghi tệp cài đặt: {e}")))?;
+
+            if total_bytes < MIN_MSI_BYTES {
+                return Err(FetchError::new("Tệp tải về bị cắt ngắn hoặc dung lượng không hợp lệ"));
+            }
+
+            // Verify OLE2 / MSI Compound File magic header
+            drop(file);
+            let mut header = [0u8; 8];
+            let mut f = std::fs::File::open(&temp_dest)
+                .map_err(|e| FetchError::new(format!("Không thể đọc lại tệp cài đặt: {e}")))?;
+            if f.read_exact(&mut header).is_err() || header != MSI_MAGIC_HEADER {
+                return Err(FetchError::new("Tệp tải về không phải định dạng MSI hợp lệ"));
+            }
+
+            Ok(())
         }
-        file.flush()
-            .map_err(|e| FetchError::new(format!("Lỗi ghi tệp cài đặt: {e}")))?;
-        Ok(())
+    })();
+
+    match download_result {
+        Ok(()) => {
+            std::fs::rename(&temp_dest, destination)
+                .map_err(|e| FetchError::new(format!("Không thể hoàn tất cập nhật tệp: {e}")))
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp_dest);
+            let _ = std::fs::remove_file(destination);
+            Err(e)
+        }
     }
 }
 
@@ -593,7 +649,7 @@ fn prompt_update(info: &ReleaseInfo) {
                 match download_file(download_url, &temp_msi) {
                     Ok(()) => {
                         let wide_path = to_wide(&temp_msi.to_string_lossy());
-                        unsafe {
+                        let res = unsafe {
                             windows_sys::Win32::UI::Shell::ShellExecuteW(
                                 0 as _,
                                 to_wide("open").as_ptr(),
@@ -601,9 +657,21 @@ fn prompt_update(info: &ReleaseInfo) {
                                 std::ptr::null(),
                                 std::ptr::null(),
                                 1, // SW_SHOWNORMAL
+                            )
+                        };
+                        let err_code = res as usize;
+                        if err_code <= 32 {
+                            let err_msg = format!(
+                                "Không thể tự động khởi chạy bộ cài đặt MSI (mã lỗi {err_code}).\nBạn có muốn mở thư mục chứa tệp để cài đặt thủ công không?"
                             );
+                            if show_msg(&err_msg, "Lỗi cài đặt VietFlow", MB_YESNO | MB_ICONWARNING) == IDYES {
+                                if let Some(parent) = temp_msi.parent() {
+                                    open_browser(&parent.to_string_lossy());
+                                }
+                            }
+                        } else {
+                            std::process::exit(0);
                         }
-                        std::process::exit(0);
                     }
                     Err(err) => {
                         let err_msg = format!(
@@ -801,12 +869,12 @@ mod tests {
         if path.is_file() {
             let content = std::fs::read_to_string(&path).expect("read latest.json");
             let msi_x64 = parse_manifest_for_arch(&content, true, "x64").unwrap();
-            assert_eq!(msi_x64.version, "0.1.3");
+            assert!(!msi_x64.version.is_empty());
             assert!(msi_x64.download.as_deref().unwrap().contains("VietFlow-win-x64.msi"));
             assert!(!msi_x64.notes.is_empty());
 
             let port_x64 = parse_manifest_for_arch(&content, false, "x64").unwrap();
-            assert_eq!(port_x64.version, "0.1.3");
+            assert_eq!(port_x64.version, msi_x64.version);
             assert_eq!(port_x64.download, None);
             assert!(!port_x64.notes.is_empty());
         }
@@ -817,7 +885,6 @@ mod tests {
     fn live_release_manifest() {
         let info = fetch_release_info().expect("live release manifest");
         assert!(!info.version.is_empty());
-        assert_eq!(info.version, "0.1.3");
         if is_installed_via_msi() {
             let expected = if cfg!(target_arch = "x86") {
                 "win-x86"
@@ -831,5 +898,18 @@ mod tests {
         } else {
             assert!(info.url.contains("releases"));
         }
+    }
+
+    #[test]
+    fn test_trusted_download_url_validation() {
+        assert!(is_trusted_download_url("https://github.com/KienPC1234/VietFlow/releases/download/v0.1.4/VietFlow-win-x64.msi"));
+        assert!(is_trusted_download_url("https://objects.githubusercontent.com/github-production-release-asset-2e65be/12345/VietFlow.msi"));
+        assert!(is_trusted_download_url("https://github-releases.githubusercontent.com/12345/VietFlow.msi"));
+
+        // Reject non-https, untrusted hosts, or fake domains
+        assert!(!is_trusted_download_url("http://github.com/KienPC1234/VietFlow/releases/download/v0.1.4/VietFlow.msi"));
+        assert!(!is_trusted_download_url("https://evil.com/VietFlow.msi"));
+        assert!(!is_trusted_download_url("https://github.com.evil.com/VietFlow.msi"));
+        assert!(!is_trusted_download_url("https://github.com/OtherUser/VietFlow/releases/download/v0.1.4/VietFlow.msi"));
     }
 }

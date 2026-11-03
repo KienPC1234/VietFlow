@@ -1,5 +1,5 @@
 param(
-    [string]$Tag = "v0.1.3",
+    [string]$Tag = "",
     [string]$ReleasesDir = ""
 )
 
@@ -7,6 +7,15 @@ $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 if ([string]::IsNullOrWhiteSpace($ReleasesDir)) {
     $ReleasesDir = Join-Path $root "releases"
+}
+
+if ([string]::IsNullOrWhiteSpace($Tag)) {
+    $versionFile = Join-Path $root "VERSION"
+    if (Test-Path $versionFile) {
+        $Tag = "v" + (Get-Content $versionFile -Raw).Trim()
+    } else {
+        $Tag = "v0.1.4"
+    }
 }
 
 # 1. Get token from Git Credential Manager

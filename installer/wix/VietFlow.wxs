@@ -103,13 +103,6 @@
           <File Id="MsiMarkerFile" Source="$(var.SourceDir)\assets\.installed" KeyPath="yes" />
         </Component>
 
-        <Component Id="InstallFolderConfig" Guid="5B8C1E2A-3D4F-4E5A-9B6C-7D8E9F0A1B2C">
-          <CreateFolder>
-            <util:PermissionEx User="Users" GenericAll="yes" />
-          </CreateFolder>
-          <RemoveFile Id="CleanInstallFolderConfig" Name="vietflow_config.json" On="uninstall" />
-          <RemoveFile Id="CleanInstallFolderFiles" Name="*.*" On="uninstall" />
-        </Component>
 
         <Component Id="AssetsComponent" Guid="F49E013A-38E2-46A2-9BF1-92D1D70B5B03">
           <File Id="NotificationSound" Source="$(var.SourceDir)\assets\notification.wav" KeyPath="yes" />
@@ -147,16 +140,13 @@
       </Component>
     </StandardDirectory>
 
-    <!-- Common Shared Directory (%ProgramData%\VietFlow) fallback with full user permissions -->
+    <!-- Common Shared Directory (%ProgramData%\VietFlow) for persistent user config and macros -->
     <StandardDirectory Id="CommonAppDataFolder">
       <Directory Id="CommonAppDataVietFlow" Name="VietFlow">
         <Component Id="CommonAppDataComponent" Guid="A9C8D7E6-F5B4-4321-8765-FEDCBA098765">
           <CreateFolder>
-            <util:PermissionEx User="Users" GenericAll="yes" />
+            <util:PermissionEx User="Users" GenericRead="yes" GenericWrite="yes" />
           </CreateFolder>
-          <RemoveFile Id="CleanCommonAppDataConfig" Name="vietflow_config.json" On="uninstall" />
-          <RemoveFile Id="CleanCommonAppDataFiles" Name="*.*" On="uninstall" />
-          <RemoveFolder Id="RemoveCommonAppDataFolder" On="uninstall" />
         </Component>
       </Directory>
     </StandardDirectory>
@@ -175,7 +165,6 @@
       <ComponentRef Id="MainExecutable" />
       <ComponentRef Id="TsfLibrary" />
       <ComponentRef Id="MsiMarker" />
-      <ComponentRef Id="InstallFolderConfig" />
       <ComponentRef Id="AssetsComponent" />
       <ComponentRef Id="StartMenuShortcutComponent" />
       <ComponentRef Id="DesktopShortcutComponent" />

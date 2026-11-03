@@ -442,11 +442,11 @@ STDMETHODIMP CVietFlowTip::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM 
     bool isComp = IsCompositionKey(vk, shift, cfg.method);
 
     if (m_pComposition != nullptr) {
-        if (vk == VK_TAB) {
-            return S_OK; // Commit composition and pass through for focus navigation
+        if (vk == VK_TAB || vk == VK_RETURN) {
+            return S_OK; // Commit composition and pass through to host (no swallow)
         }
         if (vk == VK_BACK || vk == VK_ESCAPE || vk == VK_SPACE ||
-            vk == VK_RETURN || isComp || VkToChar(vk, shift, caps) != 0) {
+            isComp || VkToChar(vk, shift, caps) != 0) {
             *pfEaten = TRUE;
             VF_LOG(L"OnTestKeyDown: vk=0x%02X (%c), inside comp -> pfEaten=TRUE", vk, (vk >= 32 && vk < 127) ? vk : '?');
             return S_OK;
@@ -548,13 +548,13 @@ STDMETHODIMP CVietFlowTip::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lPar
         return S_OK;
     }
 
-    // 4. Return commits cleanly without break char
+    // 4. Return commits cleanly without break char and passes through to host (*pfEaten = FALSE)
     if (vk == VK_RETURN) {
         if (m_pComposition) {
-            VF_LOG(L"OnKeyDown RETURN");
+            VF_LOG(L"OnKeyDown RETURN (commit and pass-through)");
             FinishCompositionWithBreak(pic, 0);
             m_configReader.UpdateActiveKeystroke(false);
-            *pfEaten = TRUE;
+            *pfEaten = FALSE;
             return S_OK;
         }
         return S_OK;

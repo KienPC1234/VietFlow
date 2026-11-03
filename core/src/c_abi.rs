@@ -142,6 +142,47 @@ pub unsafe extern "C" fn vf_engine_set_auto_restore(engine: *mut c_void, enabled
 }
 
 /// Process a single character.
+/// Copies a UTF-8 string into a destination buffer without splitting multi-byte characters.
+///
+/// # Contract
+/// - If `out_utf8` is null or `max_out_len == 0`: No bytes are written. If `out_len` is non-null,
+///   it receives the full required length (`bytes.len()`) in bytes. Returns `true`.
+/// - If `out_utf8` is non-null and `max_out_len > 0`: Copies up to `max_out_len` bytes, truncating
+///   at the nearest preceding UTF-8 character boundary so that the written prefix is always
+///   valid UTF-8. If `out_len` is non-null, it receives the exact number of bytes written.
+///   Returns `true` if the entire string was written, or `false` if truncated due to small buffer.
+unsafe fn copy_utf8_to_buffer(
+    text: &str,
+    out_utf8: *mut u8,
+    max_out_len: usize,
+    out_len: *mut usize,
+) -> bool {
+    let bytes = text.as_bytes();
+    let full_len = bytes.len();
+
+    if out_utf8.is_null() || max_out_len == 0 {
+        if !out_len.is_null() {
+            *out_len = full_len;
+        }
+        return true;
+    }
+
+    let mut safe_len = full_len.min(max_out_len);
+    while safe_len > 0 && !text.is_char_boundary(safe_len) {
+        safe_len -= 1;
+    }
+
+    if safe_len > 0 {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_utf8, safe_len);
+    }
+
+    if !out_len.is_null() {
+        *out_len = safe_len;
+    }
+
+    safe_len == full_len
+}
+
 /// Output is UTF-8 encoded into `out_utf8`.
 /// Returns true if a key was processed, writes output byte length to `out_len`
 /// and number of backspaces to `out_backspaces`.
@@ -173,21 +214,14 @@ pub unsafe extern "C" fn vf_engine_process_key(
         *out_backspaces = backspaces;
     }
 
-    let bytes = text.as_bytes();
-    let to_write = bytes.len().min(max_out_len);
-
-    if !out_utf8.is_null() && to_write > 0 {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_utf8, to_write);
-    }
-
-    if !out_len.is_null() {
-        *out_len = to_write;
-    }
-
+    copy_utf8_to_buffer(&text, out_utf8, max_out_len, out_len);
     true
 }
 
 /// Returns the current preedit text for in-line IME composition.
+///
+/// # Safety
+/// `engine` must be a valid engine pointer. `out_utf8` and `out_len` must be valid pointers if non-null.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_get_preedit(
     engine: *mut c_void,
@@ -201,19 +235,14 @@ pub unsafe extern "C" fn vf_engine_get_preedit(
     };
 
     let text = engine.current_preedit_text();
-    let bytes = text.as_bytes();
-    let to_write = bytes.len().min(max_out_len);
-
-    if !out_utf8.is_null() && to_write > 0 {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_utf8, to_write);
-    }
-    if !out_len.is_null() {
-        *out_len = to_write;
-    }
+    copy_utf8_to_buffer(&text, out_utf8, max_out_len, out_len);
     true
 }
 
 /// Finalizes composition on a word break delimiter (Space, punctuation, Enter).
+///
+/// # Safety
+/// `engine` must be a valid engine pointer. `out_utf8` and `out_len` must be valid pointers if non-null.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_finish_on_break(
     engine: *mut c_void,
@@ -229,19 +258,14 @@ pub unsafe extern "C" fn vf_engine_finish_on_break(
 
     let c = char::from_u32(break_char).unwrap_or(' ');
     let text = engine.finish_composition_on_break(c);
-    let bytes = text.as_bytes();
-    let to_write = bytes.len().min(max_out_len);
-
-    if !out_utf8.is_null() && to_write > 0 {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_utf8, to_write);
-    }
-    if !out_len.is_null() {
-        *out_len = to_write;
-    }
+    copy_utf8_to_buffer(&text, out_utf8, max_out_len, out_len);
     true
 }
 
 /// Process backspace in composition mode and return the updated preedit string.
+///
+/// # Safety
+/// `engine` must be a valid engine pointer. `out_utf8` and `out_len` must be valid pointers if non-null.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_process_backspace(
     engine: *mut c_void,
@@ -256,18 +280,14 @@ pub unsafe extern "C" fn vf_engine_process_backspace(
 
     let _ = engine.process_key('\x08');
     let text = engine.current_preedit_text();
-    let bytes = text.as_bytes();
-    let to_write = bytes.len().min(max_out_len);
-
-    if !out_utf8.is_null() && to_write > 0 {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_utf8, to_write);
-    }
-    if !out_len.is_null() {
-        *out_len = to_write;
-    }
+    copy_utf8_to_buffer(&text, out_utf8, max_out_len, out_len);
     true
 }
 
+/// Sets whether free marking is enabled in the engine.
+///
+/// # Safety
+/// `engine` must be a valid pointer to `VietFlowEngine` if non-null.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_set_free_marking(engine: *mut c_void, enabled: bool) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
@@ -278,6 +298,10 @@ pub unsafe extern "C" fn vf_engine_set_free_marking(engine: *mut c_void, enabled
     }
 }
 
+/// Sets whether macro expansion is enabled in the engine.
+///
+/// # Safety
+/// `engine` must be a valid pointer to `VietFlowEngine` if non-null.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_set_enable_macro(engine: *mut c_void, enabled: bool) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
@@ -285,9 +309,70 @@ pub unsafe extern "C" fn vf_engine_set_enable_macro(engine: *mut c_void, enabled
     }
 }
 
+/// Sets whether automatic English/Vietnamese switching by typing is enabled.
+///
+/// # Safety
+/// `engine` must be a valid pointer to `VietFlowEngine` if non-null.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_set_auto_switch_by_typing(engine: *mut c_void, enabled: bool) {
     if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
         engine.options.auto_switch_by_typing = enabled;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_copy_utf8_to_buffer_boundaries() {
+        // 'ệ' is 3 bytes (0xE1, 0xBB, 0x87), '🦀' is 4 bytes (0xF0, 0x9F, 0xA6, 0x80)
+        let sample = "việt🦀";
+        let mut buf = [0u8; 32];
+        let mut out_len = 0usize;
+
+        // 1. Buffer length 0: queries length, writes 0 bytes
+        unsafe {
+            let ok = copy_utf8_to_buffer(sample, buf.as_mut_ptr(), 0, &mut out_len);
+            assert!(ok);
+            assert_eq!(out_len, sample.len());
+        }
+
+        // 2. Buffer length truncated inside 'ệ' (starts at index 2, length 3, ends at 5)
+        // If max_out_len is 3 (contains 'v', 'i', and first byte of 'ệ'):
+        // Safe cut must not split 'ệ', so it should write "vi" (len 2)
+        unsafe {
+            let ok = copy_utf8_to_buffer(sample, buf.as_mut_ptr(), 3, &mut out_len);
+            assert!(!ok); // truncated
+            assert_eq!(out_len, 2);
+            assert_eq!(std::str::from_utf8(&buf[..out_len]).unwrap(), "vi");
+        }
+
+        // If max_out_len is 4:
+        unsafe {
+            let ok = copy_utf8_to_buffer(sample, buf.as_mut_ptr(), 4, &mut out_len);
+            assert!(!ok);
+            assert_eq!(out_len, 2);
+            assert_eq!(std::str::from_utf8(&buf[..out_len]).unwrap(), "vi");
+        }
+
+        // If max_out_len is 5 (contains "việt" exactly without the 4-byte crab):
+        // "việt" = 1 + 1 + 3 + 1 = 6 bytes. Index of 't' is 5..6.
+        // Let's test every slice length from 0 to sample.len() + 2:
+        for limit in 0..=(sample.len() + 2) {
+            let mut test_buf = [0u8; 32];
+            let mut written = 0usize;
+            unsafe {
+                let _ = copy_utf8_to_buffer(sample, test_buf.as_mut_ptr(), limit, &mut written);
+            }
+            if limit == 0 {
+                assert_eq!(written, sample.len());
+            } else {
+                assert!(written <= limit);
+                // Valid UTF-8 must be guaranteed
+                let s = std::str::from_utf8(&test_buf[..written]).expect("must be valid utf8");
+                assert!(sample.starts_with(s));
+            }
+        }
     }
 }

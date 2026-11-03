@@ -147,10 +147,10 @@ pub fn app_name_matches(current: &str, configured: &str, smart_prefix: bool) -> 
     }
 
     // 2. Wildcard pattern matching (* and ?)
-    if app.contains('*') || app.contains('?') {
-        if wildcard_match(&app, &proc) || wildcard_match(app_stem, proc_stem) {
-            return true;
-        }
+    if (app.contains('*') || app.contains('?'))
+        && (wildcard_match(&app, &proc) || wildcard_match(app_stem, proc_stem))
+    {
+        return true;
     }
 
     // 3. Smart prefix matching (only when enabled by user option)

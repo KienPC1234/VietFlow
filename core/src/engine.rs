@@ -696,8 +696,8 @@ impl VietFlowEngine {
 
                         let mut vowels = [VnLexiName::None; 3];
                         let v_count = self.vowel_count.min(3);
-                        for k in 0..v_count {
-                            vowels[k] = self.buffer[self.vowel_start + k].lexi;
+                        for (k, target_vowel) in vowels.iter_mut().enumerate().take(v_count) {
+                            *target_vowel = self.buffer[self.vowel_start + k].lexi;
                         }
                         let vowel_seq_ok = is_valid_vowel_seq(&vowels[..v_count]);
                         let coda_allowed = if ending_len > 0 {
@@ -798,8 +798,8 @@ impl VietFlowEngine {
 
                                     let mut candidate_vowels = [VnLexiName::None; 3];
                                     let v_count = self.vowel_count.min(3);
-                                    for k in 0..v_count {
-                                        candidate_vowels[k] = if vowel_start + k == i {
+                                    for (k, target_vowel) in candidate_vowels.iter_mut().enumerate().take(v_count) {
+                                        *target_vowel = if vowel_start + k == i {
                                             circumflex
                                         } else {
                                             self.buffer[vowel_start + k].lexi
@@ -1216,12 +1216,15 @@ impl VietFlowEngine {
             }
 
             // 2. Check AutoSwitch restore to English
+            let raw_lower = raw_word.to_ascii_lowercase();
+            let is_slang = crate::autoswitch::is_vietnamese_abbrev_or_slang(&raw_lower);
             let prev_disp = self.lookback.prev_display();
-            let should_switch = crate::autoswitch::should_restore_to_english(&raw_word, &display_word, prev_disp);
-            let is_english_keyword = self.matches_raw_english_keyword();
-            let is_english_word = is_english_keyword
-                || should_switch
-                || crate::autoswitch::lookup_en_score(&raw_word.to_ascii_lowercase()).is_some();
+            let should_switch = !is_slang && crate::autoswitch::should_restore_to_english(&raw_word, &display_word, prev_disp);
+            let is_english_keyword = !is_slang && self.matches_raw_english_keyword();
+            let is_english_word = !is_slang
+                && (is_english_keyword
+                    || should_switch
+                    || crate::autoswitch::lookup_en_score(&raw_lower).is_some());
 
             if is_english_word {
                 // 3. Look-back Multi-Word Check (e.g. "thí makes" -> "this makes")

@@ -353,14 +353,11 @@ fn main() {
         }
     }
 
+    // When TSF mode is active, synchronize initial configuration to cross-process shared memory
+    // while keeping daemon active for tray management, hotkeys, and fallback hook for non-TSF apps.
     if crate::tsf::is_tsf_mode_active() {
-        // When TSF mode is active, the in-process COM DLL handles text processing natively.
-        // VietFlow does not stay resident in the background as a hook daemon.
-        // Launch the settings GUI directly so the user can adjust preferences, and exit on close.
         let config = AppConfig::load();
         crate::tsf::sync_tsf_config(&config, config.enabled);
-        run_native_gui(false);
-        return;
     }
 
     unsafe {

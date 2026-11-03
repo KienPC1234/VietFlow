@@ -54,6 +54,22 @@ if ($extList -notmatch "WixToolset.Util.wixext\s+5\.0\.2") {
     & $wixCmd.Source extension add -g WixToolset.Util.wixext/5.0.2
 }
 
+function Get-PeArchitecture([string]$filePath) {
+    if (-not (Test-Path $filePath)) { return $null }
+    $bytes = [System.IO.File]::ReadAllBytes($filePath)
+    if ($bytes.Length -lt 64) { return $null }
+    if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { return $null }
+    $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3C)
+    if ($bytes.Length -lt ($peOffset + 6)) { return $null }
+    $machine = [System.BitConverter]::ToUInt16($bytes, $peOffset + 4)
+    switch ($machine) {
+        0x014C { return "x86" }
+        0x8664 { return "x64" }
+        0xAA64 { return "arm64" }
+        default { return "unknown" }
+    }
+}
+
 $archList = if ($Arch -eq 'All') { @('x64', 'x86', 'arm64') } else { @($Arch) }
 
 foreach ($a in $archList) {
@@ -71,18 +87,42 @@ foreach ($a in $archList) {
     $binPath = $binCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
     if (-not $binPath) {
-        Write-Error "Could not find binary for architecture $a in dist or target\release."
-        exit 1
+        throw "Could not find binary for architecture $a in dist or target\release."
     }
 
-    $tsfCandidates = @(
-        (Join-Path $vietflowRoot "platforms\windows_tsf\build-$a\Release\vietflow_tsf.dll"),
-        (Join-Path $vietflowRoot "dist\vietflow_tsf_$a.dll"),
-        (Join-Path $vietflowRoot "dist\vietflow_tsf.dll")
-    )
+    $tsfCandidates = switch ($a) {
+        'x86' {
+            @(
+                (Join-Path $vietflowRoot "platforms\windows_tsf\build-x86\Release\vietflow_tsf.dll"),
+                (Join-Path $vietflowRoot "dist\vietflow_tsf_x86.dll")
+            )
+        }
+        'arm64' {
+            @(
+                (Join-Path $vietflowRoot "platforms\windows_tsf\build-arm64\Release\vietflow_tsf.dll"),
+                (Join-Path $vietflowRoot "dist\vietflow_tsf_arm64.dll")
+            )
+        }
+        default {
+            @(
+                (Join-Path $vietflowRoot "platforms\windows_tsf\build\Release\vietflow_tsf.dll"),
+                (Join-Path $vietflowRoot "dist\vietflow_tsf.dll"),
+                (Join-Path $vietflowRoot "dist\vietflow_tsf_x64.dll")
+            )
+        }
+    }
     $tsfDll = $tsfCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (-not $tsfDll) {
-        $tsfDll = Join-Path $vietflowRoot "dist\vietflow_tsf.dll"
+        throw "Architecture-matched TSF DLL for $a was not found in: $($tsfCandidates -join ', '). Packaging aborted to prevent shipping mismatched binary."
+    }
+
+    $binPe = Get-PeArchitecture $binPath
+    if ($binPe -and $binPe -ne $a) {
+        throw "Binary architecture mismatch: expected $a, but $binPath is $binPe"
+    }
+    $tsfPe = Get-PeArchitecture $tsfDll
+    if ($tsfPe -and $tsfPe -ne $a) {
+        throw "TSF DLL architecture mismatch: expected $a, but $tsfDll is $tsfPe"
     }
 
     $outputMsi = Join-Path $OutputDir "VietFlow-$channel.msi"

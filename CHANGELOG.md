@@ -6,6 +6,35 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-03
+
+### Added
+
+- Biên dịch và phát hành bản TSF DLL 32-bit (`vietflow_tsf_x86.dll`): Xây dựng thư viện động TSF IME bản địa cho cả 32-bit (x86) và 64-bit (x64), đảm bảo dịch vụ nhập liệu TSF tương thích hoàn hảo và không bị lỗi sai kiến trúc khi chạy trên Windows x86 hoặc các ứng dụng 32-bit.
+- Đóng gói bản Portable tự động (`VietFlow-win-x64-Portable.zip`, `VietFlow-win-x86-Portable.zip`): Tích hợp trực tiếp vào kịch bản `build.ps1`, tự động gom đầy đủ file thực thi `VietFlow.exe`, thư viện `vietflow_tsf.dll` tương ứng, âm thanh thông báo và tài nguyên biểu tượng.
+- Công cụ tự động phát hành bản nâng cấp (`scripts/publish_github_release.ps1`): Tự động trích xuất ghi chú phát hành từ `CHANGELOG.md`, kết nối API GitHub Releases và tải lên toàn bộ các tệp cài đặt MSI, Portable ZIP, file nhị phân và siêu dữ liệu cập nhật (`latest.json`).
+
+### Changed
+
+- Tối ưu gói cài đặt WiX Toolset v5: Nhúng trực tiếp thư viện `vietflow_tsf.dll` vào `MainFeature` thay vì tạo tính năng phụ riêng biệt; loại bỏ script hậu xử lý bảng nhị phân MSI cũ (`inject_msi_bitmaps.ps1`) để tối ưu hóa thời gian và độ tin cậy khi đóng gói MSI.
+- Chuẩn hóa cơ chế xử lý file thư viện TSF khi cập nhật: Bổ sung cơ chế đổi tên tạm an toàn (`.old`) khi sao chép `vietflow_tsf.dll` đang bị tiến trình Windows CTF / TextInput khóa bộ nhớ, tự động dọn dẹp file cũ sau khi hoàn tất.
+
+### Fixed
+
+- Khắc phục triệt để lỗi AutoSwitch nhận diện nhầm từ viết tắt và teencode tiếng Việt thành tiếng Anh: Các từ viết tắt, từ lóng chat phổ biến (`ok`, `oke`, `oki`, `ht`, `nn`, `dc`, `vs`, `mk`, `ae`, `ko`, `bt`, `stt`...) cùng toàn bộ các từ viết tắt chỉ gồm phụ âm (không chứa nguyên âm) được bảo vệ tuyệt đối trong chế độ tiếng Việt [V], chấm dứt hoàn toàn hiện tượng tự động hoán đổi sang tiếng Anh [E] gây giật khựng ("xượng") khi đang trò chuyện.
+- [P0][F01] Khắc phục cơ chế TSF-to-Hook fallback theo ngữ cảnh ứng dụng tiền cảnh: Daemon VietFlow giữ nguyên trạng thái chạy nền kèm khay hệ thống và phím tắt thay vì thoát sớm; hook bàn phím kiểm tra PID ứng dụng đang được TSF xử lý qua bộ nhớ chia sẻ, tự động chuyển tiếp gõ cho TSF khi tương thích và cung cấp cơ chế gõ dự phòng (fallback) hoàn hảo cho các ứng dụng không hỗ trợ TSF (Command Prompt, PowerShell, terminal, game, ứng dụng cũ).
+- [P0][F02] Khắc phục lỗi nuốt phím Enter khi chốt từ trong TSF: Khi nhấn Enter trong trạng thái đang soạn thảo (composition), TSF commit từ tiếng Việt hoàn chỉnh và chuyển tiếp sự kiện Enter (`*pfEaten = FALSE`) tới ứng dụng chủ, chấm dứt tình trạng phải bấm Enter 2 lần mới gửi tin nhắn hoặc xuống dòng.
+- [P1][F03] Mã hóa ký tự Unicode bổ trợ (Supplementary Unicode / Emoji) thành cặp đại diện UTF-16 (surrogate pairs) trong `SendInput`: Ngăn ngừa triệt để lỗi cắt cụt ký tự ngoài BMP (U+10000+) khi gõ tắt các biểu tượng cảm xúc và ký hiệu đặc biệt.
+- [P1][F04] Xác định hợp đồng bộ đệm C-ABI và ngăn ngừa cắt cụt chuỗi UTF-8 dở dang: Đảm bảo các hàm FFI (`vf_engine_process_key`, `vf_engine_get_preedit`, `vf_engine_finish_on_break`, `vf_engine_process_backspace`) không bao giờ cắt ngang một chuỗi byte ký tự đa byte, bổ sung kiểm thử biên cho từng độ dài bộ đệm.
+- [P0][F05] Loại bỏ quyền truy cập quá mức `Users:GenericAll` trên thư mục `Program Files`: Khắc phục lỗ hổng bảo mật leo thang đặc quyền trong cấu hình WiX Installer, phân định dữ liệu người dùng sang thư mục dữ liệu chuẩn với đặc quyền tối thiểu.
+- [P0][F06] Xác thực nguồn cập nhật MSI và kiểm soát tải tệp: Kiểm tra nguồn miền HTTPS GitHub chính thức, xử lý nghiêm ngặt lỗi mạng `InternetReadFile` (fail-closed), xác thực kích thước tối thiểu và định dạng Compound File Binary (OLE2 magic header `D0 CF 11 E0 A1 B1 1A E1`) trước khi khởi chạy bộ cài đặt qua cơ chế dàn dựng nguyên tử (atomic staging).
+- [P1][F07] Kiểm tra tương thích kiến trúc nhị phân và mã PE khi đóng gói phát hành: Bắt buộc phiên bản TSF DLL tương thích chính xác kiến trúc mục tiêu (x64, x86, arm64) kèm cơ chế kiểm tra Machine Type trong PE header, ngăn ngừa tuyệt đối việc đóng gói nhầm DLL x64 vào gói cài đặt x86/ARM64.
+- [P1][F09] Bảo toàn cấu hình và phím tắt của người dùng khi gỡ cài đặt: Loại bỏ hoàn toàn các quy tắc xóa tệp dạng wildcard (`*.*`) và lưu giữ nguyên vẹn tệp cấu hình, phím tắt trong thư mục dữ liệu người dùng khi gỡ hoặc nâng cấp ứng dụng.
+- Khắc phục lỗi MSI Error 2709 (`OptionsDlg` / `TsfFeature` chaining) trong gói cài đặt WiX Toolset v5.
+- Sửa lỗi hiển thị sai tên file thư viện TSF (`vietflow_tip.dll` -> `vietflow_tsf.dll`) trong giao diện cài đặt bộ gõ.
+- Khắc phục triệt để các cảnh báo mã nguồn (`cargo clippy`): Bổ sung đầy đủ tài liệu an toàn (`# Safety`) cho tất cả hàm ngoại vi C-ABI của engine, tối ưu hóa vòng lặp duyệt nguyên âm, loại bỏ các biến `mut` thừa và thu gọn các câu lệnh rẽ nhánh điều kiện.
+- Đồng bộ hóa bài kiểm tra manifest cập nhật (`updater.rs`): Khử triệt để việc hardcode chuỗi phiên bản trong test `parses_real_release_manifest_file` và `live_release_manifest`, tránh lỗi gãy test khi nâng cấp phiên bản ứng dụng.
+
 ## [0.1.3] - 2026-11-03
 
 ### Added

@@ -98,7 +98,7 @@ impl SharedConfigWriter {
                 std::ptr::null_mut(),
                 0,
             );
-            let mut sa = SECURITY_ATTRIBUTES {
+            let sa = SECURITY_ATTRIBUTES {
                 nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
                 lpSecurityDescriptor: &mut sd as *mut _ as *mut std::ffi::c_void,
                 bInheritHandle: 0,
@@ -106,7 +106,7 @@ impl SharedConfigWriter {
 
             let mapping = CreateFileMappingW(
                 INVALID_HANDLE_VALUE,
-                &mut sa,
+                &sa,
                 PAGE_READWRITE,
                 0,
                 size,
@@ -158,6 +158,35 @@ impl Drop for SharedConfigWriter {
 }
 
 static SHARED_WRITER: Mutex<Option<SharedConfigWriter>> = Mutex::new(None);
+
+/// Returns the process ID of the application currently active in TSF context,
+/// or 0 if no application is actively using TSF.
+pub fn get_tsf_active_pid() -> u32 {
+    let mut lock = match SHARED_WRITER.lock() {
+        Ok(l) => l,
+        Err(_) => return 0,
+    };
+    if lock.is_none() {
+        *lock = SharedConfigWriter::new();
+    }
+    if let Some(writer) = lock.as_ref() {
+        if !writer.view.is_null() {
+            unsafe {
+                return (*writer.view).last_active_pid;
+            }
+        }
+    }
+    0
+}
+
+/// Checks whether the given process ID is actively handled by the in-process TSF TIP.
+pub fn is_tsf_active_for_pid(pid: u32) -> bool {
+    if !is_tsf_mode_active() || pid == 0 {
+        return false;
+    }
+    let active_pid = get_tsf_active_pid();
+    active_pid != 0 && active_pid == pid
+}
 
 /// TSF mode is defined solely by the Windows registration of the TIP. Once
 /// registered, the in-process TIP owns typing and Windows language switching

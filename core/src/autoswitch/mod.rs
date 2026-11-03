@@ -252,6 +252,52 @@ fn set_tone(tone_char: &mut Option<char>, tone: char) -> Option<()> {
     Some(())
 }
 
+/// Common Vietnamese youth slang, abbreviations, teencode, and informal chat particles
+/// that should never trigger an auto-switch to English or be restored as English words.
+pub fn is_vietnamese_abbrev_or_slang(word: &str) -> bool {
+    matches!(
+        word,
+        // Confirmations & responses
+        "ok" | "oke" | "oki" | "okie" | "okee" | "okela" | "okla" | "okiii" | "okiie" | "okii"
+            | "uk" | "uh" | "uhm" | "um" | "umm" | "umk" | "ukm" | "ummm" | "uhmm"
+            | "ye" | "yes" | "yep" | "yeah" | "r" | "roi" | "rùi" | "rui" | "ròii" | "roii"
+            | "nè" | "ne" | "nha" | "nho" | "nhoá" | "nhoa" | "nhó" | "nhe" | "nhen" | "nhé"
+            | "thui" | "thôi" | "thoy" | "ha" | "hả" | "hẻ" | "hở" | "hé" | "hén"
+            | "lun" | "luôn" | "luon" | "wa" | "wá" | "quá" | "qua"
+            | "z" | "zậy" | "zay" | "dậy" | "vại" | "vạy" | "zạ" | "dạ"
+            | "j" | "ji" | "sao" | "saoz" | "saoo"
+
+        // Negations & queries
+        | "k" | "ko" | "hok" | "hông" | "hong" | "hem" | "khum" | "khom" | "kô" | "kro"
+        | "chx" | "chua" | "kdc" | "dou" | "đou" | "dau" | "bn" | "nhiu"
+        | "tsao" | "ts" | "ntn" | "tn"
+
+        // Pronouns & relationships
+        | "ae" | "ace" | "mk" | "m" | "t" | "ck" | "vk" | "ny" | "cr" | "ex"
+        | "bb" | "b" | "c" | "e" | "a" | "mn" | "mng" | "ng" | "ngta" | "ngkhac"
+        | "bame" | "bm" | "ad" | "mod"
+
+        // Verbs & common chat actions
+        | "dc" | "đc" | "vs" | "cx" | "ht" | "nn" | "cb" | "bt" | "tg" | "stt"
+        | "ib" | "inb" | "ibx" | "rep" | "repp" | "cmt" | "bl" | "sub" | "fl" | "fol"
+        | "nch" | "nc" | "lq" | "lquan" | "qt" | "qtam" | "tl" | "lh" | "ktra" | "kt"
+        | "bik" | "bit" | "bít" | "thik" | "thix" | "thík" | "di" | "đy" | "zui" | "tym" | "kb"
+        | "phot" | "flex" | "chill" | "slay" | "non" | "pro"
+
+        // Interjections, laughs & teencode
+        | "haizz" | "haiz" | "hazz" | "hix" | "hic" | "huhu" | "hehe" | "hihi" | "hoho"
+        | "kaka" | "kkk" | "kk" | "mlem" | "ultr" | "gato" | "xu" | "keo"
+        | "cl" | "vl" | "vcl" | "vkl" | "vđ" | "vch" | "vcc" | "vler" | "vloz" | "vlon"
+        | "clgt" | "cmm" | "cmn" | "cmnr" | "dm" | "đm" | "dkm" | "đkm" | "dcm" | "đcm"
+
+        // Dates, tech & social
+        | "hnay" | "hn" | "bjo" | "bh" | "t7" | "cn" | "ksao" | "kbh"
+        | "fb" | "zl" | "ig" | "tt" | "ytb" | "acc" | "pass" | "otp"
+        | "link" | "web" | "app" | "bot" | "game" | "team" | "room" | "lag" | "ping"
+        | "tks" | "thx" | "pls" | "plz" | "sr" | "sry"
+    )
+}
+
 /// Evaluates whether a word finished in Vietnamese mode should be restored to raw English keys.
 pub fn should_restore_to_english(
     raw_word: &str,
@@ -260,6 +306,19 @@ pub fn should_restore_to_english(
 ) -> bool {
     // Word length check: single letters don't auto-switch
     if raw_word.len() < 2 {
+        return false;
+    }
+
+    let raw_lower = raw_word.to_ascii_lowercase();
+
+    // Guard against Vietnamese abbreviations and youth chat slang (e.g. ok, ht, nn, dc, vs, ae)
+    if is_vietnamese_abbrev_or_slang(&raw_lower) {
+        return false;
+    }
+
+    // A word with no vowels (a, e, i, o, u, y) is a consonant abbreviation, not a natural English word.
+    let has_vowel = raw_lower.chars().any(|c| matches!(c, 'a' | 'e' | 'i' | 'o' | 'u' | 'y'));
+    if !has_vowel {
         return false;
     }
 
@@ -285,7 +344,7 @@ pub fn should_restore_to_english(
         }
     }
 
-    let en_score = match lookup_en_score(&raw_word.to_ascii_lowercase()) {
+    let en_score = match lookup_en_score(&raw_lower) {
         Some(s) => s,
         None => return false, // Not a known English word
     };
@@ -463,5 +522,19 @@ mod tests {
         assert!(!should_switch_to_vietnamese("this", "thí", None));
         // "user" -> "user" (valid EN) -> should NOT switch
         assert!(!should_switch_to_vietnamese("user", "user", None));
+    }
+
+    #[test]
+    fn test_vietnamese_abbreviations_do_not_switch_to_english() {
+        for abbrev in &[
+            "ok", "oke", "oki", "ht", "nn", "dc", "vs", "mk", "ae", "ko", "k", "cx", "bt", "stt",
+            "uk", "uh", "wa", "thui", "lun", "khum", "mlem", "ultr", "gato", "xu", "ib", "rep",
+            "tym", "ny", "ck", "vk", "game", "link", "web", "app", "lag", "ping", "zui", "bik"
+        ] {
+            assert!(
+                !should_restore_to_english(abbrev, abbrev, None),
+                "Abbreviation {abbrev} must not trigger restore/switch to English"
+            );
+        }
     }
 }

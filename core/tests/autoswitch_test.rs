@@ -57,6 +57,70 @@ fn test_autoswitch_bigram_bus_vs_bu() {
 }
 
 #[test]
+fn test_vietnamese_youth_abbreviations_stay_in_vietnamese_mode() {
+    let mut engine = VietFlowEngine::new(
+        EngineOptions {
+            method: InputMethod::Telex,
+            auto_switch_by_typing: true,
+            ..Default::default()
+        },
+        CharsetId::Unicode,
+    );
+
+    // "ok bạn ơi " -> typing "ok " must stay in VN mode without triggering auto-switch to English
+    for c in "ok ".chars() {
+        engine.process_key(c);
+    }
+    assert_eq!(engine.auto_switch_requested, None, "'ok ' must not switch to English");
+
+    for c in "ht ".chars() {
+        engine.process_key(c);
+    }
+    assert_eq!(engine.auto_switch_requested, None, "'ht ' must not switch to English");
+
+    for c in "nn ".chars() {
+        engine.process_key(c);
+    }
+    assert_eq!(engine.auto_switch_requested, None, "'nn ' must not switch to English");
+
+    for c in "dc ".chars() {
+        engine.process_key(c);
+    }
+    assert_eq!(engine.auto_switch_requested, None, "'dc ' must not switch to English");
+
+    for c in "vs ".chars() {
+        engine.process_key(c);
+    }
+    assert_eq!(engine.auto_switch_requested, None, "'vs ' must not switch to English");
+
+    for c in "ae ".chars() {
+        engine.process_key(c);
+    }
+    assert_eq!(engine.auto_switch_requested, None, "'ae ' must not switch to English");
+
+    // Expanded slang & youth abbreviations test suite
+    let slang_words = [
+        "oke", "oki", "uk", "uh", "wa", "thui", "lun", "khum", "hok", "haizz",
+        "mlem", "ultr", "gato", "xu", "ib", "rep", "tym", "ny", "ck", "vk",
+        "game", "link", "web", "app", "bot", "lag", "ping", "zui", "bik"
+    ];
+
+    for slang in &slang_words {
+        engine.reset();
+        let mut test_input = slang.to_string();
+        test_input.push(' ');
+        for c in test_input.chars() {
+            engine.process_key(c);
+        }
+        assert_eq!(
+            engine.auto_switch_requested,
+            None,
+            "Slang '{slang}' must stay in Vietnamese mode without switching to English"
+        );
+    }
+}
+
+#[test]
 fn test_autoswitch_doubled_key_recovery() {
     let mut engine = VietFlowEngine::new(
         EngineOptions {
