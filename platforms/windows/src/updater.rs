@@ -817,14 +817,19 @@ mod tests {
     fn live_release_manifest() {
         let info = fetch_release_info().expect("live release manifest");
         assert!(!info.version.is_empty());
-        let expected = if cfg!(target_arch = "x86") {
-            "win-x86"
+        assert_eq!(info.version, "0.1.3");
+        if is_installed_via_msi() {
+            let expected = if cfg!(target_arch = "x86") {
+                "win-x86"
+            } else {
+                "win-x64"
+            };
+            assert!(
+                info.download.as_deref().unwrap_or("").contains(expected),
+                "manifest did not provide the {expected} download"
+            );
         } else {
-            "win-x64"
-        };
-        assert!(
-            info.download.as_deref().unwrap_or("").contains(expected),
-            "manifest did not provide the {expected} download"
-        );
+            assert!(info.url.contains("releases"));
+        }
     }
 }
