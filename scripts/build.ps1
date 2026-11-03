@@ -371,7 +371,7 @@ if ($Msi) {
         Compress-Archive -Path "$tmpDir/*" -DestinationPath $zipOut -Force
         Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
         $zipSizeMb = [math]::Round(((Get-Item $zipOut).Length / 1MB), 2)
-        Write-Host "      Portable $a: $zipOut ($zipSizeMb MB)" -ForegroundColor Green
+        Write-Host "      Portable ${a}: $zipOut ($zipSizeMb MB)" -ForegroundColor Green
     }
 
     Write-Host "MSI and Portable releases ready in: $releasesDir" -ForegroundColor Green
