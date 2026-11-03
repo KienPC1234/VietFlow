@@ -1095,7 +1095,7 @@ void UiManager::PageTyping() {
                                "  Chưa đăng ký TSF với Windows. Bấm 'Đăng ký TSF' để sử dụng.");
         }
     } else {
-        ImGui::TextDisabled("Chế độ TSF không khả dụng (thiếu file vietflow_tip.dll).");
+        ImGui::TextDisabled("Chế độ TSF không khả dụng (thiếu file vietflow_tsf.dll).");
     }
 
     // 2. Cách gửi phím & Chốt từ

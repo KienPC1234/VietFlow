@@ -74,10 +74,10 @@
                   Return="asyncNoWait" />
 
     <InstallExecuteSequence>
-      <Custom Action="UnregisterTSF" Before="RemoveFiles" Condition="(Installed AND (REMOVE=&quot;ALL&quot; OR Upgrading OR (&amp;TsfFeature = 2)))" />
-      <Custom Action="UnregisterTipDllDirect" Before="RemoveFiles" Condition="(Installed AND (REMOVE=&quot;ALL&quot; OR Upgrading OR (&amp;TsfFeature = 2)))" />
+      <Custom Action="UnregisterTSF" Before="RemoveFiles" Condition="(Installed AND (REMOVE=&quot;ALL&quot; OR Upgrading))" />
+      <Custom Action="UnregisterTipDllDirect" Before="RemoveFiles" Condition="(Installed AND (REMOVE=&quot;ALL&quot; OR Upgrading))" />
       <Custom Action="CleanupShortcutsOnUninstall" Before="RemoveFiles" Condition="(Installed AND (REMOVE=&quot;ALL&quot; OR Upgrading))" />
-      <Custom Action="RegisterTSF" After="InstallFiles" Condition="(NOT Installed OR Upgrading) AND ((&amp;TsfFeature = 3) OR (REGISTER_TSF = &quot;1&quot;))" />
+      <Custom Action="RegisterTSF" After="InstallFiles" Condition="(NOT Installed OR Upgrading) AND (REGISTER_TSF = &quot;1&quot;)" />
     </InstallExecuteSequence>
 
     <!-- UI Configuration -->
@@ -105,7 +105,7 @@
         </Component>
 
         <Component Id="TsfLibrary" Guid="8C9D18FE-4B33-4D90-951E-C9A149802B02">
-          <File Id="VietFlowTsfDll" Source="$(var.TsfDllPath)" KeyPath="yes" />
+          <File Id="VietFlowTsfDll" Name="vietflow_tsf.dll" Source="$(var.TsfDllPath)" KeyPath="yes" />
         </Component>
 
         <Component Id="MsiMarker" Guid="A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D">
@@ -178,10 +178,11 @@
 
     <Feature Id="MainFeature"
              Title="VietFlow"
-             Description="Bộ gõ tiếng Việt VietFlow (Chế độ Hook tiêu chuẩn)."
+             Description="Bộ gõ tiếng Việt VietFlow."
              Level="1"
              Display="expand">
       <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="TsfLibrary" />
       <ComponentRef Id="MsiMarker" />
       <ComponentRef Id="InstallFolderConfig" />
       <ComponentRef Id="AssetsComponent" />
@@ -189,13 +190,6 @@
       <ComponentRef Id="DesktopShortcutComponent" />
       <ComponentRef Id="CommonAppDataComponent" />
       <ComponentRef Id="RegistryCleanup" />
-
-      <Feature Id="TsfFeature"
-               Title="VietFlow TSF IME"
-               Description="Dịch vụ nhập liệu Text Services Framework (TSF IME), hỗ trợ gõ trực tiếp không nhấp nháy trong Microsoft Office, Edge, Chrome."
-               Level="2">
-        <ComponentRef Id="TsfLibrary" />
-      </Feature>
     </Feature>
 
   </Package>
