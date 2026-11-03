@@ -104,9 +104,8 @@
         </Component>
 
         <Component Id="InstallFolderConfig" Guid="5B8C1E2A-3D4F-4E5A-9B6C-7D8E9F0A1B2C">
-          <CreateFolder>
-            <util:PermissionEx User="Users" GenericAll="yes" />
-          </CreateFolder>
+          <!-- Inherit Program Files ACLs; never make executable/DLL storage user-writable. -->
+          <CreateFolder />
           <RemoveFile Id="CleanInstallFolderConfig" Name="vietflow_config.json" On="uninstall" />
           <RemoveFile Id="CleanInstallFolderFiles" Name="*.*" On="uninstall" />
         </Component>

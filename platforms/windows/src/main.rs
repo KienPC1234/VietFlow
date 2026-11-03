@@ -10,9 +10,9 @@ mod inject;
 mod process;
 mod startup;
 mod tray;
+pub mod tsf;
 mod updater;
 mod version;
-pub mod tsf;
 
 use std::ffi::c_void;
 use std::mem::zeroed;
@@ -30,12 +30,12 @@ use windows_sys::Win32::System::DataExchange::{
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetMessageW, KillTimer, MessageBoxW,
-    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetTimer, ShowWindow,
-    TranslateMessage, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_SETFOREGROUND,
-    MB_TOPMOST, MSG, SW_RESTORE, SW_SHOWNORMAL, WNDCLASSW, WM_CLOSE, WM_CLIPBOARDUPDATE,
-    WM_COMMAND, WM_DESTROY, WM_ENDSESSION, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_QUERYENDSESSION,
-    WM_RBUTTONUP, WM_TIMER,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetMessageW,
+    KillTimer, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
+    SetForegroundWindow, SetTimer, ShowWindow, TranslateMessage, MB_ICONERROR, MB_ICONINFORMATION,
+    MB_ICONWARNING, MB_OK, MB_SETFOREGROUND, MB_TOPMOST, MSG, SW_RESTORE, SW_SHOWNORMAL,
+    WM_CLIPBOARDUPDATE, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_ENDSESSION, WM_LBUTTONDBLCLK,
+    WM_LBUTTONUP, WM_QUERYENDSESSION, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
 };
 
 pub mod constants;
@@ -201,12 +201,16 @@ unsafe fn open_existing_settings() -> bool {
     false
 }
 
-const EMBEDDED_FONT: &[u8] = include_bytes!("../../../ui_imgui/assets/JetBrainsMonoNerdFont-Regular.ttf");
+const EMBEDDED_FONT: &[u8] =
+    include_bytes!("../../../ui_imgui/assets/JetBrainsMonoNerdFont-Regular.ttf");
 
 extern "C" {
     fn SetEmbeddedFontData(data: *const u8, size: usize);
     fn SetTrayFontData(data: *const u8, size: usize);
-    fn ShowSettingsGui(config_path: *const std::ffi::c_char, on_saved: Option<extern "C" fn()>) -> i32;
+    fn ShowSettingsGui(
+        config_path: *const std::ffi::c_char,
+        on_saved: Option<extern "C" fn()>,
+    ) -> i32;
     fn ShowConverterGui(config_path: *const std::ffi::c_char) -> i32;
 }
 
@@ -273,7 +277,10 @@ fn main() {
         }
     }
 
-    if args.iter().any(|a| a == "--clean-shortcuts" || a == "--uninstall-cleanup") {
+    if args
+        .iter()
+        .any(|a| a == "--clean-shortcuts" || a == "--uninstall-cleanup")
+    {
         unsafe {
             crate::startup::clean_all_shortcuts_and_cache();
         }
@@ -290,9 +297,15 @@ fn main() {
         println!("=== VietFlow TSF Diagnostic Status ===");
         println!("  Registered:   {is_reg}");
         println!("  Active Mode:  {is_active}");
-        println!("  DLL Path:     {:?}", dll_path.as_ref().map(|p| p.display().to_string()));
+        println!(
+            "  DLL Path:     {:?}",
+            dll_path.as_ref().map(|p| p.display().to_string())
+        );
         println!("  Log File:     {log_path}");
-        println!("  Log Exists:   {}", std::path::Path::new(&log_path).exists());
+        println!(
+            "  Log Exists:   {}",
+            std::path::Path::new(&log_path).exists()
+        );
         println!("======================================");
         std::process::exit(0);
     }
@@ -303,7 +316,11 @@ fn main() {
         if let Ok(content) = std::fs::read_to_string(&log_path) {
             let lines: Vec<&str> = content.lines().collect();
             let tail_count = lines.len().saturating_sub(60);
-            println!("=== Last {} log lines from {} ===", lines.len() - tail_count, log_path);
+            println!(
+                "=== Last {} log lines from {} ===",
+                lines.len() - tail_count,
+                log_path
+            );
             for line in &lines[tail_count..] {
                 println!("{line}");
             }
@@ -313,7 +330,10 @@ fn main() {
         std::process::exit(0);
     }
 
-    if args.iter().any(|a| a == "--gui" || a == "-g" || a == "--settings") {
+    if args
+        .iter()
+        .any(|a| a == "--gui" || a == "-g" || a == "--settings")
+    {
         run_native_gui(false);
         return;
     }
@@ -353,15 +373,9 @@ fn main() {
         }
     }
 
-    if crate::tsf::is_tsf_mode_active() {
-        // When TSF mode is active, the in-process COM DLL handles text processing natively.
-        // VietFlow does not stay resident in the background as a hook daemon.
-        // Launch the settings GUI directly so the user can adjust preferences, and exit on close.
-        let config = AppConfig::load();
-        crate::tsf::sync_tsf_config(&config, config.enabled);
-        run_native_gui(false);
-        return;
-    }
+    // A registered TSF TIP does not imply that every foreground application
+    // has activated it. Keep the resident hook/tray daemon alive even in TSF mode;
+    // the hook yields only while the focused application owns an active TIP.
 
     unsafe {
         // Enforce single instance for daemon. An elevated relaunch is started
@@ -611,7 +625,10 @@ unsafe extern "system" fn wnd_proc(
                         }
                     }
                 }
-                IDM_CHARSET_UNICODE | IDM_CHARSET_COMPOSITE | IDM_CHARSET_TCVN3 | IDM_CHARSET_VNI => {
+                IDM_CHARSET_UNICODE
+                | IDM_CHARSET_COMPOSITE
+                | IDM_CHARSET_TCVN3
+                | IDM_CHARSET_VNI => {
                     let c = match id {
                         IDM_CHARSET_UNICODE => 0,
                         IDM_CHARSET_COMPOSITE => 1,
@@ -718,7 +735,11 @@ unsafe extern "system" fn wnd_proc(
                                 }
                             }
                             Err(e) => {
-                                let action = if is_reg { "hủy đăng ký" } else { "đăng ký" };
+                                let action = if is_reg {
+                                    "hủy đăng ký"
+                                } else {
+                                    "đăng ký"
+                                };
                                 show_error(&format!("Lỗi {action} TSF: {e}"));
                                 reload_runtime_config(hwnd);
                             }
@@ -736,9 +757,7 @@ unsafe extern "system" fn wnd_proc(
             DestroyWindow(hwnd);
             0
         }
-        WM_QUERYENDSESSION => {
-            1
-        }
+        WM_QUERYENDSESSION => 1,
         WM_ENDSESSION => {
             if w_param != 0 {
                 DestroyWindow(hwnd);

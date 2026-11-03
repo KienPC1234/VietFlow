@@ -548,13 +548,14 @@ STDMETHODIMP CVietFlowTip::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lPar
         return S_OK;
     }
 
-    // 4. Return commits cleanly without break char
+    // 4. Return commits the preedit, then the host must receive the Enter key
+    // exactly once (newline, submit, or other control-specific action).
     if (vk == VK_RETURN) {
         if (m_pComposition) {
-            VF_LOG(L"OnKeyDown RETURN");
+            VF_LOG(L"OnKeyDown RETURN: commit and pass through");
             FinishCompositionWithBreak(pic, 0);
             m_configReader.UpdateActiveKeystroke(false);
-            *pfEaten = TRUE;
+            *pfEaten = FALSE;
             return S_OK;
         }
         return S_OK;
