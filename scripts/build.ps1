@@ -46,18 +46,6 @@ function Get-ChangelogSection([string]$Text, [string]$Version) {
     return ""
 }
 
-function Optimize-MsiDatabase([string]$MsiPath) {
-    if (-not (Test-Path $MsiPath)) { return }
-    $injectScript = Join-Path $PSScriptRoot "inject_msi_bitmaps.ps1"
-    if (Test-Path $injectScript) {
-        & pwsh -NoProfile -NonInteractive -File $injectScript -MsiPath $MsiPath
-    }
-}
-
-function Add-MsiActionText([string]$MsiPath) {
-    Optimize-MsiDatabase $MsiPath
-}
-
 # ---------------------------------------------------------------------------
 # Version (VERSION is the only place to bump)
 # ---------------------------------------------------------------------------
@@ -343,10 +331,54 @@ if ($Msi) {
         }
     }
 
-    Write-Host "MSI releases ready in: $releasesDir" -ForegroundColor Green
+    # -----------------------------------------------------------------------
+    # Portable ZIP Packaging (includes VietFlow.exe, vietflow_tsf.dll, assets)
+    # -----------------------------------------------------------------------
+    foreach ($a in $archs) {
+        $zipName = "VietFlow-win-$a-Portable.zip"
+        $zipOut = Join-Path $releasesDir $zipName
+        $tmpDir = Join-Path $env:TEMP "vietflow_port_$a"
+        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+
+        $bin = Join-Path $releasesDir "VietFlow-$a.exe"
+        if (-not (Test-Path $bin)) {
+            $bin = Join-Path $DistDir "VietFlow-$a.exe"
+        }
+        if (Test-Path $bin) {
+            Copy-Item $bin (Join-Path $tmpDir "VietFlow.exe") -Force
+        }
+
+        # Architecture-specific TSF DLL
+        $tsfDll = switch ($a) {
+            'x86' { Join-Path $root "platforms\windows_tsf\build-x86\Release\vietflow_tsf.dll" }
+            'arm64' { Join-Path $root "platforms\windows_tsf\build-arm64\Release\vietflow_tsf.dll" }
+            default { Join-Path $DistDir "vietflow_tsf.dll" }
+        }
+        if (-not (Test-Path $tsfDll)) {
+            $tsfDll = Join-Path $DistDir "vietflow_tsf.dll"
+        }
+        if (Test-Path $tsfDll) {
+            Copy-Item $tsfDll (Join-Path $tmpDir "vietflow_tsf.dll") -Force
+        }
+
+        $icon = Join-Path $root "assets\VietFlow.ico"
+        if (Test-Path $icon) { Copy-Item $icon $tmpDir -Force }
+        $wav = Join-Path $root "assets\notification.wav"
+        if (Test-Path $wav) { Copy-Item $wav $tmpDir -Force }
+        if (Test-Path $changelogSource) { Copy-Item $changelogSource $tmpDir -Force }
+
+        Compress-Archive -Path "$tmpDir/*" -DestinationPath $zipOut -Force
+        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+        $zipSizeMb = [math]::Round(((Get-Item $zipOut).Length / 1MB), 2)
+        Write-Host "      Portable $a: $zipOut ($zipSizeMb MB)" -ForegroundColor Green
+    }
+
+    Write-Host "MSI and Portable releases ready in: $releasesDir" -ForegroundColor Green
     Write-Host "Upload these assets to the GitHub release:" -ForegroundColor Green
-    Write-Host "  VietFlow-x64.exe, VietFlow-x86.exe, VietFlow-arm64.exe (Portable)" -ForegroundColor Green
-    Write-Host "  VietFlow-win-x64.msi, VietFlow-win-x86.msi, VietFlow-win-arm64.msi (Installer)" -ForegroundColor Green
+    Write-Host "  VietFlow-win-x64-Portable.zip, VietFlow-win-x86-Portable.zip (Portable ZIPs)" -ForegroundColor Green
+    Write-Host "  VietFlow-x64.exe, VietFlow-x86.exe, VietFlow-arm64.exe (Standalone EXEs)" -ForegroundColor Green
+    Write-Host "  VietFlow-win-x64.msi, VietFlow-win-x86.msi, VietFlow-win-arm64.msi (Installers)" -ForegroundColor Green
     Write-Host "  latest.json, version.txt, CHANGELOG.md" -ForegroundColor Green
 } else {
     Write-Host "`n[5/5] MSI packaging skipped (use -Msi to build Windows installers)." -ForegroundColor DarkGray
