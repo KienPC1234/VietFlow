@@ -75,7 +75,13 @@ if ($relDetail.assets) {
 # 5. Assets to upload
 $assetsToUpload = @(
     "VietFlow-win-x64.msi",
+    "VietFlow-win-x86.msi",
+    "VietFlow-win-x64-Portable.zip",
+    "VietFlow-win-x86-Portable.zip",
     "VietFlow-x64.exe",
+    "VietFlow-x86.exe",
+    "VietFlow.exe",
+    "vietflow_tsf.dll",
     "latest.json",
     "version.txt",
     "CHANGELOG.md"
@@ -102,6 +108,8 @@ foreach ($assetName in $assetsToUpload) {
     $contentType = switch -Regex ($assetName) {
         '\.msi$'  { "application/octet-stream" }
         '\.exe$'  { "application/octet-stream" }
+        '\.dll$'  { "application/octet-stream" }
+        '\.zip$'  { "application/zip" }
         '\.json$' { "application/json" }
         '\.txt$'  { "text/plain" }
         '\.md$'   { "text/markdown" }

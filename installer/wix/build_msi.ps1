@@ -75,6 +75,16 @@ foreach ($a in $archList) {
         exit 1
     }
 
+    $tsfCandidates = @(
+        (Join-Path $vietflowRoot "platforms\windows_tsf\build-$a\Release\vietflow_tsf.dll"),
+        (Join-Path $vietflowRoot "dist\vietflow_tsf_$a.dll"),
+        (Join-Path $vietflowRoot "dist\vietflow_tsf.dll")
+    )
+    $tsfDll = $tsfCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $tsfDll) {
+        $tsfDll = Join-Path $vietflowRoot "dist\vietflow_tsf.dll"
+    }
+
     $outputMsi = Join-Path $OutputDir "VietFlow-$channel.msi"
     Write-Host "`nBuilding native WiX MSI: $outputMsi ($a, v$Version)..." -ForegroundColor Cyan
 
@@ -87,6 +97,7 @@ foreach ($a in $archList) {
         "-d", "Version=$Version",
         "-d", "SourceDir=$vietflowRoot",
         "-d", "BinaryPath=$binPath",
+        "-d", "TsfDllPath=$tsfDll",
         "-o", $outputMsi
     )
 
