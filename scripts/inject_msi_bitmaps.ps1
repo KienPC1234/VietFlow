@@ -79,6 +79,19 @@ try {
         } catch {}
     }
 
+    # 3. Chain OptionsDlg properly between InstallDirDlg and VerifyReadyDlg
+    try {
+        $view = $db.OpenView("DELETE FROM ``ControlEvent`` WHERE ``Dialog_``='InstallDirDlg' AND ``Control_``='Next' AND ``Argument``='VerifyReadyDlg'")
+        $view.Execute()
+        $view.Close()
+        [System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) | Out-Null
+
+        $view = $db.OpenView("DELETE FROM ``ControlEvent`` WHERE ``Dialog_``='VerifyReadyDlg' AND ``Control_``='Back' AND ``Argument``='InstallDirDlg'")
+        $view.Execute()
+        $view.Close()
+        [System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) | Out-Null
+    } catch {}
+
     $db.Commit()
     Write-Host "Successfully optimized ActionText for MSI package: $MsiPath" -ForegroundColor Green
 } catch {
