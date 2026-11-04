@@ -16,8 +16,23 @@ desktop text control or installed MSI works.
 | F10 Hook callback | Async worker prewarmed; bounded nonblocking 8-job queue, 750 ms expiry and exact foreground identity; admission status now propagated to hook to pass original key on rejection and reset composition; 64 KiB text / 4096-backspace limits. Host input-order, 24h and p95/p99 E2E still pending |
 | F11 SendInput | Partial input stops without replaying accepted backspaces/code units, releases pressed injected keys; unit tests cover UTF-16, Backspace, Shift, repeated VK; independent host fault injection still pending |
 | F12 TSF IPC | Rust writer clamps malformed enum/flag/version fields before publishing; C++ reader rejects malformed yet sequence-consistent snapshots and retains last valid config. Independent native smoke tests cover every field; AppContainer ACL and multi-process long-run tests pending |
-| Q01 Release | Verification script checks architecture, ZIP contents, MSI presence and SHA-256 metadata; publication preflight |
+| Q01 Release | Official publisher routes to one verified gate; default is offline. Preflight verifies PE/ZIP architecture, MSI header, 12 payload hashes, updater URLs, SHA256SUMS and 6 metadata assets; 11 synthetic offline regressions run in CI. Explicit publish additionally requires clean source, matching origin/main and tag, plus remote asset digests; actual signing/MSI VM and public publication remain NO-GO until independently approved |
 | Q02 Independent E2E | Matrix below must be run by QA and recorded for target release |
+
+## Offline publisher gate (Q01)
+
+The safe entry point is scripts/publish-release.ps1 without -Publish. It
+checks local artifact provenance, and neither creates nor edits a release.
+Run scripts/tests/test_release_preflight.ps1 to verify the synthetic fixtures
+and rejection cases without contacting GitHub.
+
+Both publisher entry points require an explicit -Publish for remote release
+mutations. The legacy -Draft flag is preflight-only; -Prerelease is disabled
+until a reviewed prerelease workflow exists.
+
+A passing preflight is NOT approval to publish. Signed assets, Windows MSI
+install/upgrade/uninstall acceptance and real TSF/hook input tests require
+independent evidence before any production release.
 
 ## Manual / independent test IDs
 

@@ -38,6 +38,10 @@ jobs:
           cmake -B ui_imgui/build -S ui_imgui -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=ON
           cmake --build ui_imgui/build --config Release
 
+      - name: Verify offline release preflight and tampering rejection
+        shell: pwsh
+        run: ./scripts/tests/test_release_preflight.ps1
+
       - name: Run workspace tests
         shell: pwsh
         env:
