@@ -13,7 +13,7 @@ desktop text control or installed MSI works.
 | F07 Architecture | Strict PE checks for x64/x86/ARM64 plus TSF core .lib paths; cross-architecture CI pending |
 | F08 Settings | Atomic Rust/C++ staged write, last valid .bak, interprocess writer lock, corrupted primary test |
 | F09 Uninstall | WiX authoring inspection, separate clean/upgrade MSI VM tests pending |
-| F10 Hook callback | Long macro asynchronous worker exists on current main; real hook latency measurement pending |
+| F10 Hook callback | Async worker prewarmed before hook installation; queued macros tagged with exact foreground window/process/thread; worker drops stale focus work and checks target on every SendInput batch. Unit coverage for focus changes; real 24h and p95/p99 hook latency receipt still pending |
 | F11 SendInput | Partial input stops without replaying accepted backspaces/code units, releases pressed injected keys; unit tests cover UTF-16, Backspace, Shift, repeated VK; independent host fault injection still pending |
 | F12 TSF IPC | Rust secure mappings test and isolated C++ focus/config snapshot smoke |
 | Q01 Release | Verification script checks architecture, ZIP contents, MSI presence and SHA-256 metadata; publication preflight |

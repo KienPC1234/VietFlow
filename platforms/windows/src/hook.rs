@@ -829,6 +829,10 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         engine.macros.insert(k, v);
     }
 
+    // Start the async worker before attaching keyboard hooks so the hook
+    // callback never performs thread creation on a large macro.
+    crate::inject::prewarm_async_injector();
+
     // Keep the low-level hooks installed in TSF mode too: they are still needed
     // for V/E hotkeys, foreground exclusion/override, and settings/converter
     // hotkeys. The hook callback simply yields typing to the TSF TIP.

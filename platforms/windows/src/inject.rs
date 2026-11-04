@@ -1,6 +1,7 @@
 // VietFlow Windows - Keystroke Injection (Atomic, Scan-code, Safe)
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
+use std::cell::Cell;
 use std::mem::size_of;
 use std::sync::{mpsc, OnceLock};
 use std::thread::sleep;
@@ -9,6 +10,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, VkKeyScanW, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
     KEYEVENTF_UNICODE, VK_BACK, VK_SHIFT,
 };
+
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
 pub const VIETFLOW_MAGIC: usize = 0x56494554; // 'VIET'
 
@@ -67,10 +70,56 @@ pub fn create_unicode_input(c: char, key_up: bool) -> INPUT {
     create_utf16_input(encoded[0], key_up)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InjectionTarget {
+    hwnd: usize,
+    thread_id: u32,
+    process_id: u32,
+}
+
+impl InjectionTarget {
+    fn foreground() -> Option<Self> {
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            if hwnd.is_null() {
+                return None;
+            }
+            let mut process_id = 0u32;
+            let thread_id = GetWindowThreadProcessId(hwnd, &mut process_id);
+            if thread_id == 0 || process_id == 0 {
+                return None;
+            }
+            Some(Self {
+                hwnd: hwnd as usize,
+                thread_id,
+                process_id,
+            })
+        }
+    }
+}
+
+/// Only an identical window, foreground thread and process can receive
+/// a delayed injection. An HWND value on its own can be recycled.
+fn matches_target(target: InjectionTarget, actual: Option<InjectionTarget>) -> bool {
+    actual == Some(target)
+}
+
+thread_local! {
+    static ASYNC_TARGET: Cell<Option<InjectionTarget>> = const { Cell::new(None) };
+}
+
+fn async_target_still_active() -> bool {
+    ASYNC_TARGET.with(|current| match current.get() {
+        Some(target) => matches_target(target, InjectionTarget::foreground()),
+        None => true, // The immediate hook path remains synchronous.
+    })
+}
+
 struct InjectionJob {
     backspaces: usize,
     text: String,
     mode: u8,
+    target: InjectionTarget,
 }
 
 static INJECTION_TX: OnceLock<mpsc::Sender<InjectionJob>> = OnceLock::new();
@@ -83,7 +132,14 @@ fn get_injection_sender() -> mpsc::Sender<InjectionJob> {
                 .name("vietflow-async-injector".into())
                 .spawn(move || {
                     while let Ok(job) = rx.recv() {
+                        // Queued macro work must not type into the next app if
+                        // the foreground changed before the worker was scheduled.
+                        if !matches_target(job.target, InjectionTarget::foreground()) {
+                            continue;
+                        }
+                        ASYNC_TARGET.with(|target| target.set(Some(job.target)));
                         execute_injection_job(job.backspaces, &job.text, job.mode);
+                        ASYNC_TARGET.with(|target| target.set(None));
                     }
                 })
                 .expect("failed to spawn async injector thread");
@@ -92,11 +148,21 @@ fn get_injection_sender() -> mpsc::Sender<InjectionJob> {
         .clone()
 }
 
+/// Initialize the worker before WH_KEYBOARD_LL is installed. Thread startup
+/// and channel allocation must never happen on the keystroke callback path.
+pub fn prewarm_async_injector() {
+    let _ = get_injection_sender();
+}
+
 pub fn enqueue_async_injection(backspaces: usize, text: String, mode: u8) {
+    let Some(target) = InjectionTarget::foreground() else {
+        return;
+    };
     let _ = get_injection_sender().send(InjectionJob {
         backspaces,
         text,
         mode,
+        target,
     });
 }
 
@@ -214,6 +280,9 @@ where
 }
 
 fn send_checked(inputs: &[INPUT]) -> (bool, u32) {
+    if !async_target_still_active() {
+        return (false, 0);
+    }
     send_checked_using(inputs, |batch| unsafe {
         SendInput(
             batch.len() as u32,
@@ -489,6 +558,38 @@ mod tests {
             assert_eq!(count, accepted);
             assert_eq!(ok, accepted == 2);
         }
+    }
+
+    #[test]
+    fn async_target_requires_same_window_process_and_thread() {
+        let expected = InjectionTarget {
+            hwnd: 0x1042,
+            thread_id: 313,
+            process_id: 718,
+        };
+        assert!(matches_target(expected, Some(expected)));
+        assert!(!matches_target(expected, None));
+        assert!(!matches_target(
+            expected,
+            Some(InjectionTarget {
+                hwnd: 0x1043,
+                ..expected
+            })
+        ));
+        assert!(!matches_target(
+            expected,
+            Some(InjectionTarget {
+                thread_id: 314,
+                ..expected
+            })
+        ));
+        assert!(!matches_target(
+            expected,
+            Some(InjectionTarget {
+                process_id: 719,
+                ..expected
+            })
+        ));
     }
 
     #[test]
