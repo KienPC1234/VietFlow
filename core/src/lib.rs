@@ -725,6 +725,36 @@ mod tests {
         let (bk_timeout, text_timeout) = engine.process_key_with_time('s', 2100);
         assert_eq!(bk_timeout, 0);
         assert_eq!(text_timeout.as_str(), "s");
+
+        // Test typing "đây" with minimal backspaces:
+        // 'd' (0, "d")
+        // 'd' (1, "đ")
+        // 'a' (0, "a") -> "đa"
+        // 'a' (1, "â") -> "đâ" (minimal backspace 1 char, 'đ' is never backspaced!)
+        // 'y' (0, "y") -> "đây"
+        engine.reset();
+        assert_eq!(engine.process_key('d'), (0, KeyText::from_char('d')));
+        assert_eq!(engine.process_key('d'), (1, KeyText::from_str("đ")));
+        assert_eq!(engine.process_key('a'), (0, KeyText::from_char('a')));
+        assert_eq!(engine.process_key('a'), (1, KeyText::from_str("â")));
+        assert_eq!(engine.process_key('y'), (0, KeyText::from_char('y')));
+        assert_eq!(engine.current_word(), "đây");
+
+        // Test typing "đay"
+        engine.reset();
+        engine.process_key('d');
+        engine.process_key('d');
+        engine.process_key('a');
+        engine.process_key('y');
+        assert_eq!(engine.current_word(), "đay");
+
+        // Test typing "dây"
+        engine.reset();
+        engine.process_key('d');
+        engine.process_key('a');
+        engine.process_key('a');
+        engine.process_key('y');
+        assert_eq!(engine.current_word(), "dây");
     }
 
     #[test]

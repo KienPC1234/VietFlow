@@ -310,7 +310,7 @@ impl Default for AppConfig {
             auto_restore: true,
             fix_shift_lag: true,
             auto_switch_by_typing: true,
-            auto_detect_game_mode: true,
+            auto_detect_game_mode: false,
             pause_auto_after_manual: true,
             disable_on_non_us_layout: false,
             disable_on_non_unicode_window: true,

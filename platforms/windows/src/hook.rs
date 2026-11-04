@@ -197,14 +197,14 @@ impl GameDetectionTracker {
         let is_current_movement = movement_vks.contains(&vk);
         let is_current_aux = vk == VK_SPACE || vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT;
 
-        // Signal 1: Movement Chording (Holding a movement key while pressing another movement key, Space, or Shift)
-        // In normal typing, key rollover between discrete letters is < 50ms. Holding a direction key
-        // for >= 80ms while triggering strafes or jumps is a definitive gaming behavior.
+        // Signal 1: Sustained Movement Chording (Holding a movement key continuously for >= 500ms
+        // while pressing Jump/Sprint or another movement key).
+        // In typing, keys are tapped and released within 30-100ms. A continuous 500ms hold is definitive gaming.
         if is_current_movement || is_current_aux {
             for &m_vk in &movement_vks {
                 if m_vk != vk && held_vks[m_vk as usize] {
                     let down_t = self.key_down_time[m_vk as usize];
-                    if down_t > 0 && now_ms.saturating_sub(down_t) >= 80 {
+                    if down_t > 0 && now_ms.saturating_sub(down_t) >= 500 {
                         self.reset();
                         return true;
                     }
@@ -221,6 +221,7 @@ impl GameDetectionTracker {
         }
 
         // Signal 2: Rapid Arrow key sequence (>= 3 arrow keys within 1200ms)
+        // Arrow keys are NEVER typing letters in Vietnamese Telex/VNI.
         let is_arrow = matches!(vk, VK_LEFT | VK_UP | VK_RIGHT | VK_DOWN);
         if is_arrow && self.count >= 3 {
             let mut arrow_count = 0;
@@ -238,61 +239,6 @@ impl GameDetectionTracker {
             if arrow_count >= 3 {
                 self.reset();
                 return true;
-            }
-        }
-
-        // Signal 3: Opposing axis oscillation (A-D-A, D-A-D, W-S-W, S-W-S within 700ms)
-        if self.count >= 3 {
-            let i0 = (self.index + 8 - 1) % 8;
-            let i1 = (self.index + 8 - 2) % 8;
-            let i2 = (self.index + 8 - 3) % 8;
-            let k0 = self.recent_keys[i0];
-            let k1 = self.recent_keys[i1];
-            let k2 = self.recent_keys[i2];
-            let t0 = self.recent_timestamps[i0];
-            let t2 = self.recent_timestamps[i2];
-
-            if t0.saturating_sub(t2) <= 700 {
-                let is_strafe_h = (k0 == 0x41 && k1 == 0x44 && k2 == 0x41)
-                    || (k0 == 0x44 && k1 == 0x41 && k2 == 0x44);
-                let is_strafe_v = (k0 == 0x57 && k1 == 0x53 && k2 == 0x57)
-                    || (k0 == 0x53 && k1 == 0x57 && k2 == 0x53);
-
-                if is_strafe_h || is_strafe_v {
-                    self.reset();
-                    return true;
-                }
-            }
-        }
-
-        // Signal 4: 4-key WASD sequences with Telex Syllable Protection
-        if self.count >= 4 {
-            let i0 = (self.index + 8 - 1) % 8;
-            let i1 = (self.index + 8 - 2) % 8;
-            let i2 = (self.index + 8 - 3) % 8;
-            let i3 = (self.index + 8 - 4) % 8;
-            let k0 = self.recent_keys[i0];
-            let k1 = self.recent_keys[i1];
-            let k2 = self.recent_keys[i2];
-            let k3 = self.recent_keys[i3];
-            let t0 = self.recent_timestamps[i0];
-            let t3 = self.recent_timestamps[i3];
-
-            if t0.saturating_sub(t3) <= 1800 {
-                let keys4 = [k3, k2, k1, k0]; // chronological order
-                let is_all_wasd = keys4.iter().all(|k| movement_vks.contains(k));
-                if is_all_wasd {
-                    // Critical Telex Protection: prevent false positive on legitimate Vietnamese words:
-                    // 'd' (0x44), 'a' (0x41), 'w' (0x57), 's' (0x53) -> "daws" (đắ in đắt)
-                    // 's' (0x53), 'a' (0x41), 'w' (0x57), 's' (0x53) -> "saws" (sắ in sắt)
-                    let is_telex_syllable = (keys4 == [0x44, 0x41, 0x57, 0x53])
-                        || (keys4 == [0x53, 0x41, 0x57, 0x53]);
-
-                    if !is_telex_syllable {
-                        self.reset();
-                        return true;
-                    }
-                }
             }
         }
 
@@ -1274,38 +1220,36 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
-    // Automatic Game Mode Detection: when repeated movement patterns (WASD or Arrow keys)
+    // Automatic Game Mode Detection: when repeated movement patterns (Arrow keys or held WASD)
     // are detected, switch mode to English [E] automatically to prevent gaming disruption.
+    // CRITICAL: NEVER run game detection when the engine is actively composing a syllable!
     if is_key_down && state.config.auto_detect_game_mode && state.user_enabled {
-        let now_ms = get_tick_count_64();
-        if state.game_detector.record_key(vk, now_ms, &state.held_vks) {
-            state.user_enabled = false;
-            state.config.enabled = false;
-            if let Some(proc) = &state.current_process {
-                state.per_app_modes.insert(proc.clone(), false);
-            }
-            let current_w = state.engine.current_word();
-            let bk = current_w.chars().count();
-            if bk > 0 {
-                state.send_engine_output(bk, "");
-            }
-            state.engine.reset_word();
-            state.macro_buffer.clear();
-            state.english_word_buffer.clear();
-
-            let effective = state.effective_enabled();
-            crate::tsf::sync_tsf_config(&state.config, effective);
-
-            let tray_hwnd = state.tray_hwnd;
-            if !tray_hwnd.is_null() {
-                unsafe {
-                    PostMessageW(tray_hwnd, WM_TRAYICON, 0, 0);
+        if state.engine.is_empty() {
+            let now_ms = get_tick_count_64();
+            if state.game_detector.record_key(vk, now_ms, &state.held_vks) {
+                state.user_enabled = false;
+                state.config.enabled = false;
+                if let Some(proc) = &state.current_process {
+                    state.per_app_modes.insert(proc.clone(), false);
                 }
+                state.engine.reset_word();
+                state.macro_buffer.clear();
+                state.english_word_buffer.clear();
+
+                let effective = state.effective_enabled();
+                crate::tsf::sync_tsf_config(&state.config, effective);
+
+                let tray_hwnd = state.tray_hwnd;
+                if !tray_hwnd.is_null() {
+                    unsafe {
+                        PostMessageW(tray_hwnd, WM_TRAYICON, 0, 0);
+                    }
+                }
+                if state.config.notification_sound {
+                    play_notification_sound();
+                }
+                return CallNextHookEx(null_mut(), n_code, w_param, l_param);
             }
-            if state.config.notification_sound {
-                play_notification_sound();
-            }
-            return CallNextHookEx(null_mut(), n_code, w_param, l_param);
         }
     }
 
@@ -1352,7 +1296,10 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             VK_LWIN | VK_RWIN
         );
         if !is_mod {
-            if vk < 256 && state.held_vks[vk as usize] {
+            let is_physically_down = is_vk_down(vk);
+            if !is_physically_down {
+                state.held_vks[vk as usize] = false;
+            } else if vk < 256 && state.held_vks[vk as usize] {
                 return CallNextHookEx(null_mut(), n_code, w_param, l_param);
             }
             if vk < 256 {
@@ -2021,54 +1968,41 @@ mod tests {
         assert!(!tracker.record_key(0x4F, 300, &held)); // 'O'
         tracker.reset();
 
-        // 2. Telex Syllable Protection: "daws" (đắt) and "saws" (sắt) must NEVER trigger
+        // 2. Typing "đây" (d, d, a, a, y) must NEVER trigger game mode!
         assert!(!tracker.record_key(0x44, 1000, &held)); // 'D'
-        assert!(!tracker.record_key(0x41, 1100, &held)); // 'A'
-        assert!(!tracker.record_key(0x57, 1200, &held)); // 'W'
-        assert!(!tracker.record_key(0x53, 1300, &held)); // 'S' -> "daws" protected!
+        assert!(!tracker.record_key(0x44, 1080, &held)); // 'D'
+        assert!(!tracker.record_key(0x41, 1160, &held)); // 'A'
+        assert!(!tracker.record_key(0x41, 1240, &held)); // 'A' -> "ddaa" must NOT trigger!
+        assert!(!tracker.record_key(0x59, 1320, &held)); // 'Y'
         tracker.reset();
 
-        assert!(!tracker.record_key(0x53, 1400, &held)); // 'S'
-        assert!(!tracker.record_key(0x41, 1500, &held)); // 'A'
-        assert!(!tracker.record_key(0x57, 1600, &held)); // 'W'
-        assert!(!tracker.record_key(0x53, 1700, &held)); // 'S' -> "saws" protected!
+        // 3. Common Vietnamese syllables with WASD keys (daws, saws, ada, dad) must NEVER trigger
+        assert!(!tracker.record_key(0x44, 2000, &held)); // 'D'
+        assert!(!tracker.record_key(0x41, 2100, &held)); // 'A'
+        assert!(!tracker.record_key(0x44, 2200, &held)); // 'D' -> "dad" must NOT trigger!
         tracker.reset();
 
-        // 3. Gaming Strafe: A -> D -> A in < 700ms
-        assert!(!tracker.record_key(0x41, 2000, &held)); // 'A'
-        assert!(!tracker.record_key(0x44, 2200, &held)); // 'D'
-        assert!(tracker.record_key(0x41, 2400, &held));  // 'A' -> triggers strafe detection!
+        assert!(!tracker.record_key(0x53, 3000, &held)); // 'S'
+        assert!(!tracker.record_key(0x57, 3100, &held)); // 'W'
+        assert!(!tracker.record_key(0x53, 3200, &held)); // 'S' -> "sws" must NOT trigger!
         tracker.reset();
 
-        // 4. Gaming Strafe Vertical: W -> S -> W in < 700ms
-        assert!(!tracker.record_key(0x57, 3000, &held)); // 'W'
-        assert!(!tracker.record_key(0x53, 3200, &held)); // 'S'
-        assert!(tracker.record_key(0x57, 3400, &held));  // 'W' -> triggers strafe detection!
+        // 4. Arrow keys pattern: Left -> Up -> Right
+        assert!(!tracker.record_key(0x25, 4000, &held));
+        assert!(!tracker.record_key(0x26, 4200, &held));
+        assert!(tracker.record_key(0x27, 4400, &held));  // triggers arrow sequence!
         tracker.reset();
 
-        // 5. Gaming WASD Circle: W -> A -> S -> D
-        assert!(!tracker.record_key(0x57, 4000, &held)); // 'W'
-        assert!(!tracker.record_key(0x41, 4200, &held)); // 'A'
-        assert!(!tracker.record_key(0x53, 4400, &held)); // 'S'
-        assert!(tracker.record_key(0x44, 4600, &held));  // 'D' -> triggers WASD circle!
-        tracker.reset();
-
-        // 6. Arrow keys pattern: Left -> Up -> Right
-        assert!(!tracker.record_key(0x25, 5000, &held));
-        assert!(!tracker.record_key(0x26, 5200, &held));
-        assert!(tracker.record_key(0x27, 5400, &held));  // triggers arrow sequence!
-        tracker.reset();
-
-        // 7. Movement Chording: holding 'W' for 150ms while pressing 'A' or Space
+        // 5. Movement Chording: holding 'W' for >= 500ms while pressing 'A' or Space
         held[0x57] = true; // W is held
-        tracker.key_down_time[0x57] = 6000;
-        // Pressing 'A' while 'W' is held down for 150ms
-        assert!(tracker.record_key(0x41, 6150, &held)); // triggers chording detection!
+        tracker.key_down_time[0x57] = 5000;
+        // Pressing 'A' while 'W' has been held down for 550ms
+        assert!(tracker.record_key(0x41, 5550, &held)); // triggers chording detection!
         tracker.reset();
 
-        // Pressing 'Space' while 'W' is held down for 150ms
+        // Pressing 'Space' while 'W' has been held down for 550ms
         held[0x57] = true;
-        tracker.key_down_time[0x57] = 7000;
-        assert!(tracker.record_key(VK_SPACE, 7150, &held)); // triggers chording jump!
+        tracker.key_down_time[0x57] = 6000;
+        assert!(tracker.record_key(VK_SPACE, 6550, &held)); // triggers chording jump!
     }
 }

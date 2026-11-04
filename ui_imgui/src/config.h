@@ -48,7 +48,7 @@ struct Config {
     bool spell_check = true;
     bool auto_restore = true;
     bool auto_switch_by_typing = true;
-    bool auto_detect_game_mode = true;
+    bool auto_detect_game_mode = false;
     bool pause_auto_after_manual = true;
     bool fix_shift_lag = true;
     bool disable_on_non_us_layout = false;

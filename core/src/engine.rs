@@ -110,6 +110,11 @@ impl VietFlowEngine {
         self.pending_doubled_fix = false;
     }
 
+    /// Returns true if the internal syllable buffer is empty (no active composition).
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
+
     /// Returns the exact word string currently tracked in display shadow.
     pub fn current_word(&self) -> String {
         self.display_shadow.iter().collect()
@@ -753,6 +758,9 @@ impl VietFlowEngine {
                     last_slot.lexi = circumflex;
                     last_slot.modified = true;
                     self.refresh_tone_position();
+                    if self.current_tone == VnLexiTone::None {
+                        return Some(self.rebuild_from_index(last_idx));
+                    }
                     return Some(self.rebuild_current_word());
                 } else if self.options.free_marking && self.vowel_count > 0 {
                     // Free marking: 'a', 'e', or 'o' typed after coda or diphthongs/triphthongs (e.g. "them" + "e" -> "thêm", "lieu" + "e" -> "liêu", "ton" + "o" -> "tôn", "may" + "a" -> "mây")
