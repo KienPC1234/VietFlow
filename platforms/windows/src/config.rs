@@ -4,6 +4,13 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
+use std::os::windows::ffi::OsStrExt;
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0};
+use windows_sys::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
+
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -167,14 +174,30 @@ fn default_blue() -> String {
     "#0078D7".to_string()
 }
 
-fn default_acute() -> String { "s".to_string() }
-fn default_grave() -> String { "f".to_string() }
-fn default_hook() -> String { "r".to_string() }
-fn default_tilde() -> String { "x".to_string() }
-fn default_dot() -> String { "j".to_string() }
-fn default_remove_tone() -> String { "z".to_string() }
-fn default_hook_all() -> String { "w".to_string() }
-fn default_empty() -> String { String::new() }
+fn default_acute() -> String {
+    "s".to_string()
+}
+fn default_grave() -> String {
+    "f".to_string()
+}
+fn default_hook() -> String {
+    "r".to_string()
+}
+fn default_tilde() -> String {
+    "x".to_string()
+}
+fn default_dot() -> String {
+    "j".to_string()
+}
+fn default_remove_tone() -> String {
+    "z".to_string()
+}
+fn default_hook_all() -> String {
+    "w".to_string()
+}
+fn default_empty() -> String {
+    String::new()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CustomKeymapConfig {
@@ -408,6 +431,116 @@ fn shared_common_config_path() -> Option<PathBuf> {
     None
 }
 
+// Coordinate the Rust daemon and C++ settings UI: both use this named
+// inter-process mutex around backup + atomic replacement. Never on hook hot path.
+const CONFIG_MUTEX_NAME: &str = "Local\\VietFlow_Config_Write";
+
+struct ConfigWriteGuard(HANDLE);
+impl ConfigWriteGuard {
+    fn acquire() -> std::io::Result<Self> {
+        let wide: Vec<u16> = std::ffi::OsStr::new(CONFIG_MUTEX_NAME)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, wide.as_ptr()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let status = unsafe { WaitForSingleObject(handle, 5_000) };
+        if status == WAIT_OBJECT_0 || status == WAIT_ABANDONED {
+            Ok(Self(handle))
+        } else {
+            unsafe {
+                CloseHandle(handle);
+            }
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Config writer busy",
+            ))
+        }
+    }
+}
+impl Drop for ConfigWriteGuard {
+    fn drop(&mut self) {
+        unsafe {
+            ReleaseMutex(self.0);
+            CloseHandle(self.0);
+        }
+    }
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".bak");
+    PathBuf::from(name)
+}
+
+fn read_config_file(path: &Path) -> Option<AppConfig> {
+    let content = fs::read_to_string(path).ok()?;
+    let mut config = serde_json::from_str::<AppConfig>(&content).ok()?;
+    config.normalize();
+    Some(config)
+}
+
+/// Never destroy invalid user data on startup. Read the last valid backup
+/// if the primary file was interrupted, and retain the damaged file for repair.
+fn read_config_with_backup(path: &Path) -> Option<AppConfig> {
+    read_config_file(path).or_else(|| read_config_file(&backup_path(path)))
+}
+
+fn atomic_write_config(path: &Path, json: &str) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let unique = format!("{}.{}.{}", std::process::id(), nonce, json.len());
+    let mut temp = path.as_os_str().to_os_string();
+    temp.push(format!(".tmp.{unique}"));
+    let temp = PathBuf::from(temp);
+
+    let result = (|| {
+        // create_new prevents a temp-file symlink from being followed.
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        f.write_all(json.as_bytes())?;
+        f.sync_all()?;
+        drop(f);
+
+        // Preserve the previous *valid* config with an atomic .bak replace.
+        // A malformed config must not replace a previously good backup.
+        if read_config_file(path).is_some() {
+            let backup = backup_path(path);
+            let mut backup_temp = backup.as_os_str().to_os_string();
+            backup_temp.push(format!(".tmp.{unique}"));
+            let backup_temp = PathBuf::from(backup_temp);
+            let backup_result = (|| {
+                fs::copy(path, &backup_temp)?;
+                let b = fs::OpenOptions::new().write(true).open(&backup_temp)?;
+                b.sync_all()?;
+                drop(b);
+                fs::rename(&backup_temp, &backup)
+            })();
+            if backup_result.is_err() {
+                let _ = fs::remove_file(&backup_temp);
+            }
+            backup_result?;
+        }
+        // On Windows std::fs::rename replaces an existing file atomically.
+        fs::rename(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
+
 impl AppConfig {
     pub fn normalize(&mut self) {
         self.injection_mode = normalize_injection_mode(self.injection_mode);
@@ -497,51 +630,10 @@ impl AppConfig {
     }
 
     pub fn save_atomic(target_path: &std::path::Path, json: &str) -> bool {
-        let parent = match target_path.parent() {
-            Some(p) => p,
-            None => return false,
+        let Ok(_guard) = ConfigWriteGuard::acquire() else {
+            return false;
         };
-        if !parent.is_dir() && fs::create_dir_all(parent).is_err() {
-            return false;
-        }
-
-        let pid = std::process::id();
-        let tmp_path = parent.join(format!("{}.tmp.{}", crate::constants::CONFIG_FILE_NAME, pid));
-        let bak_path = target_path.with_extension("json.bak");
-
-        use std::io::Write;
-        let write_ok = (|| -> std::io::Result<()> {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp_path)?;
-            file.write_all(json.as_bytes())?;
-            file.sync_all()?;
-            Ok(())
-        })();
-
-        if write_ok.is_err() {
-            let _ = fs::remove_file(&tmp_path);
-            return false;
-        }
-
-        // Backup existing valid file before replacing
-        if target_path.is_file() {
-            let _ = fs::copy(target_path, &bak_path);
-        }
-
-        // Replace target atomically
-        if fs::rename(&tmp_path, target_path).is_err() {
-            if fs::copy(&tmp_path, target_path).is_ok() {
-                let _ = fs::remove_file(&tmp_path);
-                return true;
-            }
-            let _ = fs::remove_file(&tmp_path);
-            return false;
-        }
-
-        true
+        atomic_write_config(target_path, json).is_ok()
     }
 
     pub fn load() -> Self {
@@ -625,14 +717,16 @@ impl AppConfig {
 
         // 3. Defaults if no valid config could be located
         let def = Self::default();
-        def.save();
+        if !path.exists() && !backup_path(path).exists() {
+            def.save();
+        }
         def
     }
 
     pub fn save(&self) {
         let path = Self::config_path_ref();
         if let Ok(json) = serde_json::to_string_pretty(self) {
-            if !Self::save_atomic(path, &json) {
+            if !Self::save_atomic(path, &json) && !path.exists() {
                 if let Some(ad) = get_app_data_dir() {
                     let alt_path = ad.join(crate::constants::CONFIG_FILE_NAME);
                     if &alt_path != path {
@@ -739,8 +833,8 @@ mod tests {
         let missing: AppConfig = serde_json::from_str("{}").expect("empty config");
         assert!(!missing.enable_macro);
 
-        let enabled: AppConfig = serde_json::from_str(r#"{"enable_macro":true}"#)
-            .expect("explicit macro config");
+        let enabled: AppConfig =
+            serde_json::from_str(r#"{"enable_macro":true}"#).expect("explicit macro config");
         assert!(enabled.enable_macro);
     }
 
@@ -761,8 +855,51 @@ mod tests {
     }
 
     #[test]
+    fn atomic_save_preserves_valid_backup_and_recovers_from_corruption() {
+        let dir = std::env::temp_dir().join(format!(
+            "vietflow-config-atomic-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("settings.json");
+        let mut old = AppConfig::default();
+        old.macros.insert("brb".into(), "be right back".into());
+        atomic_write_config(&file, &serde_json::to_string(&old).unwrap()).unwrap();
+
+        let mut new = AppConfig::default();
+        new.enabled = false;
+        atomic_write_config(&file, &serde_json::to_string(&new).unwrap()).unwrap();
+        assert_eq!(read_config_file(&file).unwrap().enabled, false);
+        assert_eq!(
+            read_config_file(&backup_path(&file))
+                .unwrap()
+                .macros
+                .get("brb")
+                .map(String::as_str),
+            Some("be right back")
+        );
+
+        fs::write(&file, b"{corrupt").unwrap();
+        assert_eq!(
+            read_config_with_backup(&file)
+                .unwrap()
+                .macros
+                .get("brb")
+                .map(String::as_str),
+            Some("be right back")
+        );
+        assert_eq!(fs::read(&file).unwrap(), b"{corrupt");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn atomic_save_and_backup_creation() {
-        let temp_dir = std::env::temp_dir().join(format!("vietflow_cfg_test_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("vietflow_cfg_test_{}", std::process::id()));
         let _ = fs::create_dir_all(&temp_dir);
         let cfg_path = temp_dir.join("vietflow_config.json");
         let bak_path = temp_dir.join("vietflow_config.json.bak");

@@ -11,6 +11,51 @@
 namespace vietflow {
 
 using json = nlohmann::json;
+// Same per-session writer lock as Rust config.rs: never truncate a live config.
+class ConfigWriteLock {
+public:
+    ConfigWriteLock() : mutex_(CreateMutexW(nullptr, FALSE, L"Local\\VietFlow_Config_Write")) {
+        if (mutex_) {
+            DWORD result = WaitForSingleObject(mutex_, 5000);
+            held_ = result == WAIT_OBJECT_0 || result == WAIT_ABANDONED;
+        }
+    }
+    ~ConfigWriteLock() {
+        if (held_) ReleaseMutex(mutex_);
+        if (mutex_) CloseHandle(mutex_);
+    }
+    bool acquired() const { return held_; }
+private:
+    HANDLE mutex_ = nullptr;
+    bool held_ = false;
+};
+
+// Flush staged UTF-8 JSON to disk before atomically publishing it.
+static bool FlushFileToDisk(const std::filesystem::path& path) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    BOOL ok = FlushFileBuffers(file);
+    CloseHandle(file);
+    return ok != FALSE;
+}
+
+static bool ReadConfigJson(const std::filesystem::path& path, json& result) {
+    try {
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return false;
+        json parsed = json::parse(f);
+        if (!parsed.is_object()) return false;
+        result = std::move(parsed);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+
+
 
 static void LowerAsciiInPlace(std::string& value) {
     for (char& c : value) {
@@ -113,19 +158,14 @@ std::string Config::GetDefaultConfigPath() {
 
 bool Config::Load(const std::string& custom_path) {
     std::string path = custom_path.empty() ? GetDefaultConfigPath() : custom_path;
-    std::ifstream file(path);
-    if (!file.is_open()) {
-        std::ifstream bak_file(path + ".bak");
-        if (bak_file.is_open()) {
-            return Load(path + ".bak");
-        }
-        return false;
+    json j;
+    const std::filesystem::path primary(path);
+    if (!ReadConfigJson(primary, j)) {
+        auto backup = primary;
+        backup += L".bak";
+        if (!ReadConfigJson(backup, j)) return false;
     }
-
     try {
-        json j;
-        file >> j;
-
         enabled = j.value("enabled", enabled);
         method = j.value("method", method);
         charset = j.value("charset", charset);
@@ -347,31 +387,52 @@ bool Config::Save(const std::string& custom_path) const {
         ck["lone_w"] = custom_keymap.lone_w;
         j["custom_keymap"] = ck;
 
-        std::filesystem::path target_p(path);
-        std::filesystem::path tmp_p = target_p;
-        tmp_p += ".tmp";
-        std::filesystem::path bak_p = target_p;
-        bak_p += ".bak";
+        ConfigWriteLock lock;
+        if (!lock.acquired()) return false;
+        const auto now = std::to_wstring(GetTickCount64());
+        const auto nonce = std::to_wstring(GetCurrentProcessId()) + L"." + now;
+        const auto temp = std::filesystem::path(path).wstring() + L".tmp." + nonce;
+        const std::filesystem::path staged(temp);
+        const std::filesystem::path target(path);
+        auto backup = target; backup += L".bak";
+        auto backupTemp = backup; backupTemp += L".tmp." + nonce;
 
         {
-            std::ofstream file(tmp_p);
-            if (!file.is_open()) return false;
+            std::ofstream file(staged, std::ios::binary | std::ios::trunc);
+            if (!file) return false;
             file << j.dump(2);
             file.flush();
+            if (!file.good()) {
+                std::error_code ec;
+                std::filesystem::remove(staged, ec);
+                return false;
+            }
+        }
+        if (!FlushFileToDisk(staged)) {
+            std::error_code ec; std::filesystem::remove(staged, ec);
+            return false;
         }
 
-        std::error_code ec;
-        if (std::filesystem::exists(target_p)) {
-            std::filesystem::copy_file(target_p, bak_p, std::filesystem::copy_options::overwrite_existing, ec);
+        json previous;
+        if (ReadConfigJson(target, previous)) {
+            // Backup only a valid previous config; never poison the last good copy.
+            if (!CopyFileW(target.c_str(), backupTemp.c_str(), FALSE) ||
+                !FlushFileToDisk(backupTemp) ||
+                !MoveFileExW(backupTemp.c_str(), backup.c_str(),
+                             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                std::error_code ec;
+                std::filesystem::remove(staged, ec);
+                std::filesystem::remove(backupTemp, ec);
+                return false;
+            }
         }
-
-        if (MoveFileExW(tmp_p.c_str(), target_p.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-            return true;
+        if (!MoveFileExW(staged.c_str(), target.c_str(),
+                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            std::error_code ec;
+            std::filesystem::remove(staged, ec);
+            return false;
         }
-
-        std::filesystem::copy_file(tmp_p, target_p, std::filesystem::copy_options::overwrite_existing, ec);
-        std::filesystem::remove(tmp_p, ec);
-        return !ec;
+        return true;
     } catch (...) {
         return false;
     }

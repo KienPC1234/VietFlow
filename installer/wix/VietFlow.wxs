@@ -55,10 +55,10 @@
                   Impersonate="no"
                   Return="ignore" />
 
-    <!-- Full Data & Shortcut Cleanup ONLY on complete Uninstall (never on upgrade) -->
-    <CustomAction Id="FullCleanupOnUninstall"
+    <!-- Shortcut cleanup on uninstall (preserve ProgramData config, macros and user files) -->
+    <CustomAction Id="CleanupShortcutsOnFinalUninstall"
                   Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;[#VietFlowExe]&quot; --uninstall-cleanup"
+                  ExeCommand="&quot;[#VietFlowExe]&quot; --clean-shortcuts"
                   Execute="deferred"
                   Impersonate="no"
                   Return="ignore" />
@@ -74,8 +74,8 @@
       <!-- TSF Unregistration on uninstall or upgrade: cleans up TIP COM/Layout if previously registered by user -->
       <Custom Action="UnregisterTSF" Before="RemoveFiles" Condition="(Installed AND (REMOVE=&quot;ALL&quot; OR UPGRADINGPRODUCTCODE))" />
 
-      <!-- Full cleanup only on full uninstall, shortcuts cleanup on upgrade -->
-      <Custom Action="FullCleanupOnUninstall" After="UnregisterTSF" Condition="(Installed AND REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE)" />
+      <!-- Shortcut-only cleanup on uninstall or upgrade; do not erase user data -->
+      <Custom Action="CleanupShortcutsOnFinalUninstall" After="UnregisterTSF" Condition="(Installed AND REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE)" />
       <Custom Action="CleanupShortcutsOnUninstall" After="UnregisterTSF" Condition="(Installed AND UPGRADINGPRODUCTCODE)" />
     </InstallExecuteSequence>
 

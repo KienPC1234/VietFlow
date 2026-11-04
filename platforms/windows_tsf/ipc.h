@@ -9,7 +9,7 @@
 #include <windows.h>
 #include <cstdint>
 
-#pragma pack(push, 8)
+#pragma pack(push, 1)
 struct TsfSharedConfig {
     uint32_t enabled;
     uint32_t method;
@@ -21,17 +21,22 @@ struct TsfSharedConfig {
     uint32_t auto_switch_by_typing;
     uint32_t enable_macro;
     uint32_t version;
-    uint32_t seq;
+    uint32_t sequence;
+    uint32_t reserved;
+};
+struct TsfFocusState {
     uint64_t last_active_tick;
     uint32_t last_active_pid;
     uint32_t is_composing;
 };
 #pragma pack(pop)
-static_assert(sizeof(TsfSharedConfig) == 64, "TsfSharedConfig must be exactly 64 bytes");
+static_assert(sizeof(TsfSharedConfig) == 48, "Rust/C++ config ABI mismatch");
+static_assert(sizeof(TsfFocusState) == 16, "Rust/C++ focus ABI mismatch");
 
 class SharedConfigReader {
 public:
-    SharedConfigReader();
+    explicit SharedConfigReader(const wchar_t* configName = nullptr,
+                                const wchar_t* focusName = nullptr);
     ~SharedConfigReader();
 
     TsfSharedConfig Get();
@@ -39,8 +44,14 @@ public:
     void UpdateActiveKeystroke(bool isComposing);
 
 private:
+    void EnsureMaps();
     HANDLE m_hMapping = nullptr;
-    TsfSharedConfig* m_pView = nullptr;
-    bool m_writable = false;
+    HANDLE m_hFocus = nullptr;
+    const TsfSharedConfig* m_pView = nullptr;
+    TsfFocusState* m_pFocus = nullptr;
+    TsfSharedConfig m_cached = {};
+    bool m_focusRequested = false;
+    const wchar_t* m_configName = nullptr;
+    const wchar_t* m_focusName = nullptr;
 };
 
