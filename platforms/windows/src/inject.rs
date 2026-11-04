@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::mem::size_of;
 use std::sync::{mpsc, OnceLock};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, VkKeyScanW, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
     KEYEVENTF_UNICODE, VK_BACK, VK_SHIFT,
@@ -20,6 +20,10 @@ extern "system" {
     fn MapVirtualKeyW(uCode: u32, uMapType: u32) -> u32;
 }
 
+// A slow target application must not accumulate an unbounded backlog of
+// key events that could be delivered seconds later to the wrong text field.
+const MAX_PENDING_INJECTION_JOBS: usize = 8;
+const MAX_PENDING_JOB_AGE: Duration = Duration::from_millis(750);
 const ATOMIC_BACKSPACE_LIMIT: usize = 16;
 const ATOMIC_CHAR_LIMIT: usize = 32;
 const MAX_ATOMIC_INPUTS: usize = (ATOMIC_BACKSPACE_LIMIT + 2) * 2 + (ATOMIC_CHAR_LIMIT + 4) * 4;
@@ -120,50 +124,77 @@ struct InjectionJob {
     text: String,
     mode: u8,
     target: InjectionTarget,
+    queued_at: Instant,
 }
 
-static INJECTION_TX: OnceLock<mpsc::Sender<InjectionJob>> = OnceLock::new();
+fn eligible_queued_job(
+    job: &InjectionJob,
+    foreground: Option<InjectionTarget>,
+    now: Instant,
+) -> bool {
+    matches_target(job.target, foreground)
+        && now
+            .checked_duration_since(job.queued_at)
+            .is_some_and(|age| age <= MAX_PENDING_JOB_AGE)
+}
 
-fn get_injection_sender() -> mpsc::Sender<InjectionJob> {
+fn try_enqueue(
+    sender: &mpsc::SyncSender<InjectionJob>,
+    job: InjectionJob,
+) -> Result<(), mpsc::TrySendError<InjectionJob>> {
+    // Crucially, this never waits for a slow worker on WH_KEYBOARD_LL.
+    sender.try_send(job)
+}
+
+static INJECTION_TX: OnceLock<Option<mpsc::SyncSender<InjectionJob>>> = OnceLock::new();
+
+/// Initialize the bounded worker before installing WH_KEYBOARD_LL.
+/// A failure is surfaced without panic; no thread is started from the hook.
+pub fn prewarm_async_injector() -> bool {
     INJECTION_TX
         .get_or_init(|| {
-            let (tx, rx) = mpsc::channel::<InjectionJob>();
-            std::thread::Builder::new()
+            let (tx, rx) = mpsc::sync_channel::<InjectionJob>(MAX_PENDING_INJECTION_JOBS);
+            match std::thread::Builder::new()
                 .name("vietflow-async-injector".into())
                 .spawn(move || {
                     while let Ok(job) = rx.recv() {
-                        // Queued macro work must not type into the next app if
-                        // the foreground changed before the worker was scheduled.
-                        if !matches_target(job.target, InjectionTarget::foreground()) {
+                        if !eligible_queued_job(&job, InjectionTarget::foreground(), Instant::now())
+                        {
                             continue;
                         }
                         ASYNC_TARGET.with(|target| target.set(Some(job.target)));
                         execute_injection_job(job.backspaces, &job.text, job.mode);
                         ASYNC_TARGET.with(|target| target.set(None));
                     }
-                })
-                .expect("failed to spawn async injector thread");
-            tx
+                }) {
+                Ok(_) => Some(tx),
+                Err(err) => {
+                    eprintln!("VietFlow async injector unavailable: {err}");
+                    None
+                }
+            }
         })
-        .clone()
-}
-
-/// Initialize the worker before WH_KEYBOARD_LL is installed. Thread startup
-/// and channel allocation must never happen on the keystroke callback path.
-pub fn prewarm_async_injector() {
-    let _ = get_injection_sender();
+        .is_some()
 }
 
 pub fn enqueue_async_injection(backspaces: usize, text: String, mode: u8) {
     let Some(target) = InjectionTarget::foreground() else {
         return;
     };
-    let _ = get_injection_sender().send(InjectionJob {
-        backspaces,
-        text,
-        mode,
-        target,
-    });
+    // Do not implicitly spawn a worker from the keystroke callback.
+    let Some(sender) = INJECTION_TX.get().and_then(Option::as_ref) else {
+        return;
+    };
+    let _ = try_enqueue(
+        sender,
+        InjectionJob {
+            backspaces,
+            text,
+            mode,
+            target,
+            queued_at: Instant::now(),
+        },
+    );
 }
 
 fn execute_injection_job(backspaces: usize, text: &str, mode: u8) {
@@ -558,6 +589,66 @@ mod tests {
             assert_eq!(count, accepted);
             assert_eq!(ok, accepted == 2);
         }
+    }
+
+    fn queued_test_job(target: InjectionTarget, queued_at: Instant) -> InjectionJob {
+        InjectionJob {
+            backspaces: 2,
+            text: "?i?n".into(),
+            mode: 3,
+            target,
+            queued_at,
+        }
+    }
+
+    #[test]
+    fn bounded_injection_queue_never_blocks_when_full() {
+        let (sender, receiver) = mpsc::sync_channel::<InjectionJob>(1);
+        let target = InjectionTarget {
+            hwnd: 0x1234,
+            process_id: 43,
+            thread_id: 91,
+        };
+        assert!(try_enqueue(&sender, queued_test_job(target, Instant::now())).is_ok());
+        assert!(matches!(
+            try_enqueue(&sender, queued_test_job(target, Instant::now())),
+            Err(mpsc::TrySendError::Full(_)),
+        ));
+        let accepted = receiver
+            .try_recv()
+            .expect("the first queued job remains intact");
+        assert_eq!(accepted.text, "?i?n");
+        assert!(try_enqueue(&sender, queued_test_job(target, Instant::now())).is_ok());
+        drop(receiver);
+        assert!(matches!(
+            try_enqueue(&sender, queued_test_job(target, Instant::now())),
+            Err(mpsc::TrySendError::Disconnected(_)),
+        ));
+    }
+
+    #[test]
+    fn queued_job_must_be_fresh_and_foreground_owned() {
+        let target = InjectionTarget {
+            hwnd: 0x2048,
+            process_id: 77,
+            thread_id: 218,
+        };
+        let now = Instant::now();
+        let current = queued_test_job(target, now);
+        assert!(eligible_queued_job(&current, Some(target), now));
+        let expired = queued_test_job(target, now - MAX_PENDING_JOB_AGE - Duration::from_millis(1));
+        assert!(!eligible_queued_job(&expired, Some(target), now));
+        let boundary = queued_test_job(target, now - MAX_PENDING_JOB_AGE);
+        assert!(eligible_queued_job(&boundary, Some(target), now));
+        assert!(!eligible_queued_job(&current, None, now));
+        assert!(!eligible_queued_job(
+            &current,
+            Some(InjectionTarget {
+                hwnd: 0x2049,
+                ..target
+            }),
+            now
+        ));
     }
 
     #[test]
