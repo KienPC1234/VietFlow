@@ -201,6 +201,7 @@ foreach ($a in $archs) {
         $tsfDir = Join-Path $root "platforms/windows_tsf"
         $tsfBuildDir = Join-Path $tsfDir "build-x86"
         $coreLibX86 = (Join-Path $root "target\i686-pc-windows-msvc\release\vietflow_core.lib").Replace('\', '/')
+        if (-not (Test-Path $coreLibX86)) { throw "Missing target Rust core staticlib: $coreLibX86" }
         & cmake -B $tsfBuildDir -S $tsfDir -A Win32 -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=$staticCrtValue -DVIETFLOW_CORE_LIB="$coreLibX86"
         if ($LASTEXITCODE -ne 0) {
             Write-Error "x86 TSF CMake configure failed!"
@@ -229,6 +230,7 @@ foreach ($a in $archs) {
         $tsfDir = Join-Path $root "platforms/windows_tsf"
         $tsfBuildDir = Join-Path $tsfDir "build-arm64"
         $coreLibArm64 = (Join-Path $root "target\aarch64-pc-windows-msvc\release\vietflow_core.lib").Replace('\', '/')
+        if (-not (Test-Path $coreLibArm64)) { throw "Missing target Rust core staticlib: $coreLibArm64" }
         & cmake -B $tsfBuildDir -S $tsfDir -A ARM64 -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=$staticCrtValue -DVIETFLOW_CORE_LIB="$coreLibArm64"
         if ($LASTEXITCODE -ne 0) {
             Write-Error "ARM64 TSF CMake configure failed!"
@@ -257,6 +259,7 @@ foreach ($a in $archs) {
         $tsfDir = Join-Path $root "platforms/windows_tsf"
         $tsfBuildDir = Join-Path $tsfDir "build"
         $coreLibX64 = (Join-Path $root "target\release\vietflow_core.lib").Replace('\', '/')
+        if (-not (Test-Path $coreLibX64)) { throw "Missing target Rust core staticlib: $coreLibX64" }
         & cmake -B $tsfBuildDir -S $tsfDir -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=$staticCrtValue -DVIETFLOW_CORE_LIB="$coreLibX64"
         if ($LASTEXITCODE -ne 0) {
             Write-Error "x64 TSF CMake configure failed!"
@@ -274,18 +277,20 @@ foreach ($a in $archs) {
         Write-Error "Expected executable not found: $src"
         exit 1
     }
+    if ((Get-PeArchitecture $src) -ne $a) {
+        throw "Built EXE PE architecture mismatch for $a : $src"
+    }
     $built[$a] = $src
     $builtDist[$a] = Join-Path $DistDir $distName
 }
 
-Stop-Process -Name "VietFlow" -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 400
-
+# Artifact compilation must not terminate a running installed application.
 foreach ($a in $archs) {
     Copy-Item $built[$a] $builtDist[$a] -Force
     if ($a -eq 'x64') {
         Copy-Item $built[$a] (Join-Path $DistDir "VietFlow-x64.exe") -Force
         $tsfDll = Join-Path $root "platforms\windows_tsf\build\Release\vietflow_tsf.dll"
+        if (-not (Test-Path $tsfDll) -or (Get-PeArchitecture $tsfDll) -ne "x64") { throw "Missing or mismatched x64 TSF DLL" }
         if (Test-Path $tsfDll) {
             $destTsf = Join-Path $DistDir "vietflow_tsf.dll"
             try {
@@ -304,6 +309,7 @@ foreach ($a in $archs) {
         }
     } elseif ($a -eq 'x86') {
         $tsfDll86 = Join-Path $root "platforms\windows_tsf\build-x86\Release\vietflow_tsf.dll"
+        if (-not (Test-Path $tsfDll86) -or (Get-PeArchitecture $tsfDll86) -ne "x86") { throw "Missing or mismatched x86 TSF DLL" }
         if (Test-Path $tsfDll86) {
             $destTsf86 = Join-Path $DistDir "vietflow_tsf_x86.dll"
             Copy-Item $tsfDll86 $destTsf86 -Force
@@ -311,6 +317,7 @@ foreach ($a in $archs) {
         }
     } elseif ($a -eq 'arm64') {
         $tsfDllArm = Join-Path $root "platforms\windows_tsf\build-arm64\Release\vietflow_tsf.dll"
+        if (-not (Test-Path $tsfDllArm) -or (Get-PeArchitecture $tsfDllArm) -ne "arm64") { throw "Missing or mismatched arm64 TSF DLL" }
         if (Test-Path $tsfDllArm) {
             $destTsfArm = Join-Path $DistDir "vietflow_tsf_arm64.dll"
             Copy-Item $tsfDllArm $destTsfArm -Force
@@ -414,9 +421,10 @@ if ($Msi) {
         if (-not (Test-Path $bin)) {
             $bin = Join-Path $DistDir "VietFlow-$a.exe"
         }
-        if (Test-Path $bin) {
-            Copy-Item $bin (Join-Path $tmpDir "VietFlow.exe") -Force
+        if (-not (Test-Path $bin) -or (Get-PeArchitecture $bin) -ne $a) {
+            throw "Missing or wrong portable executable for $a"
         }
+        Copy-Item $bin (Join-Path $tmpDir "VietFlow.exe") -Force
 
         # Architecture-specific TSF DLL
         $tsfCandidates = switch ($a) {
@@ -445,7 +453,7 @@ if ($Msi) {
             throw "Architecture-matched TSF DLL for $a was not found in: $($tsfCandidates -join ', '). Packaging aborted to prevent shipping mismatched binary."
         }
         $tsfPe = Get-PeArchitecture $tsfDll
-        if ($tsfPe -and $tsfPe -ne $a) {
+        if ($tsfPe -ne $a) {
             throw "TSF DLL architecture mismatch for portable zip: expected $a, but $tsfDll is $tsfPe"
         }
         Copy-Item $tsfDll (Join-Path $tmpDir "vietflow_tsf.dll") -Force
@@ -462,6 +470,20 @@ if ($Msi) {
         Write-Host "      Portable ${a}: $zipOut ($zipSizeMb MB)" -ForegroundColor Green
     }
 
+    foreach ($a in $archs) {
+        $dllName = switch ($a) {
+            'x86' { 'vietflow_tsf_x86.dll' }
+            'arm64' { 'vietflow_tsf_arm64.dll' }
+            default { 'vietflow_tsf.dll' }
+        }
+        Copy-Item -LiteralPath (Join-Path $DistDir $dllName) -Destination (Join-Path $releasesDir $dllName) -Force
+    }
+    if ($archs -contains 'x64') {
+        Copy-Item -LiteralPath (Join-Path $DistDir 'VietFlow-x64.exe') -Destination (Join-Path $releasesDir 'VietFlow.exe') -Force
+    }
+    $verifyScript = Join-Path $root 'scripts\verify_release_artifacts.ps1'
+    & $verifyScript -Arch $Arch -DistDir $DistDir -ReleaseDir $releasesDir -RequireRelease
+    if ($LASTEXITCODE -ne 0) { throw 'Release verification failed' }
     Write-Host "MSI and Portable releases ready in: $releasesDir" -ForegroundColor Green
     Write-Host "Upload these assets to the GitHub release:" -ForegroundColor Green
     Write-Host "  VietFlow-win-x64-Portable.zip, VietFlow-win-x86-Portable.zip (Portable ZIPs)" -ForegroundColor Green

@@ -54,3 +54,9 @@ target_link_libraries(vietflow_tsf PRIVATE
     ntdll
 )
 
+# Optional isolated native protocol test; does not load/register a TIP.
+option(VIETFLOW_BUILD_IPC_SMOKE "Build TSF IPC protocol smoke test" OFF)
+if(VIETFLOW_BUILD_IPC_SMOKE)
+    add_executable(vietflow_tsf_ipc_smoke ipc.cpp ../../tests/tsf_ipc_smoke.cpp)
+    target_include_directories(vietflow_tsf_ipc_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()

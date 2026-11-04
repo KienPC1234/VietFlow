@@ -1,98 +1,120 @@
-// VietFlow Windows TSF - Cross-Process Shared Configuration
-// Licensed under GNU General Public License v3.0 (GPLv3)
-
+// VietFlow TSF: separate immutable configuration and foreground focus mappings.
+// Licensed under GPLv3.
 #include "ipc.h"
+#include <cstring>
 
-static const wchar_t* SHARED_MEM_NAME = L"Local\\VietFlow_TSF_Config";
+static constexpr wchar_t CONFIG_MAP_NAME[] = L"Local\\VietFlow_TSF_Config_v2";
+static constexpr wchar_t FOCUS_MAP_NAME[] = L"Local\\VietFlow_TSF_Focus_v2";
 
-SharedConfigReader::SharedConfigReader() {
-    DWORD size = sizeof(TsfSharedConfig);
-    m_hMapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, size, SHARED_MEM_NAME);
-    if (m_hMapping) {
-        m_pView = static_cast<TsfSharedConfig*>(MapViewOfFile(m_hMapping, FILE_MAP_ALL_ACCESS, 0, 0, size));
-        if (m_pView) {
-            m_writable = true;
-            if (m_pView->version == 0) {
-                m_pView->enabled = 1;
-                m_pView->method = 0;
-                m_pView->charset = 0;
-                m_pView->modern_style = 1;
-                m_pView->spell_check = 1;
-                m_pView->free_marking = 1;
-                m_pView->auto_restore = 1;
-                m_pView->auto_switch_by_typing = 1;
-                m_pView->enable_macro = 1;
-                m_pView->version = 1;
-                m_pView->last_active_tick = 0;
-                m_pView->last_active_pid = 0;
-                m_pView->is_composing = 0;
+static TsfSharedConfig DisabledFallback() {
+    TsfSharedConfig c = {};
+    c.enabled = 0;
+    c.method = 0;
+    c.charset = 0;
+    c.modern_style = 1;
+    c.spell_check = 1;
+    c.free_marking = 1;
+    c.auto_restore = 1;
+    c.auto_switch_by_typing = 1;
+    c.enable_macro = 1;
+    c.version = 2;
+    return c;
+}
+
+SharedConfigReader::SharedConfigReader(const wchar_t* configName, const wchar_t* focusName)
+    : m_cached(DisabledFallback()),
+      m_configName(configName ? configName : CONFIG_MAP_NAME),
+      m_focusName(focusName ? focusName : FOCUS_MAP_NAME) {
+    EnsureMaps();
+}
+
+void SharedConfigReader::EnsureMaps() {
+    if (!m_pView) {
+        if (!m_hMapping)
+            m_hMapping = OpenFileMappingW(FILE_MAP_READ, FALSE, m_configName);
+        if (m_hMapping) {
+            m_pView = static_cast<const TsfSharedConfig*>(
+                MapViewOfFile(m_hMapping, FILE_MAP_READ, 0, 0, sizeof(TsfSharedConfig)));
+            if (!m_pView) { CloseHandle(m_hMapping); m_hMapping = nullptr; }
+        }
+    }
+    if (!m_pFocus) {
+        if (!m_hFocus)
+            m_hFocus = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, m_focusName);
+        if (m_hFocus) {
+            m_pFocus = static_cast<TsfFocusState*>(
+                MapViewOfFile(m_hFocus, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(TsfFocusState)));
+            if (!m_pFocus) { CloseHandle(m_hFocus); m_hFocus = nullptr; }
+            if (m_pFocus && m_focusRequested) {
+                InterlockedExchange(reinterpret_cast<volatile LONG*>(&m_pFocus->last_active_pid),
+                                    static_cast<LONG>(GetCurrentProcessId()));
+                InterlockedExchange64(reinterpret_cast<volatile LONG64*>(&m_pFocus->last_active_tick),
+                                      static_cast<LONG64>(GetTickCount64()));
             }
-        } else {
-            m_pView = static_cast<TsfSharedConfig*>(MapViewOfFile(m_hMapping, FILE_MAP_READ, 0, 0, size));
         }
     }
 }
 
 SharedConfigReader::~SharedConfigReader() {
-    if (m_pView) {
-        UnmapViewOfFile(m_pView);
-        m_pView = nullptr;
-    }
-    if (m_hMapping) {
-        CloseHandle(m_hMapping);
-        m_hMapping = nullptr;
-    }
+    if (m_pView) { UnmapViewOfFile(m_pView); m_pView = nullptr; }
+    if (m_pFocus) { UnmapViewOfFile(m_pFocus); m_pFocus = nullptr; }
+    if (m_hMapping) { CloseHandle(m_hMapping); m_hMapping = nullptr; }
+    if (m_hFocus) { CloseHandle(m_hFocus); m_hFocus = nullptr; }
 }
 
 TsfSharedConfig SharedConfigReader::Get() {
-    if (m_pView) {
-        for (int retry = 0; retry < 10; ++retry) {
-            uint32_t s1 = m_pView->seq;
-            if (s1 & 1) {
-                YieldProcessor();
-                continue;
-            }
-            TsfSharedConfig snap = *m_pView;
-            MemoryBarrier();
-            uint32_t s2 = m_pView->seq;
-            if (s1 == s2) {
-                return snap;
-            }
-            YieldProcessor();
+    EnsureMaps();
+    // Without both a stable config and focus channel, the hook must handle text.
+    if (!m_pView || !m_pFocus || !m_focusRequested)
+        return DisabledFallback();
+
+    const volatile LONG* seq =
+        reinterpret_cast<const volatile LONG*>(&m_pView->sequence);
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        LONG first = *seq;
+        if (first & 1) continue;
+        MemoryBarrier();
+        TsfSharedConfig snapshot;
+        std::memcpy(&snapshot, m_pView, sizeof(snapshot));
+        MemoryBarrier();
+        LONG last = *seq;
+        if (first == last && !(last & 1) && snapshot.version == 2) {
+            m_cached = snapshot;
+            return snapshot;
         }
-        return *m_pView;
     }
-    TsfSharedConfig def = {};
-    def.enabled = 1;
-    def.method = 0;
-    def.charset = 0;
-    def.modern_style = 1;
-    def.spell_check = 1;
-    def.free_marking = 1;
-    def.auto_restore = 1;
-    def.auto_switch_by_typing = 1;
-    def.enable_macro = 1;
-    def.version = 1;
-    def.seq = 0;
-    return def;
+    return m_cached;
 }
 
 void SharedConfigReader::UpdateActiveFocus(bool focused) {
-    if (m_pView && m_writable) {
-        if (focused) {
-            m_pView->last_active_pid = GetCurrentProcessId();
-            m_pView->last_active_tick = GetTickCount64();
-        } else if (m_pView->last_active_pid == GetCurrentProcessId()) {
-            m_pView->last_active_pid = 0;
-            m_pView->is_composing = 0;
-        }
+    m_focusRequested = focused;
+    EnsureMaps();
+    if (!m_pFocus) return;
+    const LONG pid = static_cast<LONG>(GetCurrentProcessId());
+    volatile LONG* active =
+        reinterpret_cast<volatile LONG*>(&m_pFocus->last_active_pid);
+    if (focused) {
+        InterlockedExchange(active, pid);
+        InterlockedExchange64(
+            reinterpret_cast<volatile LONG64*>(&m_pFocus->last_active_tick),
+            static_cast<LONG64>(GetTickCount64()));
+    } else if (InterlockedCompareExchange(active, 0, pid) == pid) {
+        InterlockedExchange(
+            reinterpret_cast<volatile LONG*>(&m_pFocus->is_composing), 0);
     }
 }
 
 void SharedConfigReader::UpdateActiveKeystroke(bool isComposing) {
-    if (m_pView && m_writable) {
-        m_pView->is_composing = isComposing ? 1 : 0;
-        m_pView->last_active_tick = GetTickCount64();
-    }
+    EnsureMaps();
+    if (!m_pFocus || !m_focusRequested) return;
+    const LONG pid = static_cast<LONG>(GetCurrentProcessId());
+    volatile LONG* active =
+        reinterpret_cast<volatile LONG*>(&m_pFocus->last_active_pid);
+    if (InterlockedCompareExchange(active, pid, pid) != pid) return;
+    InterlockedExchange(
+        reinterpret_cast<volatile LONG*>(&m_pFocus->is_composing),
+        isComposing ? 1 : 0);
+    InterlockedExchange64(
+        reinterpret_cast<volatile LONG64*>(&m_pFocus->last_active_tick),
+        static_cast<LONG64>(GetTickCount64()));
 }
-

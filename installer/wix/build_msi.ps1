@@ -117,11 +117,11 @@ foreach ($a in $archList) {
     }
 
     $binPe = Get-PeArchitecture $binPath
-    if ($binPe -and $binPe -ne $a) {
+    if ($binPe -ne $a) {
         throw "Binary architecture mismatch: expected $a, but $binPath is $binPe"
     }
     $tsfPe = Get-PeArchitecture $tsfDll
-    if ($tsfPe -and $tsfPe -ne $a) {
+    if ($tsfPe -ne $a) {
         throw "TSF DLL architecture mismatch: expected $a, but $tsfDll is $tsfPe"
     }
 

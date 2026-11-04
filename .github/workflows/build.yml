@@ -78,12 +78,18 @@ jobs:
         shell: pwsh
         run: ./scripts/build.ps1 -Arch ${{ matrix.arch }} -SkipTests
 
+      - name: Verify architecture and artifact provenance
+        shell: pwsh
+        run: ./scripts/verify_release_artifacts.ps1 -Arch ${{ matrix.arch }}
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: VietFlow-${{ matrix.arch }}
           path: |
             dist/VietFlow*.exe
+            dist/vietflow_tsf*.dll
+            dist/pe-manifest-*.json
             dist/version.txt
             dist/latest.json
           if-no-files-found: error
