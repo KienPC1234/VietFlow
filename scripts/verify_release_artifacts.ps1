@@ -21,25 +21,28 @@ if (-not [IO.Path]::IsPathRooted($ReleaseDir)) { $ReleaseDir = Join-Path $root $
 function Assert-True([bool]$ok, [string]$message) {
     if (-not $ok) { throw $message }
 }
+function Get-PeMachineFromStream([IO.Stream]$f, [string]$label) {
+    Assert-True ($f.Length -ge 64) "PE file too short: $label"
+    $r = [IO.BinaryReader]::new($f)
+    Assert-True ($r.ReadUInt16() -eq 0x5A4D) "Invalid MZ: $label"
+    $f.Position = 0x3C
+    $offset = $r.ReadInt32()
+    Assert-True ($offset -ge 64 -and $offset -le $f.Length-6) "Invalid PE offset: $label"
+    $f.Position = $offset
+    Assert-True ($r.ReadUInt32() -eq 0x00004550) "Invalid PE header: $label"
+    $machine = $r.ReadUInt16()
+    switch ($machine) {
+        0x014C {'x86'}
+        0x8664 {'x64'}
+        0xAA64 {'arm64'}
+        default { throw "Unsupported PE machine $machine in $label" }
+    }
+}
 function Get-PeMachine([string]$path) {
     Assert-True (Test-Path -LiteralPath $path -PathType Leaf) "Missing PE: $path"
     $f = [IO.File]::OpenRead($path)
     try {
-        Assert-True ($f.Length -ge 64) "PE file too short: $path"
-        $r = [IO.BinaryReader]::new($f)
-        Assert-True ($r.ReadUInt16() -eq 0x5A4D) "Invalid MZ: $path"
-        $f.Position = 0x3C
-        $offset = $r.ReadInt32()
-        Assert-True ($offset -ge 64 -and $offset -le $f.Length-6) "Invalid PE offset: $path"
-        $f.Position = $offset
-        Assert-True ($r.ReadUInt32() -eq 0x00004550) "Invalid PE header: $path"
-        $machine = $r.ReadUInt16()
-        switch ($machine) {
-            0x014C {'x86'}
-            0x8664 {'x64'}
-            0xAA64 {'arm64'}
-            default { throw "Unsupported PE machine $machine in $path" }
-        }
+        Get-PeMachineFromStream $f $path
     } finally { $f.Dispose() }
 }
 function Assert-PE([string]$path, [string]$arch) {
@@ -64,15 +67,16 @@ function Assert-Zip([string]$path, [string]$arch) {
         foreach ($name in @('VietFlow.exe','vietflow_tsf.dll')) {
             $entry = $zip.GetEntry($name)
             Assert-True ($null -ne $entry) "ZIP missing $name : $path"
-            $tmp = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N')+'.bin')
+            $inputStream = $entry.Open()
             try {
-                $inputStream = $entry.Open()
+                $memStream = [IO.MemoryStream]::new()
                 try {
-                    $outputStream=[IO.File]::Create($tmp)
-                    try { $inputStream.CopyTo($outputStream) } finally { $outputStream.Dispose() }
-                } finally { $inputStream.Dispose() }
-                Assert-PE $tmp $arch
-            } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+                    $inputStream.CopyTo($memStream)
+                    $memStream.Position = 0
+                    $machine = Get-PeMachineFromStream $memStream "$path!$name"
+                    Assert-True ($machine -eq $arch) "Architecture mismatch: expected $arch, got $machine in $path!$name"
+                } finally { $memStream.Dispose() }
+            } finally { $inputStream.Dispose() }
         }
     } finally { $zip.Dispose() }
 }
