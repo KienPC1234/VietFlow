@@ -385,26 +385,28 @@ Write-Host "      Manifest: $manifestFile" -ForegroundColor Green
 # 5. Native WiX v5 MSI Packaging
 # ---------------------------------------------------------------------------
 if ($Msi) {
+    # Both MSI and ZIP must use the identical, already built dist binaries.
+    # Never prefer stale platform build outputs merely because PE machine
+    # matches the requested architecture.
+    . (Join-Path $root 'scripts/release_asset_sources.ps1')
     $releasesDir = Join-Path $root "releases"
     New-Item -ItemType Directory -Force -Path $releasesDir | Out-Null
     $wixScript = Join-Path $root "installer\wix\build_msi.ps1"
-    if (Test-Path $wixScript) {
-        foreach ($a in $archs) {
-            Write-Host "`n[5/5] Building native WiX MSI for $a v$version..." -ForegroundColor Magenta
-            & $wixScript -Arch $a -Version $version -OutputDir $releasesDir
-        }
+    if (-not (Test-Path -LiteralPath $wixScript -PathType Leaf)) {
+        throw "Required WiX builder missing: $wixScript"
+    }
+    foreach ($a in $archs) {
+        Write-Host "`n[5/5] Building native WiX MSI for $a v$version..." -ForegroundColor Magenta
+        & $wixScript -Arch $a -Version $version -OutputDir $releasesDir -DistDir $DistDir
+        if (-not $?) { throw "WiX MSI packaging failed for $a" }
     }
     Copy-Item -Path $versionFile, $manifestFile -Destination $releasesDir -Force
     if (Test-Path $changelogFile) {
         Copy-Item -Path $changelogFile -Destination $releasesDir -Force
     }
     foreach ($a in $archs) {
-        $candidate = Join-Path $DistDir "VietFlow-$a.exe"
-        if (Test-Path $candidate) {
-            Copy-Item $candidate (Join-Path $releasesDir "VietFlow-$a.exe") -Force
-        } elseif (Test-Path $builtDist[$a]) {
-            Copy-Item $builtDist[$a] (Join-Path $releasesDir "VietFlow-$a.exe") -Force
-        }
+        $sources = Get-VietFlowReleaseInputs -Arch $a -DistDir $DistDir
+        Copy-Item -LiteralPath $sources.ExePath -Destination (Join-Path $releasesDir "VietFlow-$a.exe") -Force
     }
 
     # -----------------------------------------------------------------------
@@ -413,50 +415,14 @@ if ($Msi) {
     foreach ($a in $archs) {
         $zipName = "VietFlow-win-$a-Portable.zip"
         $zipOut = Join-Path $releasesDir $zipName
-        $tmpDir = Join-Path $env:TEMP "vietflow_port_$a"
-        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
-        New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
-
-        $bin = Join-Path $releasesDir "VietFlow-$a.exe"
-        if (-not (Test-Path $bin)) {
-            $bin = Join-Path $DistDir "VietFlow-$a.exe"
-        }
-        if (-not (Test-Path $bin) -or (Get-PeArchitecture $bin) -ne $a) {
-            throw "Missing or wrong portable executable for $a"
-        }
-        Copy-Item $bin (Join-Path $tmpDir "VietFlow.exe") -Force
-
-        # Architecture-specific TSF DLL
-        $tsfCandidates = switch ($a) {
-            'x86' { 
-                @(
-                    (Join-Path $root "platforms\windows_tsf\build-x86\Release\vietflow_tsf.dll"),
-                    (Join-Path $DistDir "vietflow_tsf_x86.dll")
-                )
-            }
-            'arm64' { 
-                @(
-                    (Join-Path $root "platforms\windows_tsf\build-arm64\Release\vietflow_tsf.dll"),
-                    (Join-Path $DistDir "vietflow_tsf_arm64.dll")
-                )
-            }
-            default {
-                @(
-                    (Join-Path $root "platforms\windows_tsf\build\Release\vietflow_tsf.dll"),
-                    (Join-Path $DistDir "vietflow_tsf.dll"),
-                    (Join-Path $DistDir "vietflow_tsf_x64.dll")
-                )
-            }
-        }
-        $tsfDll = $tsfCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-        if (-not $tsfDll) {
-            throw "Architecture-matched TSF DLL for $a was not found in: $($tsfCandidates -join ', '). Packaging aborted to prevent shipping mismatched binary."
-        }
-        $tsfPe = Get-PeArchitecture $tsfDll
-        if ($tsfPe -ne $a) {
-            throw "TSF DLL architecture mismatch for portable zip: expected $a, but $tsfDll is $tsfPe"
-        }
-        Copy-Item $tsfDll (Join-Path $tmpDir "vietflow_tsf.dll") -Force
+        # Use an exclusive per-build scratch directory. A second build must
+        # never remove another build's staging contents.
+        $tmpDir = Join-Path $env:TEMP ("vietflow_port_{0}_{1}" -f $a, [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tmpDir -ErrorAction Stop | Out-Null
+        try {
+        $sources = Get-VietFlowReleaseInputs -Arch $a -DistDir $DistDir
+        Copy-Item -LiteralPath $sources.ExePath -Destination (Join-Path $tmpDir 'VietFlow.exe') -Force
+        Copy-Item -LiteralPath $sources.DllPath -Destination (Join-Path $tmpDir 'vietflow_tsf.dll') -Force
 
         $icon = Join-Path $root "assets\VietFlow.ico"
         if (Test-Path $icon) { Copy-Item $icon $tmpDir -Force }
@@ -465,7 +431,9 @@ if ($Msi) {
         if (Test-Path $changelogSource) { Copy-Item $changelogSource $tmpDir -Force }
 
         Compress-Archive -Path "$tmpDir/*" -DestinationPath $zipOut -Force
-        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+        } finally {
+            Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
         $zipSizeMb = [math]::Round(((Get-Item $zipOut).Length / 1MB), 2)
         Write-Host "      Portable ${a}: $zipOut ($zipSizeMb MB)" -ForegroundColor Green
     }

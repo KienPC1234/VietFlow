@@ -3,13 +3,35 @@ param(
     [ValidateSet('x64', 'x86', 'arm64', 'All')]
     [string]$Arch = 'x64',
     [string]$Version = "",
-    [string]$OutputDir = ""
+    [string]$OutputDir = "",
+    [string]$DistDir = "",
+    [switch]$ValidateSourcesOnly
 )
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $wixFile = Join-Path $scriptDir "VietFlow.wxs"
 $vietflowRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
+
+# Canonical release binaries are the already validated dist assets. Never
+# package target/release or TSF build-directory DLLs as fallbacks.
+. (Join-Path $vietflowRoot 'scripts/release_asset_sources.ps1')
+if ([string]::IsNullOrWhiteSpace($DistDir)) {
+    $DistDir = Join-Path $vietflowRoot 'dist'
+} elseif (-not [IO.Path]::IsPathRooted($DistDir)) {
+    $DistDir = Join-Path $vietflowRoot $DistDir
+}
+$archList = if ($Arch -eq 'All') { @('x64','x86','arm64') } else { @($Arch) }
+$verifiedInputs = @{}
+foreach ($a in $archList) {
+    $verifiedInputs[$a] = Get-VietFlowReleaseInputs -Arch $a -DistDir $DistDir
+}
+if ($ValidateSourcesOnly) {
+    foreach ($a in $archList) {
+        Write-Host "Source verification PASS: $a, EXE and TSF DLL from dist"
+    }
+    return
+}
 
 # Ensure output directory exists
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
@@ -54,23 +76,6 @@ if ($extList -notmatch "WixToolset.Util.wixext\s+5\.0\.2") {
     & $wixCmd.Source extension add -g WixToolset.Util.wixext/5.0.2
 }
 
-function Get-PeArchitecture([string]$filePath) {
-    if (-not (Test-Path $filePath)) { return $null }
-    $bytes = [System.IO.File]::ReadAllBytes($filePath)
-    if ($bytes.Length -lt 64) { return $null }
-    if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { return $null }
-    $peOffset = [System.BitConverter]::ToInt32($bytes, 0x3C)
-    if ($bytes.Length -lt ($peOffset + 6)) { return $null }
-    $machine = [System.BitConverter]::ToUInt16($bytes, $peOffset + 4)
-    switch ($machine) {
-        0x014C { return "x86" }
-        0x8664 { return "x64" }
-        0xAA64 { return "arm64" }
-        default { return "unknown" }
-    }
-}
-
-$archList = if ($Arch -eq 'All') { @('x64', 'x86', 'arm64') } else { @($Arch) }
 
 foreach ($a in $archList) {
     $channel = switch ($a) {
@@ -79,51 +84,8 @@ foreach ($a in $archList) {
         default { "win-x64" }
     }
 
-    $binCandidates = @(
-        (Join-Path $vietflowRoot "dist\VietFlow-$a.exe"),
-        (Join-Path $vietflowRoot "dist\VietFlow.exe"),
-        (Join-Path $vietflowRoot "target\release\VietFlow.exe")
-    )
-    $binPath = $binCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-    if (-not $binPath) {
-        throw "Could not find binary for architecture $a in dist or target\release."
-    }
-
-    $tsfCandidates = switch ($a) {
-        'x86' {
-            @(
-                (Join-Path $vietflowRoot "platforms\windows_tsf\build-x86\Release\vietflow_tsf.dll"),
-                (Join-Path $vietflowRoot "dist\vietflow_tsf_x86.dll")
-            )
-        }
-        'arm64' {
-            @(
-                (Join-Path $vietflowRoot "platforms\windows_tsf\build-arm64\Release\vietflow_tsf.dll"),
-                (Join-Path $vietflowRoot "dist\vietflow_tsf_arm64.dll")
-            )
-        }
-        default {
-            @(
-                (Join-Path $vietflowRoot "platforms\windows_tsf\build\Release\vietflow_tsf.dll"),
-                (Join-Path $vietflowRoot "dist\vietflow_tsf.dll"),
-                (Join-Path $vietflowRoot "dist\vietflow_tsf_x64.dll")
-            )
-        }
-    }
-    $tsfDll = $tsfCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $tsfDll) {
-        throw "Architecture-matched TSF DLL for $a was not found in: $($tsfCandidates -join ', '). Packaging aborted to prevent shipping mismatched binary."
-    }
-
-    $binPe = Get-PeArchitecture $binPath
-    if ($binPe -ne $a) {
-        throw "Binary architecture mismatch: expected $a, but $binPath is $binPe"
-    }
-    $tsfPe = Get-PeArchitecture $tsfDll
-    if ($tsfPe -ne $a) {
-        throw "TSF DLL architecture mismatch: expected $a, but $tsfDll is $tsfPe"
-    }
+    $binPath = $verifiedInputs[$a].ExePath
+    $tsfDll = $verifiedInputs[$a].DllPath
 
     $outputMsi = Join-Path $OutputDir "VietFlow-$channel.msi"
     Write-Host "`nBuilding native WiX MSI: $outputMsi ($a, v$Version)..." -ForegroundColor Cyan

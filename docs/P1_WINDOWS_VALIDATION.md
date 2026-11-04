@@ -10,13 +10,13 @@ desktop text control or installed MSI works.
 |---|---|
 | F03 Unicode | Windows injection UTF-16 surrogate-pair unit test; multi-app E2E pending |
 | F04 UTF-8 C ABI | Owned UTF-8 results replace fixed 256/512-byte TSF output buffers; caller frees Rust memory explicitly. Legacy API reports full required bytes and rejects insufficient capacity without partial copying. Rust tests include long macro/emoji and C++/Rust native ABI smoke passes; real TSF typing and sanitizer/architecture matrix still pending |
-| F07 Architecture | Strict PE checks for x64/x86/ARM64 plus TSF core .lib paths; cross-architecture CI pending |
+| F07 Architecture | MSI and ZIP packaging now share a canonical dist-only EXE/TSF resolver, checking PE architecture x64/x86/ARM64 with no stale build/target fallback. Offline positive/negative tests run on Windows CI. Cross-architecture real MSI installation and signing still pending |
 | F08 Settings | Production load first reads a valid primary or last valid .bak (without destroying corrupt primary), atomic Rust/C++ staged saves, interprocess writer lock and corrupted-primary recovery regression |
 | F09 Uninstall | WiX authoring inspection, separate clean/upgrade MSI VM tests pending |
 | F10 Hook callback | Async worker prewarmed; bounded nonblocking 8-job queue, 750 ms expiry and exact foreground identity; admission status now propagated to hook to pass original key on rejection and reset composition; 64 KiB text / 4096-backspace limits. Host input-order, 24h and p95/p99 E2E still pending |
 | F11 SendInput | Partial input stops without replaying accepted backspaces/code units, releases pressed injected keys; unit tests cover UTF-16, Backspace, Shift, repeated VK; independent host fault injection still pending |
 | F12 TSF IPC | Rust writer clamps malformed enum/flag/version fields before publishing; C++ reader rejects malformed yet sequence-consistent snapshots and retains last valid config. Independent native smoke tests cover every field; AppContainer ACL and multi-process long-run tests pending |
-| Q01 Release | Official publisher routes to one verified gate; default is offline. Preflight verifies PE/ZIP architecture, MSI header, 12 payload hashes, updater URLs, SHA256SUMS and 6 metadata assets; 11 synthetic offline regressions run in CI. Explicit publish additionally requires clean source, matching origin/main and tag, plus remote asset digests; actual signing/MSI VM and public publication remain NO-GO until independently approved |
+| Q01 Release | Official publisher routes to one verified gate; default is offline. Preflight verifies PE/ZIP architecture, MSI header, 12 payload hashes, updater URLs, SHA256SUMS and 6 metadata assets. Separate canonical-dist packaging regression prevents stale MSI/ZIP inputs; offline tests run in CI. Explicit publish still requires clean source, matching origin/main and tag, plus remote asset digests; signing/MSI VM/public release remain NO-GO pending independent approval |
 | Q02 Independent E2E | Matrix below must be run by QA and recorded for target release |
 
 ## Offline publisher gate (Q01)

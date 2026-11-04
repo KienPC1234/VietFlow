@@ -42,6 +42,10 @@ jobs:
         shell: pwsh
         run: ./scripts/tests/test_release_preflight.ps1
 
+      - name: Reject stale or mixed-architecture MSI and ZIP inputs
+        shell: pwsh
+        run: ./scripts/tests/test_release_asset_sources.ps1
+
       - name: Run workspace tests
         shell: pwsh
         env:
