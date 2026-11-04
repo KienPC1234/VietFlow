@@ -295,6 +295,14 @@ pub fn is_vietnamese_abbrev_or_slang(word: &str) -> bool {
         | "fb" | "zl" | "ig" | "tt" | "ytb" | "acc" | "pass" | "otp"
         | "link" | "web" | "app" | "bot" | "game" | "team" | "room" | "lag" | "ping"
         | "tks" | "thx" | "pls" | "plz" | "sr" | "sry"
+        | "test" | "tests" | "code" | "case" | "fix" | "bug" | "bugs" | "log" | "logs"
+        | "dev" | "check" | "file" | "load" | "view" | "set" | "get" | "post" | "run"
+        | "task" | "tasks" | "live" | "call" | "chat" | "mail" | "server" | "client"
+        | "data" | "demo" | "tool" | "tools" | "page" | "site" | "shop" | "deal"
+        | "order" | "bill" | "ship" | "sale" | "top" | "rank" | "rate" | "review"
+        | "clip" | "video" | "sound" | "audio" | "trend" | "fan" | "idol" | "show"
+        | "stream" | "drop" | "feed" | "story" | "vibe" | "mood" | "safe" | "fake"
+        | "auth" | "token" | "key" | "id" | "user" | "admin" | "pin" | "slot"
     )
 }
 

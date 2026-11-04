@@ -56,9 +56,9 @@ pub unsafe fn set_start_with_windows(enable: bool) -> bool {
     success
 }
 
-/// Remove all application shortcuts from Start Menu, Desktop, and Startup registry,
-/// then signal Windows Shell to purge stale icon caches and refresh UI immediately.
-pub unsafe fn clean_all_shortcuts_and_cache() {
+/// Remove all application shortcuts from Start Menu, Desktop, and Startup registry.
+/// When `purge_data` is true (full uninstall only), recursively deletes %ProgramData%\VietFlow.
+pub unsafe fn clean_all_shortcuts_and_cache(purge_data: bool) {
     // 1. Remove Startup Run entry
     let _ = set_start_with_windows(false);
 
@@ -101,7 +101,17 @@ pub unsafe fn clean_all_shortcuts_and_cache() {
         let _ = std::fs::remove_dir(&team_folder);
     }
 
-    // 4. Force Windows Shell icon cache refresh
+    // 4. If full uninstall, recursively delete %ProgramData%\VietFlow
+    if purge_data {
+        if let Ok(programdata) = std::env::var("ProgramData") {
+            let data_dir = std::path::Path::new(&programdata).join("VietFlow");
+            if data_dir.exists() {
+                let _ = std::fs::remove_dir_all(&data_dir);
+            }
+        }
+    }
+
+    // 5. Force Windows Shell icon cache refresh
     windows_sys::Win32::UI::Shell::SHChangeNotify(
         windows_sys::Win32::UI::Shell::SHCNE_ASSOCCHANGED as i32,
         windows_sys::Win32::UI::Shell::SHCNF_IDLIST,

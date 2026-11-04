@@ -9,7 +9,7 @@
 #include <windows.h>
 #include <cstdint>
 
-#pragma pack(push, 1)
+#pragma pack(push, 8)
 struct TsfSharedConfig {
     uint32_t enabled;
     uint32_t method;
@@ -21,11 +21,13 @@ struct TsfSharedConfig {
     uint32_t auto_switch_by_typing;
     uint32_t enable_macro;
     uint32_t version;
+    uint32_t seq;
     uint64_t last_active_tick;
     uint32_t last_active_pid;
     uint32_t is_composing;
 };
 #pragma pack(pop)
+static_assert(sizeof(TsfSharedConfig) == 64, "TsfSharedConfig must be exactly 64 bytes");
 
 class SharedConfigReader {
 public:

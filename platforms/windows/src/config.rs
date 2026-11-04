@@ -51,6 +51,8 @@ pub struct AppConfig {
     #[serde(default = "default_true")]
     pub auto_switch_by_typing: bool,
     #[serde(default = "default_true")]
+    pub auto_detect_game_mode: bool,
+    #[serde(default = "default_true")]
     pub pause_auto_after_manual: bool,
     /// Disable Vietnamese input when the foreground window's keyboard layout
     /// is not US (EVKey: "Tắt TV khi Layout bàn phím khác US").
@@ -308,6 +310,7 @@ impl Default for AppConfig {
             auto_restore: true,
             fix_shift_lag: true,
             auto_switch_by_typing: true,
+            auto_detect_game_mode: true,
             pause_auto_after_manual: true,
             disable_on_non_us_layout: false,
             disable_on_non_unicode_window: true,
@@ -371,17 +374,33 @@ fn is_dir_writable(dir: &std::path::Path) -> bool {
     }
 }
 
+fn get_program_data_dir() -> Option<PathBuf> {
+    std::env::var("ProgramData")
+        .ok()
+        .map(|pd| PathBuf::from(pd).join(crate::constants::APP_DIR_NAME))
+}
+
+fn get_app_data_dir() -> Option<PathBuf> {
+    std::env::var("APPDATA")
+        .ok()
+        .map(|ad| PathBuf::from(ad).join(crate::constants::APP_DIR_NAME))
+}
+
+fn get_exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
+}
+
 fn shared_common_config_path() -> Option<PathBuf> {
-    // 1. Common Application Data (%ProgramData%\VietFlow\config.json) - shared for all users
-    if let Ok(programdata) = std::env::var("ProgramData") {
-        let p = PathBuf::from(programdata).join(crate::constants::APP_DIR_NAME);
+    // 1. Common Application Data (%ProgramData%\VietFlow\vietflow_config.json) - persistent across MSI upgrades
+    if let Some(p) = get_program_data_dir() {
         if (p.is_dir() || fs::create_dir_all(&p).is_ok()) && is_dir_writable(&p) {
             return Some(p.join(crate::constants::CONFIG_FILE_NAME));
         }
     }
-    // 2. Per-user Application Data (%APPDATA%\VietFlow\config.json)
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let p = PathBuf::from(appdata).join(crate::constants::APP_DIR_NAME);
+    // 2. Per-user Application Data (%APPDATA%\VietFlow\vietflow_config.json)
+    if let Some(p) = get_app_data_dir() {
         if p.is_dir() || fs::create_dir_all(&p).is_ok() {
             return Some(p.join(crate::constants::CONFIG_FILE_NAME));
         }
@@ -406,36 +425,57 @@ impl AppConfig {
 
         // If installed via MSI:
         if crate::updater::is_installed_via_msi() {
-            if let Ok(exe) = std::env::current_exe() {
-                if let Some(dir) = exe.parent() {
-                    let msi_config = dir.join(crate::constants::CONFIG_FILE_NAME);
-                    // Check if installation directory has write permission
-                    if is_dir_writable(dir) {
-                        // Migrate existing config from shared directory if upgrading
-                        if !msi_config.is_file() {
-                            if let Some(shared) = shared_common_config_path() {
-                                if shared.is_file() {
-                                    let _ = fs::copy(&shared, &msi_config);
-                                }
+            // NEVER store active mutable config in Program Files.
+            // Canonical persistent location is %ProgramData% or %APPDATA%.
+            let target_path = if let Some(shared) = shared_common_config_path() {
+                shared
+            } else if let Some(appdata) = get_app_data_dir() {
+                let _ = fs::create_dir_all(&appdata);
+                appdata.join(crate::constants::CONFIG_FILE_NAME)
+            } else {
+                PathBuf::from(crate::constants::CONFIG_FILE_NAME)
+            };
+
+            // Migration: If target does not exist or is empty, look for legacy configs to preserve
+            let target_exists = target_path.is_file()
+                && fs::metadata(&target_path).map(|m| m.len()).unwrap_or(0) > 0;
+            if !target_exists {
+                let mut candidates = Vec::new();
+                // 1. Check legacy Program Files location
+                if let Some(exe_dir) = get_exe_dir() {
+                    candidates.push(exe_dir.join(crate::constants::CONFIG_FILE_NAME));
+                }
+                // 2. Check %APPDATA% (if target was %ProgramData%)
+                if let Some(ad) = get_app_data_dir() {
+                    candidates.push(ad.join(crate::constants::CONFIG_FILE_NAME));
+                }
+                // 3. Check %ProgramData% (if target was %APPDATA%)
+                if let Some(pd) = get_program_data_dir() {
+                    candidates.push(pd.join(crate::constants::CONFIG_FILE_NAME));
+                }
+                // 4. Check backup
+                candidates.push(target_path.with_extension("json.bak"));
+
+                for candidate in candidates {
+                    if candidate != target_path && candidate.is_file() {
+                        if let Ok(content) = fs::read_to_string(&candidate) {
+                            if serde_json::from_str::<AppConfig>(&content).is_ok() {
+                                let _ = Self::save_atomic(&target_path, &content);
+                                break;
                             }
                         }
-                        return msi_config;
                     }
                 }
             }
-            // If the installation directory encounters a permission error, fallback to shared common directory
-            if let Some(shared) = shared_common_config_path() {
-                return shared;
-            }
+
+            return target_path;
         }
 
         // Portable mode: if local config.json exists beside exe and directory is writable, prioritize it
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                let local_cfg = dir.join(crate::constants::CONFIG_FILE_NAME);
-                if local_cfg.is_file() || is_dir_writable(dir) {
-                    return local_cfg;
-                }
+        if let Some(exe_dir) = get_exe_dir() {
+            let local_cfg = exe_dir.join(crate::constants::CONFIG_FILE_NAME);
+            if local_cfg.is_file() || is_dir_writable(&exe_dir) {
+                return local_cfg;
             }
         }
 
@@ -456,14 +496,134 @@ impl AppConfig {
         Self::config_path_ref().clone()
     }
 
+    pub fn save_atomic(target_path: &std::path::Path, json: &str) -> bool {
+        let parent = match target_path.parent() {
+            Some(p) => p,
+            None => return false,
+        };
+        if !parent.is_dir() && fs::create_dir_all(parent).is_err() {
+            return false;
+        }
+
+        let pid = std::process::id();
+        let tmp_path = parent.join(format!("{}.tmp.{}", crate::constants::CONFIG_FILE_NAME, pid));
+        let bak_path = target_path.with_extension("json.bak");
+
+        use std::io::Write;
+        let write_ok = (|| -> std::io::Result<()> {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp_path)?;
+            file.write_all(json.as_bytes())?;
+            file.sync_all()?;
+            Ok(())
+        })();
+
+        if write_ok.is_err() {
+            let _ = fs::remove_file(&tmp_path);
+            return false;
+        }
+
+        // Backup existing valid file before replacing
+        if target_path.is_file() {
+            let _ = fs::copy(target_path, &bak_path);
+        }
+
+        // Replace target atomically
+        if fs::rename(&tmp_path, target_path).is_err() {
+            if fs::copy(&tmp_path, target_path).is_ok() {
+                let _ = fs::remove_file(&tmp_path);
+                return true;
+            }
+            let _ = fs::remove_file(&tmp_path);
+            return false;
+        }
+
+        true
+    }
+
     pub fn load() -> Self {
         let path = Self::config_path_ref();
-        if let Ok(content) = fs::read_to_string(path) {
-            if let Ok(mut cfg) = serde_json::from_str::<AppConfig>(&content) {
-                cfg.normalize();
-                return cfg;
+
+        // 1. Try reading the active config file
+        if path.is_file() {
+            if let Ok(content) = fs::read_to_string(path) {
+                if !content.trim().is_empty() {
+                    match serde_json::from_str::<AppConfig>(&content) {
+                        Ok(mut cfg) => {
+                            cfg.normalize();
+                            let bak = path.with_extension("json.bak");
+                            if !bak.is_file() {
+                                let _ = fs::copy(path, &bak);
+                            }
+                            return cfg;
+                        }
+                        Err(_) => {
+                            // Quarantine corrupted file to avoid permanent data loss
+                            let ts = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            let corrupted_path =
+                                path.with_extension(format!("json.corrupted.{}", ts));
+                            let _ = fs::copy(path, &corrupted_path);
+
+                            // Attempt recovery from backup
+                            let bak = path.with_extension("json.bak");
+                            if bak.is_file() {
+                                if let Ok(bak_content) = fs::read_to_string(&bak) {
+                                    if let Ok(mut cfg) =
+                                        serde_json::from_str::<AppConfig>(&bak_content)
+                                    {
+                                        cfg.normalize();
+                                        let _ = fs::copy(&bak, path);
+                                        return cfg;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
+
+        // 2. If active path is missing or empty, search fallback candidate locations
+        let mut candidates = Vec::new();
+        if let Some(p) = shared_common_config_path() {
+            if &p != path {
+                candidates.push(p);
+            }
+        }
+        if let Some(ad) = get_app_data_dir() {
+            let p = ad.join(crate::constants::CONFIG_FILE_NAME);
+            if &p != path {
+                candidates.push(p);
+            }
+        }
+        if let Some(exe_dir) = get_exe_dir() {
+            let p = exe_dir.join(crate::constants::CONFIG_FILE_NAME);
+            if &p != path {
+                candidates.push(p);
+            }
+        }
+        let bak = path.with_extension("json.bak");
+        candidates.push(bak);
+
+        for candidate in candidates {
+            if candidate.is_file() {
+                if let Ok(content) = fs::read_to_string(&candidate) {
+                    if let Ok(mut cfg) = serde_json::from_str::<AppConfig>(&content) {
+                        cfg.normalize();
+                        let _ = Self::save_atomic(path, &content);
+                        return cfg;
+                    }
+                }
+            }
+        }
+
+        // 3. Defaults if no valid config could be located
         let def = Self::default();
         def.save();
         def
@@ -472,12 +632,11 @@ impl AppConfig {
     pub fn save(&self) {
         let path = Self::config_path_ref();
         if let Ok(json) = serde_json::to_string_pretty(self) {
-            if fs::write(path, &json).is_err() {
-                // If writing to cached path fails due to permission error,
-                // fallback to saving in shared common directory (%ProgramData% or %APPDATA%)
-                if let Some(shared) = shared_common_config_path() {
-                    if &shared != path {
-                        let _ = fs::write(&shared, &json);
+            if !Self::save_atomic(path, &json) {
+                if let Some(ad) = get_app_data_dir() {
+                    let alt_path = ad.join(crate::constants::CONFIG_FILE_NAME);
+                    if &alt_path != path {
+                        let _ = Self::save_atomic(&alt_path, &json);
                     }
                 }
             }
@@ -599,5 +758,32 @@ mod tests {
 
         first.tray_icon_v_fill_color = "#123456".to_string();
         assert!(!first.icon_settings_differ(&second));
+    }
+
+    #[test]
+    fn atomic_save_and_backup_creation() {
+        let temp_dir = std::env::temp_dir().join(format!("vietflow_cfg_test_{}", std::process::id()));
+        let _ = fs::create_dir_all(&temp_dir);
+        let cfg_path = temp_dir.join("vietflow_config.json");
+        let bak_path = temp_dir.join("vietflow_config.json.bak");
+
+        let mut config = AppConfig::default();
+        config.method = 1;
+        let json1 = serde_json::to_string_pretty(&config).unwrap();
+        assert!(AppConfig::save_atomic(&cfg_path, &json1));
+        assert!(cfg_path.is_file());
+        assert!(!bak_path.is_file());
+
+        config.method = 2;
+        let json2 = serde_json::to_string_pretty(&config).unwrap();
+        assert!(AppConfig::save_atomic(&cfg_path, &json2));
+        assert!(cfg_path.is_file());
+        assert!(bak_path.is_file());
+
+        let bak_content = fs::read_to_string(&bak_path).unwrap();
+        let bak_cfg: AppConfig = serde_json::from_str(&bak_content).unwrap();
+        assert_eq!(bak_cfg.method, 1);
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }

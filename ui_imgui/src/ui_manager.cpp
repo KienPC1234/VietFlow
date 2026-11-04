@@ -1182,6 +1182,10 @@ void UiManager::PageTyping() {
                      "Ví dụ VBA IDE. Bỏ chọn nếu app vẫn hiển thị tiếng Việt tốt.")) {
         SaveConfig();
     }
+    if (CheckboxHelp("Tự động nhận diện khi chơi game", &config_.auto_detect_game_mode,
+                     "Tự động chuyển sang tiếng Anh [E] khi phát hiện thao tác điều khiển game (WASD, phím mũi tên).")) {
+        SaveConfig();
+    }
 
     SectionHeader("Ngoại lai & tiếng Anh");
     LabelHelp("Phụ âm ngoại lai:",

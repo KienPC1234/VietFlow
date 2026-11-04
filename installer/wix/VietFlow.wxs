@@ -17,7 +17,8 @@
     <SummaryInformation Description="VietFlow - Bộ gõ tiếng Việt hiện đại" Manufacturer="VietFlow Team" />
 
     <MajorUpgrade DowngradeErrorMessage="Một phiên bản mới hơn của VietFlow đã được cài đặt."
-                  AllowSameVersionUpgrades="yes" />
+                  AllowSameVersionUpgrades="yes"
+                  Schedule="afterInstallInitialize" />
 
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
@@ -34,17 +35,11 @@
     <Property Id="ARPREADME" Value="https://github.com/KienPC1234/VietFlow#readme" />
     <Property Id="ARPNOREPAIR" Value="yes" />
 
-    <!-- Close running instances before installation/uninstallation -->
-    <util:CloseApplication Target="VietFlow.exe" CloseMessage="yes" RebootPrompt="no" PromptToContinue="no" />
+    <!-- Close running instances before installation/uninstallation with 5s timeout and force termination (exit code 1) -->
+    <util:CloseApplication Target="VietFlow.exe" CloseMessage="yes" Timeout="5" TerminateProcess="1" RebootPrompt="no" PromptToContinue="no" />
 
     <!-- Custom Actions -->
-    <CustomAction Id="CleanupShortcutsOnUninstall"
-                  Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;[#VietFlowExe]&quot; --clean-shortcuts"
-                  Execute="deferred"
-                  Impersonate="no"
-                  Return="ignore" />
-
+    <!-- TSF Unregistration on Uninstall / Upgrade: Cleans up TIP registration if previously registered by user -->
     <CustomAction Id="UnregisterTSF"
                   Directory="INSTALLFOLDER"
                   ExeCommand="&quot;[#VietFlowExe]&quot; --unregister-tsf"
@@ -52,9 +47,18 @@
                   Impersonate="no"
                   Return="ignore" />
 
-    <CustomAction Id="UnregisterTipDllDirect"
+    <!-- Clean shortcuts on Upgrade -->
+    <CustomAction Id="CleanupShortcutsOnUninstall"
                   Directory="INSTALLFOLDER"
-                  ExeCommand="regsvr32.exe /u /s &quot;[#VietFlowTsfDll]&quot;"
+                  ExeCommand="&quot;[#VietFlowExe]&quot; --clean-shortcuts"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <!-- Full Data & Shortcut Cleanup ONLY on complete Uninstall (never on upgrade) -->
+    <CustomAction Id="FullCleanupOnUninstall"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[#VietFlowExe]&quot; --uninstall-cleanup"
                   Execute="deferred"
                   Impersonate="no"
                   Return="ignore" />
@@ -67,9 +71,12 @@
                   Return="asyncNoWait" />
 
     <InstallExecuteSequence>
-      <Custom Action="UnregisterTSF" Before="RemoveFiles" Condition="(Installed AND (REMOVE=&quot;ALL&quot; OR Upgrading))" />
-      <Custom Action="UnregisterTipDllDirect" Before="RemoveFiles" Condition="(Installed AND (REMOVE=&quot;ALL&quot; OR Upgrading))" />
-      <Custom Action="CleanupShortcutsOnUninstall" Before="RemoveFiles" Condition="(Installed AND (REMOVE=&quot;ALL&quot; OR Upgrading))" />
+      <!-- TSF Unregistration on uninstall or upgrade: cleans up TIP COM/Layout if previously registered by user -->
+      <Custom Action="UnregisterTSF" Before="RemoveFiles" Condition="(Installed AND (REMOVE=&quot;ALL&quot; OR UPGRADINGPRODUCTCODE))" />
+
+      <!-- Full cleanup only on full uninstall, shortcuts cleanup on upgrade -->
+      <Custom Action="FullCleanupOnUninstall" After="UnregisterTSF" Condition="(Installed AND REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE)" />
+      <Custom Action="CleanupShortcutsOnUninstall" After="UnregisterTSF" Condition="(Installed AND UPGRADINGPRODUCTCODE)" />
     </InstallExecuteSequence>
 
     <!-- UI Configuration -->
@@ -140,7 +147,7 @@
       </Component>
     </StandardDirectory>
 
-    <!-- Common Shared Directory (%ProgramData%\VietFlow) for persistent user config and macros -->
+    <!-- Common Shared Directory (%ProgramData%\VietFlow) for user config and macros -->
     <StandardDirectory Id="CommonAppDataFolder">
       <Directory Id="CommonAppDataVietFlow" Name="VietFlow">
         <Component Id="CommonAppDataComponent" Guid="A9C8D7E6-F5B4-4321-8765-FEDCBA098765">
@@ -148,13 +155,13 @@
             <util:PermissionEx User="Users" GenericRead="yes" GenericWrite="yes" />
           </CreateFolder>
         </Component>
+
       </Directory>
     </StandardDirectory>
 
-    <!-- Registry cleanup on uninstall -->
+    <!-- Registry marker -->
     <Component Id="RegistryCleanup" Guid="D5A910E4-3A4B-4E38-9BF4-436DFB69C106" Directory="INSTALLFOLDER">
       <RegistryValue Root="HKCU" Key="Software\VietFlow" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
-      <RemoveRegistryKey Root="HKCU" Key="Software\VietFlow" Action="removeOnUninstall" />
     </Component>
 
     <Feature Id="MainFeature"

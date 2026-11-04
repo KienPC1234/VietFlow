@@ -8,10 +8,11 @@ use vietflow_core::models::{CharsetId, EngineOptions, InputMethod};
 use vietflow_core::VietFlowEngine;
 use windows_sys::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, GetKeyState, GetKeyboardLayout, SendInput, INPUT, VK_BACK, VK_CAPITAL, VK_CONTROL, VK_ESCAPE,
-    VK_F1, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_OEM_1, VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5,
-    VK_OEM_6, VK_OEM_7, VK_OEM_COMMA, VK_OEM_MINUS, VK_OEM_PERIOD, VK_OEM_PLUS, VK_RCONTROL, VK_RETURN,
-    VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_TAB,
+    GetAsyncKeyState, GetKeyState, GetKeyboardLayout, MapVirtualKeyExW, SendInput, ToUnicodeEx, INPUT, VK_BACK,
+    VK_CAPITAL, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_F1, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
+    VK_OEM_1, VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_7, VK_OEM_COMMA, VK_OEM_MINUS,
+    VK_OEM_PERIOD, VK_OEM_PLUS, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
+    VK_SPACE, VK_TAB, VK_UP,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId,
@@ -166,6 +167,144 @@ use crate::process::{get_process_name_for_window, is_app_excluded, is_auto_exclu
 use crate::startup::set_start_with_windows;
 use crate::tray::{WM_SETTINGS, WM_TRAYICON};
 
+#[derive(Debug, Clone, Copy)]
+pub struct GameDetectionTracker {
+    pub recent_keys: [u16; 8],
+    pub recent_timestamps: [u64; 8],
+    pub index: usize,
+    pub count: usize,
+    pub key_down_time: [u64; 256],
+}
+
+impl GameDetectionTracker {
+    pub const fn new() -> Self {
+        Self {
+            recent_keys: [0; 8],
+            recent_timestamps: [0; 8],
+            index: 0,
+            count: 0,
+            key_down_time: [0; 256],
+        }
+    }
+
+    pub fn record_key(
+        &mut self,
+        vk: u16,
+        now_ms: u64,
+        held_vks: &[bool; 256],
+    ) -> bool {
+        let movement_vks = [0x57u16, 0x41, 0x53, 0x44]; // W, A, S, D
+        let is_current_movement = movement_vks.contains(&vk);
+        let is_current_aux = vk == VK_SPACE || vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT;
+
+        // Signal 1: Movement Chording (Holding a movement key while pressing another movement key, Space, or Shift)
+        // In normal typing, key rollover between discrete letters is < 50ms. Holding a direction key
+        // for >= 80ms while triggering strafes or jumps is a definitive gaming behavior.
+        if is_current_movement || is_current_aux {
+            for &m_vk in &movement_vks {
+                if m_vk != vk && held_vks[m_vk as usize] {
+                    let down_t = self.key_down_time[m_vk as usize];
+                    if down_t > 0 && now_ms.saturating_sub(down_t) >= 80 {
+                        self.reset();
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Record to sequence ring buffer
+        self.recent_keys[self.index] = vk;
+        self.recent_timestamps[self.index] = now_ms;
+        self.index = (self.index + 1) % 8;
+        if self.count < 8 {
+            self.count += 1;
+        }
+
+        // Signal 2: Rapid Arrow key sequence (>= 3 arrow keys within 1200ms)
+        let is_arrow = matches!(vk, VK_LEFT | VK_UP | VK_RIGHT | VK_DOWN);
+        if is_arrow && self.count >= 3 {
+            let mut arrow_count = 0;
+            for i in 0..self.count.min(5) {
+                let idx = (self.index + 8 - 1 - i) % 8;
+                let k = self.recent_keys[idx];
+                let ts = self.recent_timestamps[idx];
+                if now_ms.saturating_sub(ts) > 1200 {
+                    break;
+                }
+                if matches!(k, VK_LEFT | VK_UP | VK_RIGHT | VK_DOWN) {
+                    arrow_count += 1;
+                }
+            }
+            if arrow_count >= 3 {
+                self.reset();
+                return true;
+            }
+        }
+
+        // Signal 3: Opposing axis oscillation (A-D-A, D-A-D, W-S-W, S-W-S within 700ms)
+        if self.count >= 3 {
+            let i0 = (self.index + 8 - 1) % 8;
+            let i1 = (self.index + 8 - 2) % 8;
+            let i2 = (self.index + 8 - 3) % 8;
+            let k0 = self.recent_keys[i0];
+            let k1 = self.recent_keys[i1];
+            let k2 = self.recent_keys[i2];
+            let t0 = self.recent_timestamps[i0];
+            let t2 = self.recent_timestamps[i2];
+
+            if t0.saturating_sub(t2) <= 700 {
+                let is_strafe_h = (k0 == 0x41 && k1 == 0x44 && k2 == 0x41)
+                    || (k0 == 0x44 && k1 == 0x41 && k2 == 0x44);
+                let is_strafe_v = (k0 == 0x57 && k1 == 0x53 && k2 == 0x57)
+                    || (k0 == 0x53 && k1 == 0x57 && k2 == 0x53);
+
+                if is_strafe_h || is_strafe_v {
+                    self.reset();
+                    return true;
+                }
+            }
+        }
+
+        // Signal 4: 4-key WASD sequences with Telex Syllable Protection
+        if self.count >= 4 {
+            let i0 = (self.index + 8 - 1) % 8;
+            let i1 = (self.index + 8 - 2) % 8;
+            let i2 = (self.index + 8 - 3) % 8;
+            let i3 = (self.index + 8 - 4) % 8;
+            let k0 = self.recent_keys[i0];
+            let k1 = self.recent_keys[i1];
+            let k2 = self.recent_keys[i2];
+            let k3 = self.recent_keys[i3];
+            let t0 = self.recent_timestamps[i0];
+            let t3 = self.recent_timestamps[i3];
+
+            if t0.saturating_sub(t3) <= 1800 {
+                let keys4 = [k3, k2, k1, k0]; // chronological order
+                let is_all_wasd = keys4.iter().all(|k| movement_vks.contains(k));
+                if is_all_wasd {
+                    // Critical Telex Protection: prevent false positive on legitimate Vietnamese words:
+                    // 'd' (0x44), 'a' (0x41), 'w' (0x57), 's' (0x53) -> "daws" (đắ in đắt)
+                    // 's' (0x53), 'a' (0x41), 'w' (0x57), 's' (0x53) -> "saws" (sắ in sắt)
+                    let is_telex_syllable = (keys4 == [0x44, 0x41, 0x57, 0x53])
+                        || (keys4 == [0x53, 0x41, 0x57, 0x53]);
+
+                    if !is_telex_syllable {
+                        self.reset();
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
+    pub fn reset(&mut self) {
+        self.count = 0;
+        self.index = 0;
+    }
+}
+
 pub struct HookState {
     pub engine: VietFlowEngine,
     pub config: AppConfig,
@@ -214,8 +353,9 @@ pub struct HookState {
     pub mouse_hook_handle: HHOOK,
     pub win_event_hook: HWINEVENTHOOK,
     pub tsf_registered: bool,
-    pub held_vk: Option<u16>,
+    pub held_vks: [bool; 256],
     pub foreground_pid: u32,
+    pub game_detector: GameDetectionTracker,
 }
 
 unsafe impl Send for HookState {}
@@ -753,8 +893,9 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         mouse_hook_handle,
         win_event_hook,
         tsf_registered: crate::tsf::is_tsf_mode_active(),
-        held_vk: None,
+        held_vks: [false; 256],
         foreground_pid: initial_pid,
+        game_detector: GameDetectionTracker::new(),
     });
     drop(lock);
 }
@@ -898,8 +1039,12 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
 
     let vk = kbd.vkCode as u16;
 
-    if is_key_up && state.held_vk == Some(vk) {
-        state.held_vk = None;
+    if is_key_up && vk < 256 {
+        state.held_vks[vk as usize] = false;
+        state.game_detector.key_down_time[vk as usize] = 0;
+    }
+    if is_key_down && vk < 256 && !state.held_vks[vk as usize] {
+        state.game_detector.key_down_time[vk as usize] = get_tick_count_64();
     }
 
     // Synchronize modifiers with physical keyboard state via GetAsyncKeyState.
@@ -962,6 +1107,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                 state.toggle_language();
                 state.config.save();
             }
+            state.game_detector.reset();
 
             if state.config.notification_sound {
                 play_notification_sound();
@@ -1030,7 +1176,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                 return CallNextHookEx(null_mut(), n_code, w_param, l_param);
             }
 
-            let input_char = vk_to_char(vk, state.shift_pressed);
+            let input_char = vk_to_char_with_layout(vk, state.shift_pressed);
             let is_vni_digit = state.config.method == 1 && (0x30..=0x39).contains(&vk) && !state.shift_pressed;
 
             if !is_vni_digit && (0x30..=0x39).contains(&vk) && !state.shift_pressed {
@@ -1128,10 +1274,48 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
+    // Automatic Game Mode Detection: when repeated movement patterns (WASD or Arrow keys)
+    // are detected, switch mode to English [E] automatically to prevent gaming disruption.
+    if is_key_down && state.config.auto_detect_game_mode && state.user_enabled {
+        let now_ms = get_tick_count_64();
+        if state.game_detector.record_key(vk, now_ms, &state.held_vks) {
+            state.user_enabled = false;
+            state.config.enabled = false;
+            if let Some(proc) = &state.current_process {
+                state.per_app_modes.insert(proc.clone(), false);
+            }
+            let current_w = state.engine.current_word();
+            let bk = current_w.chars().count();
+            if bk > 0 {
+                state.send_engine_output(bk, "");
+            }
+            state.engine.reset_word();
+            state.macro_buffer.clear();
+            state.english_word_buffer.clear();
+
+            let effective = state.effective_enabled();
+            crate::tsf::sync_tsf_config(&state.config, effective);
+
+            let tray_hwnd = state.tray_hwnd;
+            if !tray_hwnd.is_null() {
+                unsafe {
+                    PostMessageW(tray_hwnd, WM_TRAYICON, 0, 0);
+                }
+            }
+            if state.config.notification_sound {
+                play_notification_sound();
+            }
+            return CallNextHookEx(null_mut(), n_code, w_param, l_param);
+        }
+    }
+
     // Reset keys: Esc, Enter, Tab, Navigation (PageUp, PageDown, End, Home, Arrows), Delete
     if is_key_down && matches!(vk, VK_ESCAPE | VK_RETURN | VK_TAB | 0x21..=0x28 | 0x2E) {
         state.engine.reset();
         state.macro_buffer.clear();
+        if vk == VK_RETURN {
+            state.game_detector.reset();
+        }
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
@@ -1168,16 +1352,18 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             VK_LWIN | VK_RWIN
         );
         if !is_mod {
-            if state.held_vk == Some(vk) {
+            if vk < 256 && state.held_vks[vk as usize] {
                 return CallNextHookEx(null_mut(), n_code, w_param, l_param);
             }
-            state.held_vk = Some(vk);
+            if vk < 256 {
+                state.held_vks[vk as usize] = true;
+            }
         }
     }
 
     // Process alphanumeric/symbol key
     if is_key_down {
-        let input_char = vk_to_char(vk, state.shift_pressed);
+        let input_char = vk_to_char_with_layout(vk, state.shift_pressed);
         if input_char != '\0' {
             let now_ms = unsafe { GetTickCount64() };
             let (backspaces, text) = state.engine.process_key_with_time(input_char, now_ms);
@@ -1255,7 +1441,7 @@ unsafe fn handle_macro_only(
         return pass();
     }
 
-    let c = vk_to_char(vk, state.shift_pressed);
+    let c = vk_to_char_with_layout(vk, state.shift_pressed);
     if c == '\0' {
         state.macro_buffer.clear();
         return pass();
@@ -1283,6 +1469,47 @@ fn expand_macro_only(state: &mut HookState) {
         state.send_engine_output(backspaces, &replacement);
     }
     state.macro_buffer.clear();
+}
+
+fn vk_to_char_with_layout(vk: u16, shift: bool) -> char {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if !hwnd.is_null() {
+            let thread_id = GetWindowThreadProcessId(hwnd, null_mut());
+            let hkl = GetKeyboardLayout(thread_id);
+            if !hkl.is_null() {
+                let mut key_state = [0u8; 256];
+                if shift {
+                    key_state[VK_SHIFT as usize] = 0x80;
+                }
+                let caps_lock = (GetKeyState(VK_CAPITAL as i32) & 0x0001) != 0;
+                if caps_lock {
+                    key_state[VK_CAPITAL as usize] = 0x01;
+                }
+
+                let scancode = MapVirtualKeyExW(vk as u32, 0, hkl);
+                let mut out_chars = [0u16; 4];
+                let res = ToUnicodeEx(
+                    vk as u32,
+                    scancode,
+                    key_state.as_ptr(),
+                    out_chars.as_mut_ptr(),
+                    out_chars.len() as i32,
+                    4, // TM_FLAG_DONT_UPDATE_STATE
+                    hkl,
+                );
+                if res > 0 {
+                    if let Some(ch) = char::from_u32(out_chars[0] as u32) {
+                        if !ch.is_control() {
+                            return ch;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    vk_to_char(vk, shift)
 }
 
 fn vk_to_char(vk: u16, shift: bool) -> char {
@@ -1510,8 +1737,9 @@ mod tests {
             mouse_hook_handle: std::ptr::null_mut(),
             win_event_hook: std::ptr::null_mut(),
             tsf_registered: false,
-            held_vk: None,
+            held_vks: [false; 256],
             foreground_pid: 0,
+            game_detector: GameDetectionTracker::new(),
         }
     }
 
@@ -1768,14 +1996,79 @@ mod tests {
     #[test]
     fn test_held_key_repeat_detection() {
         let mut state = hook_state(false, false, true);
-        assert_eq!(state.held_vk, None);
+        assert!(!state.held_vks[0x41]);
 
-        // First key down sets held_vk
-        state.held_vk = Some(0x41); // 'A'
-        assert_eq!(state.held_vk, Some(0x41));
+        // Key down sets held_vks for 'A' and 'W' simultaneously
+        state.held_vks[0x41] = true;
+        state.held_vks[0x57] = true;
+        assert!(state.held_vks[0x41]);
+        assert!(state.held_vks[0x57]);
 
-        // Key up clears held_vk
-        state.held_vk = None;
-        assert_eq!(state.held_vk, None);
+        // Releasing 'A' clears 'A' but retains 'W'
+        state.held_vks[0x41] = false;
+        assert!(!state.held_vks[0x41]);
+        assert!(state.held_vks[0x57]);
+    }
+
+    #[test]
+    fn test_game_detection_tracker() {
+        let mut tracker = GameDetectionTracker::new();
+        let mut held = [false; 256];
+
+        // 1. Normal typing: 's', 'a', 'o'
+        assert!(!tracker.record_key(0x53, 100, &held)); // 'S'
+        assert!(!tracker.record_key(0x41, 200, &held)); // 'A'
+        assert!(!tracker.record_key(0x4F, 300, &held)); // 'O'
+        tracker.reset();
+
+        // 2. Telex Syllable Protection: "daws" (đắt) and "saws" (sắt) must NEVER trigger
+        assert!(!tracker.record_key(0x44, 1000, &held)); // 'D'
+        assert!(!tracker.record_key(0x41, 1100, &held)); // 'A'
+        assert!(!tracker.record_key(0x57, 1200, &held)); // 'W'
+        assert!(!tracker.record_key(0x53, 1300, &held)); // 'S' -> "daws" protected!
+        tracker.reset();
+
+        assert!(!tracker.record_key(0x53, 1400, &held)); // 'S'
+        assert!(!tracker.record_key(0x41, 1500, &held)); // 'A'
+        assert!(!tracker.record_key(0x57, 1600, &held)); // 'W'
+        assert!(!tracker.record_key(0x53, 1700, &held)); // 'S' -> "saws" protected!
+        tracker.reset();
+
+        // 3. Gaming Strafe: A -> D -> A in < 700ms
+        assert!(!tracker.record_key(0x41, 2000, &held)); // 'A'
+        assert!(!tracker.record_key(0x44, 2200, &held)); // 'D'
+        assert!(tracker.record_key(0x41, 2400, &held));  // 'A' -> triggers strafe detection!
+        tracker.reset();
+
+        // 4. Gaming Strafe Vertical: W -> S -> W in < 700ms
+        assert!(!tracker.record_key(0x57, 3000, &held)); // 'W'
+        assert!(!tracker.record_key(0x53, 3200, &held)); // 'S'
+        assert!(tracker.record_key(0x57, 3400, &held));  // 'W' -> triggers strafe detection!
+        tracker.reset();
+
+        // 5. Gaming WASD Circle: W -> A -> S -> D
+        assert!(!tracker.record_key(0x57, 4000, &held)); // 'W'
+        assert!(!tracker.record_key(0x41, 4200, &held)); // 'A'
+        assert!(!tracker.record_key(0x53, 4400, &held)); // 'S'
+        assert!(tracker.record_key(0x44, 4600, &held));  // 'D' -> triggers WASD circle!
+        tracker.reset();
+
+        // 6. Arrow keys pattern: Left -> Up -> Right
+        assert!(!tracker.record_key(0x25, 5000, &held));
+        assert!(!tracker.record_key(0x26, 5200, &held));
+        assert!(tracker.record_key(0x27, 5400, &held));  // triggers arrow sequence!
+        tracker.reset();
+
+        // 7. Movement Chording: holding 'W' for 150ms while pressing 'A' or Space
+        held[0x57] = true; // W is held
+        tracker.key_down_time[0x57] = 6000;
+        // Pressing 'A' while 'W' is held down for 150ms
+        assert!(tracker.record_key(0x41, 6150, &held)); // triggers chording detection!
+        tracker.reset();
+
+        // Pressing 'Space' while 'W' is held down for 150ms
+        held[0x57] = true;
+        tracker.key_down_time[0x57] = 7000;
+        assert!(tracker.record_key(VK_SPACE, 7150, &held)); // triggers chording jump!
     }
 }

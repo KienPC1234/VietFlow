@@ -40,38 +40,73 @@ static void NormalizeWordList(std::vector<std::string>& words) {
 }
 
 std::string Config::GetDefaultConfigPath() {
-    // 1. Check directory of the running executable (MSI install folder or portable folder)
     wchar_t exe_path[MAX_PATH];
+    bool is_installed = false;
+    std::filesystem::path exe_dir;
     if (GetModuleFileNameW(NULL, exe_path, MAX_PATH) > 0) {
         std::filesystem::path p(exe_path);
-        auto dir = p.parent_path();
-        auto local_cfg = dir / CONFIG_FILE_NAME;
-        auto marker = dir / ".installed";
-        if (std::filesystem::exists(local_cfg) || std::filesystem::exists(marker)) {
-            return local_cfg.string();
+        exe_dir = p.parent_path();
+        if (std::filesystem::exists(exe_dir / ".installed") || std::filesystem::exists(exe_dir / "msi.tag")) {
+            is_installed = true;
         }
     }
 
-    // 2. Common Application Data (%ProgramData%\VietFlow\vietflow_config.json)
-    wchar_t pd_path[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, 0, pd_path))) {
-        std::filesystem::path p(pd_path);
-        p /= APP_DIR_NAME;
-        auto pd_cfg = p / CONFIG_FILE_NAME;
-        if (std::filesystem::exists(pd_cfg)) {
-            return pd_cfg.string();
+    if (is_installed) {
+        // MSI installation mode: NEVER use Program Files.
+        // 1. Common Application Data (%ProgramData%\VietFlow\vietflow_config.json)
+        wchar_t pd_path[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_COMMON_APPDATA, NULL, 0, pd_path))) {
+            std::filesystem::path p(pd_path);
+            p /= APP_DIR_NAME;
+            std::error_code ec;
+            std::filesystem::create_directories(p, ec);
+            auto target = p / CONFIG_FILE_NAME;
+            // Migration check: If target does not exist, check legacy Program Files
+            if (!std::filesystem::exists(target) && !exe_dir.empty()) {
+                auto legacy_pf = exe_dir / CONFIG_FILE_NAME;
+                if (std::filesystem::exists(legacy_pf)) {
+                    std::filesystem::copy_file(legacy_pf, target, std::filesystem::copy_options::skip_existing, ec);
+                }
+            }
+            return target.string();
         }
-    }
 
-    // 3. User Application Data (%APPDATA%\VietFlow\vietflow_config.json)
-    wchar_t path[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, path))) {
-        std::wstring ws(path);
-        std::filesystem::path p(ws);
-        p /= APP_DIR_NAME;
-        std::filesystem::create_directories(p);
-        p /= CONFIG_FILE_NAME;
-        return p.string();
+        // 2. User Application Data (%APPDATA%\VietFlow\vietflow_config.json)
+        wchar_t path[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, path))) {
+            std::filesystem::path p(path);
+            p /= APP_DIR_NAME;
+            std::error_code ec;
+            std::filesystem::create_directories(p, ec);
+            return (p / CONFIG_FILE_NAME).string();
+        }
+    } else {
+        // Portable mode:
+        if (!exe_dir.empty()) {
+            auto local_cfg = exe_dir / CONFIG_FILE_NAME;
+            if (std::filesystem::exists(local_cfg)) {
+                return local_cfg.string();
+            }
+            // Check write permission
+            auto test_file = exe_dir / ".w_test.tmp";
+            std::ofstream tf(test_file);
+            if (tf.is_open()) {
+                tf.close();
+                std::error_code ec;
+                std::filesystem::remove(test_file, ec);
+                return local_cfg.string();
+            }
+        }
+
+        // Shared common fallback for portable mode
+        wchar_t path[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, path))) {
+            std::filesystem::path p(path);
+            p /= APP_DIR_NAME;
+            std::error_code ec;
+            std::filesystem::create_directories(p, ec);
+            return (p / CONFIG_FILE_NAME).string();
+        }
     }
     return CONFIG_FILE_NAME;
 }
@@ -79,7 +114,13 @@ std::string Config::GetDefaultConfigPath() {
 bool Config::Load(const std::string& custom_path) {
     std::string path = custom_path.empty() ? GetDefaultConfigPath() : custom_path;
     std::ifstream file(path);
-    if (!file.is_open()) return false;
+    if (!file.is_open()) {
+        std::ifstream bak_file(path + ".bak");
+        if (bak_file.is_open()) {
+            return Load(path + ".bak");
+        }
+        return false;
+    }
 
     try {
         json j;
@@ -93,6 +134,7 @@ bool Config::Load(const std::string& custom_path) {
         spell_check = j.value("spell_check", spell_check);
         auto_restore = j.value("auto_restore", auto_restore);
         auto_switch_by_typing = j.value("auto_switch_by_typing", auto_switch_by_typing);
+        auto_detect_game_mode = j.value("auto_detect_game_mode", auto_detect_game_mode);
         pause_auto_after_manual = j.value("pause_auto_after_manual", pause_auto_after_manual);
         fix_shift_lag = j.value("fix_shift_lag", fix_shift_lag);
         disable_on_non_us_layout = j.value("disable_on_non_us_layout", disable_on_non_us_layout);
@@ -229,6 +271,7 @@ bool Config::Save(const std::string& custom_path) const {
         j["spell_check"] = spell_check;
         j["auto_restore"] = auto_restore;
         j["auto_switch_by_typing"] = auto_switch_by_typing;
+        j["auto_detect_game_mode"] = auto_detect_game_mode;
         j["pause_auto_after_manual"] = pause_auto_after_manual;
         j["fix_shift_lag"] = fix_shift_lag;
         j["disable_on_non_us_layout"] = disable_on_non_us_layout;
@@ -304,10 +347,31 @@ bool Config::Save(const std::string& custom_path) const {
         ck["lone_w"] = custom_keymap.lone_w;
         j["custom_keymap"] = ck;
 
-        std::ofstream file(path);
-        if (!file.is_open()) return false;
-        file << j.dump(2);
-        return true;
+        std::filesystem::path target_p(path);
+        std::filesystem::path tmp_p = target_p;
+        tmp_p += ".tmp";
+        std::filesystem::path bak_p = target_p;
+        bak_p += ".bak";
+
+        {
+            std::ofstream file(tmp_p);
+            if (!file.is_open()) return false;
+            file << j.dump(2);
+            file.flush();
+        }
+
+        std::error_code ec;
+        if (std::filesystem::exists(target_p)) {
+            std::filesystem::copy_file(target_p, bak_p, std::filesystem::copy_options::overwrite_existing, ec);
+        }
+
+        if (MoveFileExW(tmp_p.c_str(), target_p.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            return true;
+        }
+
+        std::filesystem::copy_file(tmp_p, target_p, std::filesystem::copy_options::overwrite_existing, ec);
+        std::filesystem::remove(tmp_p, ec);
+        return !ec;
     } catch (...) {
         return false;
     }

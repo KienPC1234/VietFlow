@@ -10,11 +10,14 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, FreeLibrary, GetLastError, ERROR_CANCELLED, HANDLE, INVALID_HANDLE_VALUE,
     WAIT_OBJECT_0,
 };
-use windows_sys::Win32::Security::{
-    InitializeSecurityDescriptor, SetSecurityDescriptorDacl, SECURITY_ATTRIBUTES,
-    SECURITY_DESCRIPTOR,
-};
-const SECURITY_DESCRIPTOR_REVISION: u32 = 1;
+use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+const SDDL_REVISION_1: u32 = 1;
+
+extern "system" {
+    fn LocalFree(hmem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+}
+
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows_sys::Win32::System::Memory::{
     CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
@@ -46,6 +49,7 @@ pub struct TsfSharedConfig {
     pub auto_switch_by_typing: u32,
     pub enable_macro: u32,
     pub version: u32,
+    pub seq: u32,
     pub last_active_tick: u64,
     pub last_active_pid: u32,
     pub is_composing: u32,
@@ -64,6 +68,7 @@ impl Default for TsfSharedConfig {
             auto_switch_by_typing: 1,
             enable_macro: 1,
             version: 1,
+            seq: 0,
             last_active_tick: 0,
             last_active_pid: 0,
             is_composing: 0,
@@ -85,24 +90,24 @@ impl SharedConfigWriter {
             let name = to_wide(SHARED_MEM_NAME);
             let size = std::mem::size_of::<TsfSharedConfig>() as u32;
 
-            // Security attributes with NULL DACL allows AppContainer (UWP / Windows Store)
-            // and elevated processes on Windows 10/11 to access the shared memory configuration.
-            let mut sd: SECURITY_DESCRIPTOR = std::mem::zeroed();
-            InitializeSecurityDescriptor(
-                &mut sd as *mut _ as *mut std::ffi::c_void,
-                SECURITY_DESCRIPTOR_REVISION,
-            );
-            SetSecurityDescriptorDacl(
-                &mut sd as *mut _ as *mut std::ffi::c_void,
-                1,
-                std::ptr::null_mut(),
-                0,
-            );
-            let sa = SECURITY_ATTRIBUTES {
+            // Restrict shared memory to current user/system read-write, AppContainer read-only
+            let sddl = to_wide("D:(A;;GA;;;CO)(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;IU)(A;;GR;;;AC)");
+            let mut psd = std::ptr::null_mut();
+            let mut sa = SECURITY_ATTRIBUTES {
                 nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-                lpSecurityDescriptor: &mut sd as *mut _ as *mut std::ffi::c_void,
+                lpSecurityDescriptor: std::ptr::null_mut(),
                 bInheritHandle: 0,
             };
+
+            let converted = ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut psd,
+                std::ptr::null_mut(),
+            );
+            if converted != 0 {
+                sa.lpSecurityDescriptor = psd;
+            }
 
             let mapping = CreateFileMappingW(
                 INVALID_HANDLE_VALUE,
@@ -112,6 +117,10 @@ impl SharedConfigWriter {
                 size,
                 name.as_ptr(),
             );
+
+            if !psd.is_null() {
+                LocalFree(psd as _);
+            }
 
             if mapping.is_null() {
                 return None;
@@ -136,7 +145,16 @@ impl SharedConfigWriter {
     pub fn update(&mut self, config: &TsfSharedConfig) {
         if !self.view.is_null() {
             unsafe {
-                std::ptr::write(self.view, *config);
+                let cur_seq = (*self.view).seq;
+                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                (*self.view).seq = cur_seq.wrapping_add(1) | 1;
+                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+
+                let mut cfg = *config;
+                cfg.seq = cur_seq.wrapping_add(2) & !1;
+                std::ptr::write(self.view, cfg);
+
+                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
             }
         }
     }
@@ -234,6 +252,7 @@ pub fn sync_tsf_config(config: &AppConfig, enabled: bool) {
             auto_switch_by_typing: if config.auto_switch_by_typing { 1 } else { 0 },
             enable_macro: if config.enable_macro { 1 } else { 0 },
             version: 1,
+            seq: 0,
             last_active_tick: prev_tick,
             last_active_pid: prev_pid,
             is_composing: prev_comp,
@@ -575,13 +594,14 @@ mod tests {
 
     #[test]
     fn test_tsf_shared_config_layout() {
-        assert_eq!(std::mem::size_of::<TsfSharedConfig>(), 56);
+        assert_eq!(std::mem::size_of::<TsfSharedConfig>(), 64);
         let cfg = TsfSharedConfig::default();
         assert_eq!(cfg.enabled, 1);
         assert_eq!(cfg.method, 0);
         assert_eq!(cfg.auto_switch_by_typing, 1);
         assert_eq!(cfg.enable_macro, 1);
         assert_eq!(cfg.version, 1);
+        assert_eq!(cfg.seq, 0);
         assert_eq!(cfg.last_active_pid, 0);
         assert_eq!(cfg.is_composing, 0);
     }

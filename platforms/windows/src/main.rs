@@ -273,9 +273,16 @@ fn main() {
         }
     }
 
-    if args.iter().any(|a| a == "--clean-shortcuts" || a == "--uninstall-cleanup") {
+    if args.iter().any(|a| a == "--uninstall-cleanup") {
         unsafe {
-            crate::startup::clean_all_shortcuts_and_cache();
+            crate::startup::clean_all_shortcuts_and_cache(true);
+        }
+        std::process::exit(0);
+    }
+
+    if args.iter().any(|a| a == "--clean-shortcuts") {
+        unsafe {
+            crate::startup::clean_all_shortcuts_and_cache(false);
         }
         std::process::exit(0);
     }

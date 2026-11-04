@@ -1258,11 +1258,15 @@ impl VietFlowEngine {
             self.lookback.push_word(&raw_word, &display_word, false);
         }
 
+        let raw_lower = raw_word.to_ascii_lowercase();
+        let is_slang = crate::autoswitch::is_vietnamese_abbrev_or_slang(&raw_lower);
+
         let should_restore = self.options.spell_check
             && self.options.auto_non_vn_restore
             && !self.buffer.is_empty()
             && (
                 self.matches_raw_english_keyword()
+                || (is_slang && display_word != raw_word)
                 || (!self.temp_disabled && self.has_any_vietnamese_mark() && !self.is_valid_vietnamese_word())
             );
 
@@ -1632,33 +1636,23 @@ impl VietFlowEngine {
 
     #[inline]
     pub fn matches_english_keyword(&self, word: &str) -> bool {
-        let is_removed = if self.options.removed_english_keywords.is_sorted() {
-            self.options
-                .removed_english_keywords
-                .binary_search_by(|r| r.as_str().cmp(word))
-                .is_ok()
-        } else {
-            self.options
-                .removed_english_keywords
-                .iter()
-                .any(|removed| removed == word)
-        };
+        if word.len() > 32 {
+            return false;
+        }
+
+        let is_removed = self.options
+            .removed_english_keywords
+            .binary_search_by(|r| r.as_str().cmp(word))
+            .is_ok();
 
         if is_english_keyword(word) && !is_removed {
             return true;
         }
 
-        if self.options.custom_english_keywords.is_sorted() {
-            self.options
-                .custom_english_keywords
-                .binary_search_by(|k| k.as_str().cmp(word))
-                .is_ok()
-        } else {
-            self.options
-                .custom_english_keywords
-                .iter()
-                .any(|keyword| keyword == word)
-        }
+        self.options
+            .custom_english_keywords
+            .binary_search_by(|k| k.as_str().cmp(word))
+            .is_ok()
     }
 
     #[inline]

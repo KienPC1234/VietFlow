@@ -102,22 +102,35 @@ fn test_vietnamese_youth_abbreviations_stay_in_vietnamese_mode() {
     let slang_words = [
         "oke", "oki", "uk", "uh", "wa", "thui", "lun", "khum", "hok", "haizz",
         "mlem", "ultr", "gato", "xu", "ib", "rep", "tym", "ny", "ck", "vk",
-        "game", "link", "web", "app", "bot", "lag", "ping", "zui", "bik"
+        "game", "link", "web", "app", "bot", "lag", "ping", "zui", "bik",
+        "test", "code", "post", "pass"
     ];
 
     for slang in &slang_words {
         engine.reset();
         let mut test_input = slang.to_string();
         test_input.push(' ');
+        let mut out = String::new();
         for c in test_input.chars() {
-            engine.process_key(c);
+            let (bk, text) = engine.process_key(c);
+            for _ in 0..bk {
+                out.pop();
+            }
+            out.push_str(text.as_str());
         }
+        println!("Word: {:<10} -> Output: {:<10} | AutoSwitch: {:?}", slang, out.trim(), engine.auto_switch_requested);
         assert_eq!(
             engine.auto_switch_requested,
             None,
             "Slang '{slang}' must stay in Vietnamese mode without switching to English"
         );
     }
+
+    // Verify subsequent Vietnamese words after slang retain full Telex Vietnamese accents
+    engine.reset();
+    let sentence = process_string(&mut engine, "test xong rooif ");
+    assert_eq!(sentence, "test xong rồi ");
+    assert_eq!(engine.auto_switch_requested, None);
 }
 
 #[test]

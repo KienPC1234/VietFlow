@@ -2,6 +2,7 @@
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
 use std::mem::size_of;
+use std::sync::{mpsc, OnceLock};
 use std::thread::sleep;
 use std::time::Duration;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -66,14 +67,73 @@ pub fn create_unicode_input(c: char, key_up: bool) -> INPUT {
     create_utf16_input(encoded[0], key_up)
 }
 
+struct InjectionJob {
+    backspaces: usize,
+    text: String,
+    mode: u8,
+}
+
+static INJECTION_TX: OnceLock<mpsc::Sender<InjectionJob>> = OnceLock::new();
+
+fn get_injection_sender() -> mpsc::Sender<InjectionJob> {
+    INJECTION_TX
+        .get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<InjectionJob>();
+            std::thread::Builder::new()
+                .name("vietflow-async-injector".into())
+                .spawn(move || {
+                    while let Ok(job) = rx.recv() {
+                        execute_injection_job(job.backspaces, &job.text, job.mode);
+                    }
+                })
+                .expect("failed to spawn async injector thread");
+            tx
+        })
+        .clone()
+}
+
+pub fn enqueue_async_injection(backspaces: usize, text: String, mode: u8) {
+    let _ = get_injection_sender().send(InjectionJob {
+        backspaces,
+        text,
+        mode,
+    });
+}
+
+fn execute_injection_job(backspaces: usize, text: &str, mode: u8) {
+    match mode {
+        2 => send_scancode_batch(backspaces, text),
+        3 | 4 => send_safe_batch(backspaces, text),
+        1 => {
+            let _ = send_unicode_batch_status(backspaces, text);
+        }
+        _ => {
+            let (success, total_inserted) = send_unicode_batch_status(backspaces, text);
+            if !success && total_inserted == 0 {
+                send_safe_batch(backspaces, text);
+            }
+        }
+    }
+}
+
 /// Sends backspaces and replacement Unicode characters to the active window.
-/// Normal keystroke adjustments (<= 8 backspaces, <= 32 chars) are sent in ONE
+/// Normal keystroke adjustments (<= 16 backspaces, <= 32 chars) are sent in ONE
 /// atomic SendInput call so the caret never visibly jumps or flickers.
 /// Large macro restorations pace backspaces with a tiny delay to prevent apps from dropping them.
-/// Select the output strategy before every batch. 0/Auto and 1/Unicode use the
-/// normal atomic Unicode path; 0/Auto retries paced Unicode if the atomic batch
-/// was completely rejected (0 events inserted).
+/// Large macros and safe mode are offloaded to an asynchronous worker to prevent blocking
+/// LowLevelKeyboardProc and exceeding Windows hook timeout.
 pub fn send_atomic_batch_with_mode(backspaces: usize, text: &str, mode: u8) {
+    let char_count = text.chars().count();
+    let is_large_or_paced = char_count > ATOMIC_CHAR_LIMIT
+        || backspaces > ATOMIC_BACKSPACE_LIMIT
+        || mode == 3
+        || mode == 4;
+
+    if is_large_or_paced {
+        enqueue_async_injection(backspaces, text.to_string(), mode);
+        return;
+    }
+
     match mode {
         2 => send_scancode_batch(backspaces, text),
         3 | 4 => send_safe_batch(backspaces, text),
@@ -129,6 +189,18 @@ fn send_unicode_batch_status(backspaces: usize, text: &str) -> (bool, u32) {
 
         let inserted =
             unsafe { SendInput(count as u32, inputs.as_ptr(), size_of::<INPUT>() as i32) };
+        if (inserted as usize) < count && inserted > 0 {
+            // Issue #11: Partial insertion retry - ONLY retry the remaining tail events
+            let remaining = count - inserted as usize;
+            let tail = &inputs[inserted as usize..count];
+            let retry_inserted = unsafe {
+                SendInput(remaining as u32, tail.as_ptr(), size_of::<INPUT>() as i32)
+            };
+            return (
+                inserted + retry_inserted == count as u32,
+                inserted + retry_inserted,
+            );
+        }
         return (inserted == count as u32, inserted);
     }
 
@@ -149,7 +221,16 @@ fn send_unicode_batch_status(backspaces: usize, text: &str) -> (bool, u32) {
             )
         };
         total_inserted += inserted;
-        ok &= inserted == back_inputs.len() as u32;
+        if (inserted as usize) < back_inputs.len() && inserted > 0 {
+            let tail = &back_inputs[inserted as usize..];
+            let retry_ins = unsafe {
+                SendInput(tail.len() as u32, tail.as_ptr(), size_of::<INPUT>() as i32)
+            };
+            total_inserted += retry_ins;
+            ok &= (inserted + retry_ins) as usize == back_inputs.len();
+        } else {
+            ok &= inserted as usize == back_inputs.len();
+        }
         sleep(Duration::from_millis(3));
     }
 
@@ -170,7 +251,16 @@ fn send_unicode_batch_status(backspaces: usize, text: &str) -> (bool, u32) {
             )
         };
         total_inserted += inserted;
-        ok &= inserted == char_inputs.len() as u32;
+        if (inserted as usize) < char_inputs.len() && inserted > 0 {
+            let tail = &char_inputs[inserted as usize..];
+            let retry_ins = unsafe {
+                SendInput(tail.len() as u32, tail.as_ptr(), size_of::<INPUT>() as i32)
+            };
+            total_inserted += retry_ins;
+            ok &= (inserted + retry_ins) as usize == char_inputs.len();
+        } else {
+            ok &= inserted as usize == char_inputs.len();
+        }
     }
     (ok, total_inserted)
 }

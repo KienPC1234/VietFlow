@@ -46,6 +46,20 @@ SharedConfigReader::~SharedConfigReader() {
 
 TsfSharedConfig SharedConfigReader::Get() {
     if (m_pView) {
+        for (int retry = 0; retry < 10; ++retry) {
+            uint32_t s1 = m_pView->seq;
+            if (s1 & 1) {
+                YieldProcessor();
+                continue;
+            }
+            TsfSharedConfig snap = *m_pView;
+            MemoryBarrier();
+            uint32_t s2 = m_pView->seq;
+            if (s1 == s2) {
+                return snap;
+            }
+            YieldProcessor();
+        }
         return *m_pView;
     }
     TsfSharedConfig def = {};
@@ -59,6 +73,7 @@ TsfSharedConfig SharedConfigReader::Get() {
     def.auto_switch_by_typing = 1;
     def.enable_macro = 1;
     def.version = 1;
+    def.seq = 0;
     return def;
 }
 
