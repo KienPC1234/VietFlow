@@ -11,8 +11,8 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_ICONWARNING,
-    MB_OK, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
+    MessageBoxW, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_ICONWARNING, MB_OK,
+    MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
 };
 
 use crate::tray::to_wide;
@@ -141,6 +141,9 @@ pub(crate) struct ReleaseInfo {
     notes: String,
     url: String,
     download: Option<String>,
+    /// Only official GitHub Releases API asset digests can authorize execution.
+    sha256: Option<[u8; 32]>,
+    size: Option<u64>,
 }
 
 fn show_msg(text: &str, title: &str, flags: u32) -> i32 {
@@ -259,10 +262,10 @@ fn fetch_url(url: &str) -> Result<String, FetchError> {
         set_timeout(request.0, INTERNET_OPTION_SEND_TIMEOUT);
         set_timeout(request.0, INTERNET_OPTION_RECEIVE_TIMEOUT);
 
-        if let Some(status) = query_http_status(request.0) {
-            if status != 200 {
-                return Err(FetchError::http(status));
-            }
+        match query_http_status(request.0) {
+            Some(200) => {}
+            Some(status) => return Err(FetchError::http(status)),
+            None => return Err(FetchError::new("Cannot verify metadata HTTP status")),
         }
 
         let mut body = Vec::with_capacity(2048);
@@ -275,7 +278,10 @@ fn fetch_url(url: &str) -> Result<String, FetchError> {
                 buffer.len() as u32,
                 &mut read,
             );
-            if ok == 0 || read == 0 {
+            if ok == 0 {
+                return Err(FetchError::new("Metadata download connection interrupted"));
+            }
+            if read == 0 {
                 break;
             }
             if body.len() + read as usize > MAX_BODY_BYTES {
@@ -312,7 +318,8 @@ fn download_file(url: &str, destination: &std::path::Path) -> Result<(), FetchEr
     }
 
     let temp_dest = destination.with_extension("tmp");
-    let _ = std::fs::remove_file(&temp_dest);
+    // Never overwrite an existing file or follow a pre-created temporary link.
+    let mut created_temp = false;
 
     let download_result = (|| -> Result<(), FetchError> {
         unsafe {
@@ -327,12 +334,21 @@ fn download_file(url: &str, destination: &std::path::Path) -> Result<(), FetchEr
             if session.0.is_null() {
                 return Err(FetchError::new("Không thể khởi tạo kết nối WinINet"));
             }
-            set_timeout_ms(session.0, INTERNET_OPTION_CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
+            set_timeout_ms(
+                session.0,
+                INTERNET_OPTION_CONNECT_TIMEOUT,
+                DOWNLOAD_TIMEOUT_MS,
+            );
             set_timeout_ms(session.0, INTERNET_OPTION_SEND_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
-            set_timeout_ms(session.0, INTERNET_OPTION_RECEIVE_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
+            set_timeout_ms(
+                session.0,
+                INTERNET_OPTION_RECEIVE_TIMEOUT,
+                DOWNLOAD_TIMEOUT_MS,
+            );
 
             let wide_url = to_wide(url);
-            let headers = to_wide("User-Agent: VietFlow\r\nAccept: application/octet-stream, */*\r\n");
+            let headers =
+                to_wide("User-Agent: VietFlow\r\nAccept: application/octet-stream, */*\r\n");
             let request = InternetHandle(InternetOpenUrlW(
                 session.0,
                 wide_url.as_ptr(),
@@ -345,17 +361,25 @@ fn download_file(url: &str, destination: &std::path::Path) -> Result<(), FetchEr
                 return Err(FetchError::new("Không thể mở đường dẫn tải tệp"));
             }
             set_timeout_ms(request.0, INTERNET_OPTION_SEND_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
-            set_timeout_ms(request.0, INTERNET_OPTION_RECEIVE_TIMEOUT, DOWNLOAD_TIMEOUT_MS);
+            set_timeout_ms(
+                request.0,
+                INTERNET_OPTION_RECEIVE_TIMEOUT,
+                DOWNLOAD_TIMEOUT_MS,
+            );
 
-            if let Some(status) = query_http_status(request.0) {
-                if status != 200 {
-                    return Err(FetchError::http(status));
-                }
+            match query_http_status(request.0) {
+                Some(200) => {}
+                Some(status) => return Err(FetchError::http(status)),
+                None => return Err(FetchError::new("Cannot verify MSI HTTP status")),
             }
 
-            let mut file = std::fs::File::create(&temp_dest)
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp_dest)
                 .map_err(|e| FetchError::new(format!("Không thể tạo tệp tạm: {e}")))?;
 
+            created_temp = true;
             let mut buffer = [0u8; 64 * 1024];
             let mut total_bytes: usize = 0;
             loop {
@@ -368,7 +392,9 @@ fn download_file(url: &str, destination: &std::path::Path) -> Result<(), FetchEr
                 );
                 if ok == 0 {
                     let err = windows_sys::Win32::Foundation::GetLastError();
-                    return Err(FetchError::new(format!("Lỗi mạng khi tải tệp (mã lỗi {err})")));
+                    return Err(FetchError::new(format!(
+                        "Lỗi mạng khi tải tệp (mã lỗi {err})"
+                    )));
                 }
                 if read == 0 {
                     break;
@@ -383,8 +409,13 @@ fn download_file(url: &str, destination: &std::path::Path) -> Result<(), FetchEr
             file.flush()
                 .map_err(|e| FetchError::new(format!("Lỗi ghi tệp cài đặt: {e}")))?;
 
+            file.sync_all()
+                .map_err(|e| FetchError::new(format!("Cannot sync MSI: {e}")))?;
+
             if total_bytes < MIN_MSI_BYTES {
-                return Err(FetchError::new("Tệp tải về bị cắt ngắn hoặc dung lượng không hợp lệ"));
+                return Err(FetchError::new(
+                    "Tệp tải về bị cắt ngắn hoặc dung lượng không hợp lệ",
+                ));
             }
 
             // Verify OLE2 / MSI Compound File magic header
@@ -393,7 +424,9 @@ fn download_file(url: &str, destination: &std::path::Path) -> Result<(), FetchEr
             let mut f = std::fs::File::open(&temp_dest)
                 .map_err(|e| FetchError::new(format!("Không thể đọc lại tệp cài đặt: {e}")))?;
             if f.read_exact(&mut header).is_err() || header != MSI_MAGIC_HEADER {
-                return Err(FetchError::new("Tệp tải về không phải định dạng MSI hợp lệ"));
+                return Err(FetchError::new(
+                    "Tệp tải về không phải định dạng MSI hợp lệ",
+                ));
             }
 
             Ok(())
@@ -401,23 +434,27 @@ fn download_file(url: &str, destination: &std::path::Path) -> Result<(), FetchEr
     })();
 
     match download_result {
-        Ok(()) => {
-            std::fs::rename(&temp_dest, destination)
-                .map_err(|e| FetchError::new(format!("Không thể hoàn tất cập nhật tệp: {e}")))
-        }
+        Ok(()) => match std::fs::rename(&temp_dest, destination) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                let _ = std::fs::remove_file(&temp_dest);
+                Err(FetchError::new(format!(
+                    "Cannot finalize staged MSI: {err}"
+                )))
+            }
+        },
         Err(e) => {
-            let _ = std::fs::remove_file(&temp_dest);
-            let _ = std::fs::remove_file(destination);
+            if created_temp {
+                let _ = std::fs::remove_file(&temp_dest);
+            }
+            // destination remains untouched until a verified staging rename.
             Err(e)
         }
     }
 }
 
 fn normalize_version(value: &str) -> String {
-    value
-        .trim()
-        .trim_start_matches(['v', 'V'])
-        .to_string()
+    value.trim().trim_start_matches(['v', 'V']).to_string()
 }
 
 pub fn is_installed_via_msi() -> bool {
@@ -470,6 +507,8 @@ pub(crate) fn parse_manifest_for_arch(
         notes,
         url,
         download,
+        sha256: None,
+        size: None,
     })
 }
 
@@ -484,32 +523,108 @@ fn parse_manifest(body: &str) -> Option<ReleaseInfo> {
     parse_manifest_for_arch(body, is_installed_via_msi(), arch_key)
 }
 
-fn parse_api_release(body: &str) -> Option<ReleaseInfo> {
+fn runtime_arch() -> &'static str {
+    if cfg!(target_arch = "x86") {
+        "x86"
+    } else if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x64"
+    }
+}
+
+fn parse_sha256_digest(value: &str) -> Option<[u8; 32]> {
+    let hex = value.strip_prefix("sha256:")?;
+    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut digest = [0u8; 32];
+    for (i, byte) in digest.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(digest)
+}
+
+fn parse_api_release_for_arch(body: &str, is_msi: bool, arch: &str) -> Option<ReleaseInfo> {
     let json: serde_json::Value = serde_json::from_str(body).ok()?;
-    let version = normalize_version(json.get("tag_name")?.as_str()?);
-    if version.is_empty() {
+    let tag = json.get("tag_name")?.as_str()?;
+    let version = normalize_version(tag);
+    if version_key(&version).is_none()
+        || tag.is_empty()
+        || !tag
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        || tag.contains("..")
+    {
         return None;
     }
     let notes = json
         .get("body")
-        .and_then(|value| value.as_str())
+        .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let url = json
-        .get("html_url")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.is_empty())
-        .unwrap_or(RELEASES_URL)
-        .to_string();
+    let url = format!("{RELEASES_URL}/tag/{tag}");
+    let mut download = None;
+    let mut sha256 = None;
+    let mut size = None;
+    if is_msi && matches!(arch, "x64" | "x86" | "arm64") {
+        let expected_name = format!("VietFlow-win-{arch}.msi");
+        let expected_url = format!(
+            "https://github.com/KienPC1234/VietFlow/releases/download/{tag}/{expected_name}"
+        );
+        if let Some(assets) = json.get("assets").and_then(|v| v.as_array()) {
+            for asset in assets {
+                if asset.get("name").and_then(|v| v.as_str()) != Some(expected_name.as_str())
+                    || asset.get("browser_download_url").and_then(|v| v.as_str())
+                        != Some(expected_url.as_str())
+                {
+                    continue;
+                }
+                let Some(asset_digest) = asset
+                    .get("digest")
+                    .and_then(|v| v.as_str())
+                    .and_then(parse_sha256_digest)
+                else {
+                    continue;
+                };
+                let Some(asset_size) = asset
+                    .get("size")
+                    .and_then(|v| v.as_u64())
+                    .filter(|&n| n > 0 && n <= MAX_MSI_BYTES as u64)
+                else {
+                    continue;
+                };
+                download = Some(expected_url.clone());
+                sha256 = Some(asset_digest);
+                size = Some(asset_size);
+                break;
+            }
+        }
+    }
     Some(ReleaseInfo {
         version,
         notes,
         url,
-        download: None,
+        download,
+        sha256,
+        size,
     })
 }
 
+fn parse_api_release(body: &str) -> Option<ReleaseInfo> {
+    parse_api_release_for_arch(body, is_installed_via_msi(), runtime_arch())
+}
+
 fn fetch_release_info() -> Result<ReleaseInfo, FetchError> {
+    if is_installed_via_msi() {
+        // Only official GitHub API asset digest/size can authorize an MSI.
+        // Do not auto-run a URL supplied by latest.json.
+        return fetch_url(API_URL).and_then(|body| {
+            parse_api_release_for_arch(&body, true, runtime_arch())
+                .ok_or_else(|| FetchError::new("Invalid official release metadata"))
+        });
+    }
+    // Portable builds only display release links.
     // 1) Metadata shipped with the release: no API rate limit, includes notes.
     match fetch_url(MANIFEST_URL) {
         Ok(body) => {
@@ -531,6 +646,8 @@ fn fetch_release_info() -> Result<ReleaseInfo, FetchError> {
                     notes: String::new(),
                     url: format!("{RELEASES_URL}/tag/v{version}"),
                     download: None,
+                    sha256: None,
+                    size: None,
                 });
             }
         }
@@ -549,6 +666,8 @@ fn fetch_release_info() -> Result<ReleaseInfo, FetchError> {
             notes: String::new(),
             url: RELEASES_URL.to_string(),
             download: None,
+            sha256: None,
+            size: None,
         }),
         Err(error) => Err(error),
     }
@@ -584,7 +703,7 @@ fn is_newer_version(remote: &str, local: &str) -> bool {
     }
     match (remote_pre, local_pre) {
         (None, None) => false,
-        (None, Some(_)) => true,  // 1.0.0 is newer than 1.0.0-beta
+        (None, Some(_)) => true, // 1.0.0 is newer than 1.0.0-beta
         (Some(_), None) => false,
         (Some(remote), Some(local)) => remote > local,
     }
@@ -622,6 +741,170 @@ fn short_notes(notes: &str) -> String {
     result
 }
 
+#[link(name = "bcrypt")]
+extern "system" {
+    fn BCryptOpenAlgorithmProvider(
+        handle: *mut *mut c_void,
+        algorithm: *const u16,
+        implementation: *const u16,
+        flags: u32,
+    ) -> i32;
+    fn BCryptCloseAlgorithmProvider(handle: *mut c_void, flags: u32) -> i32;
+    fn BCryptCreateHash(
+        algorithm: *mut c_void,
+        hash: *mut *mut c_void,
+        object: *mut u8,
+        object_len: u32,
+        secret: *mut u8,
+        secret_len: u32,
+        flags: u32,
+    ) -> i32;
+    fn BCryptHashData(hash: *mut c_void, data: *mut u8, len: u32, flags: u32) -> i32;
+    fn BCryptFinishHash(hash: *mut c_void, output: *mut u8, len: u32, flags: u32) -> i32;
+    fn BCryptDestroyHash(hash: *mut c_void) -> i32;
+}
+
+struct CngAlgorithm(*mut c_void);
+impl Drop for CngAlgorithm {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                BCryptCloseAlgorithmProvider(self.0, 0);
+            }
+        }
+    }
+}
+
+struct CngHash(*mut c_void);
+impl Drop for CngHash {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                BCryptDestroyHash(self.0);
+            }
+        }
+    }
+}
+
+/// Incremental SHA-256 via Windows CNG. Unlike BCryptHash (Windows 10+),
+/// BCryptCreateHash/HashData/FinishHash support Windows 7 and bound memory.
+fn file_sha256(path: &std::path::Path) -> Result<[u8; 32], FetchError> {
+    use std::io::Read;
+    let mut file =
+        std::fs::File::open(path).map_err(|e| FetchError::new(format!("Cannot read MSI: {e}")))?;
+    unsafe {
+        let mut algorithm = CngAlgorithm(std::ptr::null_mut());
+        if BCryptOpenAlgorithmProvider(
+            &mut algorithm.0,
+            to_wide("SHA256").as_ptr(),
+            std::ptr::null(),
+            0,
+        ) < 0
+        {
+            return Err(FetchError::new("SHA-256 provider unavailable"));
+        }
+        let mut hash = CngHash(std::ptr::null_mut());
+        // Windows 7+ CNG may allocate the hash-object memory internally.
+        if BCryptCreateHash(
+            algorithm.0,
+            &mut hash.0,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            0,
+        ) < 0
+        {
+            return Err(FetchError::new("Cannot initialize MSI SHA-256"));
+        }
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let count = file
+                .read(&mut buf)
+                .map_err(|e| FetchError::new(format!("Cannot read MSI bytes: {e}")))?;
+            if count == 0 {
+                break;
+            }
+            if BCryptHashData(hash.0, buf.as_mut_ptr(), count as u32, 0) < 0 {
+                return Err(FetchError::new("Cannot hash MSI bytes"));
+            }
+        }
+        let mut digest = [0u8; 32];
+        if BCryptFinishHash(hash.0, digest.as_mut_ptr(), digest.len() as u32, 0) < 0 {
+            return Err(FetchError::new("Cannot finalize MSI SHA-256"));
+        }
+        Ok(digest)
+    }
+}
+
+/// Verify the exact downloaded size and digest before an installer launch.
+fn verify_msi_file(
+    path: &std::path::Path,
+    expected_size: u64,
+    expected_hash: &[u8; 32],
+) -> Result<(), FetchError> {
+    let downloaded = std::fs::metadata(path)
+        .map_err(|e| FetchError::new(format!("Cannot inspect MSI size: {e}")))?
+        .len();
+    if downloaded != expected_size {
+        return Err(FetchError::new("MSI size mismatch or truncated download"));
+    }
+    if &file_sha256(path)? != expected_hash {
+        return Err(FetchError::new(
+            "MSI SHA-256 does not match GitHub Releases",
+        ));
+    }
+    Ok(())
+}
+
+/// Fail-closed MSI launcher; only official GitHub API digests and byte lengths
+/// are allowed to authorize execution, not human-readable release manifests.
+fn launch_verified_msi(info: &ReleaseInfo) -> Result<(), FetchError> {
+    let url = info
+        .download
+        .as_deref()
+        .ok_or_else(|| FetchError::new("No verified MSI URL available"))?;
+    let expected_hash = info
+        .sha256
+        .ok_or_else(|| FetchError::new("No verified SHA-256 available"))?;
+    let expected_size = info
+        .size
+        .ok_or_else(|| FetchError::new("No verified MSI size available"))?;
+    if !url.starts_with("https://github.com/KienPC1234/VietFlow/releases/download/")
+        || !url.ends_with(&format!("/VietFlow-win-{}.msi", runtime_arch()))
+    {
+        return Err(FetchError::new("Untrusted MSI URL"));
+    }
+    let destination = std::env::temp_dir().join(format!(
+        "VietFlow-update-{}-{}.msi",
+        std::process::id(),
+        crate::hook::get_tick_count_64()
+    ));
+    let result = (|| {
+        download_file(url, &destination)?;
+        verify_msi_file(&destination, expected_size, &expected_hash)?;
+        let path = to_wide(&destination.to_string_lossy());
+        let result = unsafe {
+            windows_sys::Win32::UI::Shell::ShellExecuteW(
+                0 as _,
+                to_wide("open").as_ptr(),
+                path.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+            )
+        };
+        if (result as isize) <= 32 {
+            return Err(FetchError::new("Windows refused to launch verified MSI"));
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&destination);
+    }
+    result
+}
+
 fn prompt_update(info: &ReleaseInfo) {
     let notes = short_notes(&info.notes);
     let mut message = format!(
@@ -637,48 +920,22 @@ fn prompt_update(info: &ReleaseInfo) {
     if is_installed_via_msi() {
         message.push_str("Bạn đang sử dụng bản cài đặt (MSI).\nBạn có muốn tự động tải bản MSI mới nhất và tiến hành nâng cấp ngay không?");
         if show_msg(&message, "Cập nhật VietFlow", MB_YESNO | MB_ICONQUESTION) == IDYES {
-            if let Some(download_url) = &info.download {
-                let temp_msi = std::env::temp_dir().join(format!("VietFlow-v{}-Setup.msi", info.version));
-
+            if info.download.is_some() && info.sha256.is_some() && info.size.is_some() {
                 show_msg(
-                    "Đang tiến hành tải bản cài đặt MSI trong nền...\nCửa sổ cài đặt sẽ tự động xuất hiện sau vài giây.",
-                    "Cập nhật VietFlow",
+                    "Downloading MSI and verifying its SHA-256 from GitHub...",
+                    "VietFlow update",
                     MB_OK | MB_ICONINFORMATION,
                 );
-
-                match download_file(download_url, &temp_msi) {
-                    Ok(()) => {
-                        let wide_path = to_wide(&temp_msi.to_string_lossy());
-                        let res = unsafe {
-                            windows_sys::Win32::UI::Shell::ShellExecuteW(
-                                0 as _,
-                                to_wide("open").as_ptr(),
-                                wide_path.as_ptr(),
-                                std::ptr::null(),
-                                std::ptr::null(),
-                                1, // SW_SHOWNORMAL
-                            )
-                        };
-                        let err_code = res as usize;
-                        if err_code <= 32 {
-                            let err_msg = format!(
-                                "Không thể tự động khởi chạy bộ cài đặt MSI (mã lỗi {err_code}).\nBạn có muốn mở thư mục chứa tệp để cài đặt thủ công không?"
-                            );
-                            if show_msg(&err_msg, "Lỗi cài đặt VietFlow", MB_YESNO | MB_ICONWARNING) == IDYES {
-                                if let Some(parent) = temp_msi.parent() {
-                                    open_browser(&parent.to_string_lossy());
-                                }
-                            }
-                        } else {
-                            std::process::exit(0);
-                        }
-                    }
+                match launch_verified_msi(info) {
+                    Ok(()) => std::process::exit(0),
                     Err(err) => {
-                        let err_msg = format!(
-                            "Tải bản cài đặt thất bại: {}\n\nBạn có muốn mở trang GitHub để tải thủ công không?",
+                        let msg = format!(
+                            "Unable to install MSI safely: {}\n\nOpen GitHub release page manually?",
                             err.message
                         );
-                        if show_msg(&err_msg, "Lỗi cập nhật VietFlow", MB_YESNO | MB_ICONWARNING) == IDYES {
+                        if show_msg(&msg, "VietFlow update error", MB_YESNO | MB_ICONWARNING)
+                            == IDYES
+                        {
                             open_browser(&info.url);
                         }
                     }
@@ -838,7 +1095,106 @@ mod tests {
         .expect("release should parse");
         assert_eq!(info.version, "0.3.0");
         assert_eq!(info.notes, "notes");
-        assert_eq!(info.url, "https://example.test");
+        assert_eq!(
+            info.url,
+            "https://github.com/KienPC1234/VietFlow/releases/tag/v0.3.0"
+        );
+    }
+
+    #[test]
+    fn github_msi_requires_exact_asset_digest_arch_and_origin() {
+        let digest = "a".repeat(64);
+        let asset = serde_json::json!({
+            "name": "VietFlow-win-x64.msi",
+            "browser_download_url":
+                "https://github.com/KienPC1234/VietFlow/releases/download/v0.5.0/VietFlow-win-x64.msi",
+            "size": 2048,
+            "digest": format!("sha256:{digest}")
+        });
+        let release = serde_json::json!({
+            "tag_name": "v0.5.0", "body": "notes", "assets": [asset]
+        });
+        let s = release.to_string();
+        let checked = parse_api_release_for_arch(&s, true, "x64").unwrap();
+        assert!(checked.download.is_some());
+        assert_eq!(checked.size, Some(2048));
+        assert_eq!(checked.sha256, Some([0xaa; 32]));
+        assert!(parse_api_release_for_arch(&s, true, "x86")
+            .unwrap()
+            .download
+            .is_none());
+        assert!(parse_api_release_for_arch(&s, false, "x64")
+            .unwrap()
+            .download
+            .is_none());
+
+        for key in ["digest", "size", "browser_download_url", "name"] {
+            let mut invalid = release.clone();
+            invalid["assets"][0].as_object_mut().unwrap().remove(key);
+            assert!(
+                parse_api_release_for_arch(&invalid.to_string(), true, "x64")
+                    .unwrap()
+                    .download
+                    .is_none()
+            );
+        }
+        let mut unsafe_url = release.clone();
+        unsafe_url["assets"][0]["browser_download_url"] =
+            "https://not-github.example/install.msi".into();
+        assert!(
+            parse_api_release_for_arch(&unsafe_url.to_string(), true, "x64")
+                .unwrap()
+                .download
+                .is_none()
+        );
+        let mut wrong_digest = release.clone();
+        wrong_digest["assets"][0]["digest"] = "sha256:bad".into();
+        assert!(
+            parse_api_release_for_arch(&wrong_digest.to_string(), true, "x64")
+                .unwrap()
+                .download
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn streaming_cng_sha256_matches_known_vector() {
+        let path = std::env::temp_dir().join(format!(
+            "VietFlow-test-hash-{}-{}.bin",
+            std::process::id(),
+            crate::hook::get_tick_count_64()
+        ));
+        std::fs::write(&path, b"abc").unwrap();
+        let actual = file_sha256(&path).expect("Windows CNG SHA-256");
+        let _ = std::fs::remove_file(path);
+        assert_eq!(
+            actual,
+            parse_sha256_digest(concat!(
+                "sha256:ba7816bf8f01cfea414140de5dae2223",
+                "b00361a396177a9cb410ff61f20015ad"
+            ))
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn verification_rejects_wrong_length_and_tampered_bytes() {
+        let path = std::env::temp_dir().join(format!(
+            "VietFlow-verifier-test-{}-{}.bin",
+            std::process::id(),
+            crate::hook::get_tick_count_64()
+        ));
+        std::fs::write(&path, b"abc").unwrap();
+        let expected = parse_sha256_digest(concat!(
+            "sha256:ba7816bf8f01cfea414140de5dae2223",
+            "b00361a396177a9cb410ff61f20015ad"
+        ))
+        .unwrap();
+        assert!(verify_msi_file(&path, 3, &expected).is_ok());
+        assert!(verify_msi_file(&path, 2, &expected).is_err());
+        std::fs::write(&path, b"abd").unwrap();
+        assert!(verify_msi_file(&path, 3, &expected).is_err());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -870,7 +1226,11 @@ mod tests {
             let content = std::fs::read_to_string(&path).expect("read latest.json");
             let msi_x64 = parse_manifest_for_arch(&content, true, "x64").unwrap();
             assert!(!msi_x64.version.is_empty());
-            assert!(msi_x64.download.as_deref().unwrap().contains("VietFlow-win-x64.msi"));
+            assert!(msi_x64
+                .download
+                .as_deref()
+                .unwrap()
+                .contains("VietFlow-win-x64.msi"));
             assert!(!msi_x64.notes.is_empty());
 
             let port_x64 = parse_manifest_for_arch(&content, false, "x64").unwrap();
@@ -902,14 +1262,24 @@ mod tests {
 
     #[test]
     fn test_trusted_download_url_validation() {
-        assert!(is_trusted_download_url("https://github.com/KienPC1234/VietFlow/releases/download/v0.1.4/VietFlow-win-x64.msi"));
+        assert!(is_trusted_download_url(
+            "https://github.com/KienPC1234/VietFlow/releases/download/v0.1.4/VietFlow-win-x64.msi"
+        ));
         assert!(is_trusted_download_url("https://objects.githubusercontent.com/github-production-release-asset-2e65be/12345/VietFlow.msi"));
-        assert!(is_trusted_download_url("https://github-releases.githubusercontent.com/12345/VietFlow.msi"));
+        assert!(is_trusted_download_url(
+            "https://github-releases.githubusercontent.com/12345/VietFlow.msi"
+        ));
 
         // Reject non-https, untrusted hosts, or fake domains
-        assert!(!is_trusted_download_url("http://github.com/KienPC1234/VietFlow/releases/download/v0.1.4/VietFlow.msi"));
+        assert!(!is_trusted_download_url(
+            "http://github.com/KienPC1234/VietFlow/releases/download/v0.1.4/VietFlow.msi"
+        ));
         assert!(!is_trusted_download_url("https://evil.com/VietFlow.msi"));
-        assert!(!is_trusted_download_url("https://github.com.evil.com/VietFlow.msi"));
-        assert!(!is_trusted_download_url("https://github.com/OtherUser/VietFlow/releases/download/v0.1.4/VietFlow.msi"));
+        assert!(!is_trusted_download_url(
+            "https://github.com.evil.com/VietFlow.msi"
+        ));
+        assert!(!is_trusted_download_url(
+            "https://github.com/OtherUser/VietFlow/releases/download/v0.1.4/VietFlow.msi"
+        ));
     }
 }
