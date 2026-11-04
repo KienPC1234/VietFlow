@@ -422,11 +422,14 @@ impl HookState {
     }
 
     #[inline]
-    pub fn send_engine_output(&mut self, backspaces: usize, text: &str) {
+    /// True means the replacement was accepted for dispatch and its original
+    /// key may be consumed. False means the caller MUST pass through the key.
+    pub fn send_engine_output(&mut self, backspaces: usize, text: &str) -> bool {
         if backspaces > 0 || !text.is_empty() {
             let text = crate::clipboard::expand_clipboard(text);
-            send_atomic_batch_with_mode(backspaces, text.as_ref(), self.injection_mode);
+            return send_atomic_batch_with_mode(backspaces, text.as_ref(), self.injection_mode);
         }
+        true
     }
 
     /// Recompute engine options and the output mode after a foreground,
@@ -1167,7 +1170,15 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                 if auto_switch_allowed {
                     let word = state.english_word_buffer.clone();
                     if let Some((bs, text)) = state.engine.check_english_word_at_break(&word, break_char) {
-                        state.send_engine_output(bs, text.as_str());
+                        if !state.send_engine_output(bs, text.as_str()) {
+                            // No replacement was queued: preserve the native
+                            // break key rather than swallowing Enter/Space.
+                            state.engine.reset_word();
+                            state.english_word_buffer.clear();
+                            state.english_word_valid = true;
+                            drop(lock);
+                            return CallNextHookEx(null_mut(), n_code, w_param, l_param);
+                        }
                         if is_enter {
                             let mut inputs = [
                                 crate::inject::create_vk_input(VK_RETURN, false),
@@ -1271,9 +1282,15 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     if is_key_down && vk == VK_BACK {
         let (backspaces, text) = state.engine.process_key('\x08');
         if backspaces > 0 || !text.is_empty() {
-            state.send_engine_output(backspaces, &text);
-            return 1;
+            if state.send_engine_output(backspaces, &text) {
+                return 1;
+            }
+            // A saturated/unavailable queue cannot consume the physical
+            // Backspace. Reset composition to avoid subsequent stale deletes.
+            state.engine.reset_word();
+            state.macro_buffer.clear();
         }
+        drop(lock);
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
@@ -1342,9 +1359,18 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             }
 
             if !is_plain_passthrough && (backspaces > 0 || !text.is_empty()) {
-                state.send_engine_output(backspaces, &text);
+                let admitted = state.send_engine_output(backspaces, &text);
+                if !admitted {
+                    // The worker did not accept a replacement. Do not swallow
+                    // this physical key and do not reuse stale composition.
+                    state.engine.reset_word();
+                    state.macro_buffer.clear();
+                }
                 drop(lock);
-                return 1;
+                if admitted {
+                    return 1;
+                }
+                return CallNextHookEx(null_mut(), n_code, w_param, l_param);
             }
 
             if auto_switch_req.is_some() {

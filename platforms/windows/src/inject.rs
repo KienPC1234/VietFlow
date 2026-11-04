@@ -23,6 +23,10 @@ extern "system" {
 // A slow target application must not accumulate an unbounded backlog of
 // key events that could be delivered seconds later to the wrong text field.
 const MAX_PENDING_INJECTION_JOBS: usize = 8;
+// Queue is bounded by both count and payload size, otherwise eight very
+// large user macros still consume unbounded memory in the keyboard callback.
+const MAX_PENDING_TEXT_BYTES: usize = 64 * 1024;
+const MAX_PENDING_BACKSPACES: usize = 4_096;
 const MAX_PENDING_JOB_AGE: Duration = Duration::from_millis(750);
 const ATOMIC_BACKSPACE_LIMIT: usize = 16;
 const ATOMIC_CHAR_LIMIT: usize = 32;
@@ -177,15 +181,25 @@ pub fn prewarm_async_injector() -> bool {
         .is_some()
 }
 
-pub fn enqueue_async_injection(backspaces: usize, text: String, mode: u8) {
+fn acceptable_queued_payload(backspaces: usize, text_bytes: usize) -> bool {
+    backspaces <= MAX_PENDING_BACKSPACES && text_bytes <= MAX_PENDING_TEXT_BYTES
+}
+
+/// True means the asynchronous replacement was admitted, so the hook may
+/// consume the corresponding physical key. False means it MUST pass through
+/// that original key and reset engine composition state.
+pub fn enqueue_async_injection(backspaces: usize, text: String, mode: u8) -> bool {
+    if !acceptable_queued_payload(backspaces, text.len()) {
+        return false;
+    }
     let Some(target) = InjectionTarget::foreground() else {
-        return;
+        return false;
     };
     // Do not implicitly spawn a worker from the keystroke callback.
     let Some(sender) = INJECTION_TX.get().and_then(Option::as_ref) else {
-        return;
+        return false;
     };
-    let _ = try_enqueue(
+    try_enqueue(
         sender,
         InjectionJob {
             backspaces,
@@ -194,7 +208,8 @@ pub fn enqueue_async_injection(backspaces: usize, text: String, mode: u8) {
             target,
             queued_at: Instant::now(),
         },
-    );
+    )
+    .is_ok()
 }
 
 fn execute_injection_job(backspaces: usize, text: &str, mode: u8) {
@@ -219,7 +234,13 @@ fn execute_injection_job(backspaces: usize, text: &str, mode: u8) {
 /// Large macro restorations pace backspaces with a tiny delay to prevent apps from dropping them.
 /// Large macros and safe mode are offloaded to an asynchronous worker to prevent blocking
 /// LowLevelKeyboardProc and exceeding Windows hook timeout.
-pub fn send_atomic_batch_with_mode(backspaces: usize, text: &str, mode: u8) {
+/// Returns whether replacement injection was accepted. In async modes,
+/// rejection must leave the original keyboard event available to Windows.
+pub fn send_atomic_batch_with_mode(backspaces: usize, text: &str, mode: u8) -> bool {
+    // Validate before traversing and allocating a potentially untrusted macro.
+    if !acceptable_queued_payload(backspaces, text.len()) {
+        return false;
+    }
     let char_count = text.chars().count();
     let is_large_or_paced = char_count > ATOMIC_CHAR_LIMIT
         || backspaces > ATOMIC_BACKSPACE_LIMIT
@@ -227,8 +248,7 @@ pub fn send_atomic_batch_with_mode(backspaces: usize, text: &str, mode: u8) {
         || mode == 4;
 
     if is_large_or_paced {
-        enqueue_async_injection(backspaces, text.to_string(), mode);
-        return;
+        return enqueue_async_injection(backspaces, text.to_string(), mode);
     }
 
     match mode {
@@ -246,6 +266,9 @@ pub fn send_atomic_batch_with_mode(backspaces: usize, text: &str, mode: u8) {
             }
         }
     }
+    // Existing immediate SendInput paths are best effort. Returning true
+    // here means dispatch was attempted, not that all events were accepted.
+    true
 }
 
 #[allow(dead_code)]
@@ -648,6 +671,33 @@ mod tests {
                 ..target
             }),
             now
+        ));
+    }
+
+    #[test]
+    fn rejects_oversized_or_unavailable_queue_without_consuming_original_key() {
+        assert!(acceptable_queued_payload(
+            MAX_PENDING_BACKSPACES,
+            MAX_PENDING_TEXT_BYTES
+        ));
+        assert!(!acceptable_queued_payload(MAX_PENDING_BACKSPACES + 1, 0));
+        assert!(!acceptable_queued_payload(0, MAX_PENDING_TEXT_BYTES + 1));
+        // Oversize rejection is checked before any access to a real foreground
+        // or worker; the false result instructs the hook to pass through.
+        assert!(!enqueue_async_injection(
+            0,
+            "x".repeat(MAX_PENDING_TEXT_BYTES + 1),
+            4
+        ));
+        assert!(!send_atomic_batch_with_mode(
+            0,
+            &"x".repeat(MAX_PENDING_TEXT_BYTES + 1),
+            3,
+        ));
+        assert!(!send_atomic_batch_with_mode(
+            MAX_PENDING_BACKSPACES + 1,
+            "",
+            0
         ));
     }
 
