@@ -9,7 +9,7 @@ desktop text control or installed MSI works.
 | Scope | Checks / evidence |
 |---|---|
 | F03 Unicode | Windows injection UTF-16 surrogate-pair unit test; multi-app E2E pending |
-| F04 UTF-8 C ABI | Existing Rust UTF-8 boundary tests; C++ integration acceptance pending |
+| F04 UTF-8 C ABI | Owned UTF-8 results replace fixed 256/512-byte TSF output buffers; caller frees Rust memory explicitly. Legacy API reports full required bytes and rejects insufficient capacity without partial copying. Rust tests include long macro/emoji and C++/Rust native ABI smoke passes; real TSF typing and sanitizer/architecture matrix still pending |
 | F07 Architecture | Strict PE checks for x64/x86/ARM64 plus TSF core .lib paths; cross-architecture CI pending |
 | F08 Settings | Production load first reads a valid primary or last valid .bak (without destroying corrupt primary), atomic Rust/C++ staged saves, interprocess writer lock and corrupted-primary recovery regression |
 | F09 Uninstall | WiX authoring inspection, separate clean/upgrade MSI VM tests pending |

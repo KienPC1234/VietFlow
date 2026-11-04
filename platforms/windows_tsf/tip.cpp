@@ -5,6 +5,18 @@
 #include "edit_session.h"
 #include "debug_log.h"
 
+// Convert an owned Rust allocation exactly once, including macro expansions
+// that exceed the old 256/512-byte fixed buffers.
+static std::string TakeOwnedUtf8(VfOwnedUtf8& result) {
+    std::string text;
+    if (result.data && result.len) {
+        text.assign(reinterpret_cast<const char*>(result.data), result.len);
+    }
+    vf_owned_utf8_free(result);
+    result = {};
+    return text;
+}
+
 CVietFlowTip::CVietFlowTip()
     : m_cRef(1)
     , m_clientId(TF_CLIENTID_NULL)
@@ -331,10 +343,13 @@ void CVietFlowTip::ReplaceAndEndComposition(ITfContext* pContext, const std::wst
 }
 
 void CVietFlowTip::FinishCompositionWithBreak(ITfContext* pContext, wchar_t breakChar) {
-    uint8_t outBuf[512] = {};
-    size_t outLen = 0;
-    vf_engine_finish_on_break(m_pEngine, breakChar ? static_cast<uint32_t>(breakChar) : ' ', outBuf, sizeof(outBuf) - 1, &outLen);
-    std::string utf8Word(reinterpret_cast<char*>(outBuf), outLen);
+    VfOwnedUtf8 output = {};
+    if (!vf_engine_finish_on_break_owned(
+            m_pEngine, breakChar ? static_cast<uint32_t>(breakChar) : ' ', &output)) {
+        VF_LOG(L"FinishCompositionWithBreak: engine failed to return owned UTF-8");
+        return;
+    }
+    std::string utf8Word = TakeOwnedUtf8(output);
     std::wstring text = Utf8ToWide(utf8Word);
 
     if (breakChar != 0) {
@@ -502,10 +517,12 @@ STDMETHODIMP CVietFlowTip::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lPar
     // 1. Backspace in active composition
     if (vk == VK_BACK) {
         if (m_pComposition) {
-            uint8_t buf[256] = {};
-            size_t outLen = 0;
-            vf_engine_process_backspace(m_pEngine, buf, sizeof(buf) - 1, &outLen);
-            std::string utf8Str(reinterpret_cast<char*>(buf), outLen);
+            VfOwnedUtf8 output = {};
+            if (!vf_engine_process_backspace_owned(m_pEngine, &output)) {
+                VF_LOG(L"OnKeyDown BACKSPACE: engine failed to return owned UTF-8");
+                return S_OK;
+            }
+            std::string utf8Str = TakeOwnedUtf8(output);
             std::wstring word = Utf8ToWide(utf8Str);
             VF_LOG(L"OnKeyDown BACKSPACE: remaining preedit='%s'", word.c_str());
 
@@ -580,14 +597,21 @@ STDMETHODIMP CVietFlowTip::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lPar
         if (ch == 0) return S_OK;
 
         size_t outBackspaces = 0;
-        size_t outLen = 0;
-        uint8_t outUtf8[256] = {};
-        vf_engine_process_key(m_pEngine, static_cast<uint32_t>(ch), outUtf8, sizeof(outUtf8) - 1, &outLen, &outBackspaces);
+        // This TIP only renders the latest preedit. Process exactly once and
+        // discard the immediate key output without allocating on each key.
+        // The complete preedit is retrieved through the owned UTF-8 API.
+        if (!vf_engine_process_key(
+                m_pEngine, static_cast<uint32_t>(ch), nullptr, 0, nullptr, &outBackspaces)) {
+            VF_LOG(L"OnKeyDown COMP: engine failed to process key");
+            return S_OK;
+        }
 
-        uint8_t preeditBuf[256] = {};
-        size_t preeditLen = 0;
-        vf_engine_get_preedit(m_pEngine, preeditBuf, sizeof(preeditBuf) - 1, &preeditLen);
-        std::string utf8Word(reinterpret_cast<char*>(preeditBuf), preeditLen);
+        VfOwnedUtf8 preeditOutput = {};
+        if (!vf_engine_get_preedit_owned(m_pEngine, &preeditOutput)) {
+            VF_LOG(L"OnKeyDown COMP: engine failed to read preedit");
+            return S_OK;
+        }
+        std::string utf8Word = TakeOwnedUtf8(preeditOutput);
         std::wstring word = Utf8ToWide(utf8Word);
 
         VF_LOG(L"OnKeyDown COMP: ch='%c', preedit='%s'", ch, word.c_str());

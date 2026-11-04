@@ -40,6 +40,27 @@ enum VfCharset {
 
 typedef struct VfEngine VfEngine;
 
+/*
+ * Owned UTF-8 text: no truncation or NUL terminator. Return values are valid
+ * until released exactly once via vf_owned_utf8_free. Empty = {NULL, 0}.
+ * A failed call leaves result empty. Never reuse a populated result without
+ * freeing it. The returned pointer/length must be passed unchanged to free.
+ */
+typedef struct VfOwnedUtf8 {
+    uint8_t *data;
+    size_t len;
+} VfOwnedUtf8;
+void vf_owned_utf8_free(VfOwnedUtf8 value);
+
+/* These methods mutate the engine at most once. Unlike the legacy borrowed
+ * APIs, no buffer-capacity guess or retry of a mutating key is necessary. */
+bool vf_engine_process_key_owned(VfEngine *engine, uint32_t ch,
+                                 VfOwnedUtf8 *result, size_t *out_backspaces);
+bool vf_engine_get_preedit_owned(VfEngine *engine, VfOwnedUtf8 *result);
+bool vf_engine_finish_on_break_owned(VfEngine *engine, uint32_t break_char,
+                                     VfOwnedUtf8 *result);
+bool vf_engine_process_backspace_owned(VfEngine *engine, VfOwnedUtf8 *result);
+
 VfEngine *vf_engine_create(void);
 void vf_engine_destroy(VfEngine *engine);
 void vf_engine_reset(VfEngine *engine);
@@ -54,6 +75,12 @@ void vf_engine_set_enable_macro(VfEngine *engine, bool enabled);
 void vf_engine_set_auto_switch_by_typing(VfEngine *engine, bool enabled);
 
 /*
+ * Legacy borrowed UTF-8 ABI: out_len is the FULL required byte count on
+ * every valid call. Null output or zero capacity performs a size query, but
+ * mutating operations MUST NOT be repeated to retrieve data. If the supplied
+ * buffer is too small, returns false and writes NO output bytes. Otherwise
+ * writes the full text, without a NUL terminator. Prefer owned methods.
+ *
  * In-line TSF composition preedit helpers.
  */
 bool vf_engine_get_preedit(VfEngine *engine, uint8_t *out_utf8, size_t max_out_len, size_t *out_len);
@@ -62,8 +89,9 @@ bool vf_engine_process_backspace(VfEngine *engine, uint8_t *out_utf8, size_t max
 
 /*
  * Process one key. `out_utf8` receives up to `max_out_len` UTF-8 bytes.
- * Returns false on invalid arguments; otherwise `out_len` receives the number
- * of bytes written and `out_backspaces` the number of backspaces to send first.
+ * Returns false on invalid arguments or insufficient capacity; on every
+ * valid call out_len reports FULL required bytes and out_backspaces the number
+ * of backspaces. No text bytes are written if capacity is insufficient.
  */
 bool vf_engine_process_key(VfEngine *engine, uint32_t ch,
                            uint8_t *out_utf8, size_t max_out_len,

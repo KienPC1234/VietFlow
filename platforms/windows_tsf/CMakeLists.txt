@@ -59,4 +59,12 @@ option(VIETFLOW_BUILD_IPC_SMOKE "Build TSF IPC protocol smoke test" OFF)
 if(VIETFLOW_BUILD_IPC_SMOKE)
     add_executable(vietflow_tsf_ipc_smoke ipc.cpp ../../tests/tsf_ipc_smoke.cpp)
     target_include_directories(vietflow_tsf_ipc_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+    # ABI consumer smoke: pointer/length allocation and free from Rust core.
+    add_executable(vietflow_tsf_ffi_smoke ../../tests/tsf_ffi_smoke.cpp)
+    target_include_directories(vietflow_tsf_ffi_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../ffi")
+    target_link_libraries(vietflow_tsf_ffi_smoke PRIVATE
+        "${VIETFLOW_CORE_LIB}" advapi32 ole32 user32 kernel32
+        ws2_32 userenv bcrypt ntdll
+    )
 endif()

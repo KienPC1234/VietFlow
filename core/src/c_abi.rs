@@ -1,10 +1,10 @@
 // VietFlow Core - C-ABI Interface for FFI (Linux Fcitx5 / Windows Native / C++)
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
-use std::ffi::c_void;
-use crate::english::default_english_keywords;
 use crate::engine::VietFlowEngine;
+use crate::english::default_english_keywords;
 use crate::models::{CharsetId, InputMethod};
+use std::ffi::c_void;
 
 /// Newline-separated default English keyword list (UTF-8). The settings UI
 /// can fetch it for the keyword editor without duplicating the list in C++.
@@ -17,9 +17,8 @@ pub unsafe extern "C" fn vf_english_keywords(out: *mut u8, out_cap: usize) -> us
     text.push('\n');
     let bytes = text.as_bytes();
 
-    if !out.is_null() && out_cap > 0 {
-        let to_write = bytes.len().min(out_cap);
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, to_write);
+    if !out.is_null() && out_cap >= bytes.len() {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
     }
 
     bytes.len()
@@ -141,16 +140,11 @@ pub unsafe extern "C" fn vf_engine_set_auto_restore(engine: *mut c_void, enabled
     }
 }
 
-/// Process a single character.
-/// Copies a UTF-8 string into a destination buffer without splitting multi-byte characters.
-///
-/// # Contract
-/// - If `out_utf8` is null or `max_out_len == 0`: No bytes are written. If `out_len` is non-null,
-///   it receives the full required length (`bytes.len()`) in bytes. Returns `true`.
-/// - If `out_utf8` is non-null and `max_out_len > 0`: Copies up to `max_out_len` bytes, truncating
-///   at the nearest preceding UTF-8 character boundary so that the written prefix is always
-///   valid UTF-8. If `out_len` is non-null, it receives the exact number of bytes written.
-///   Returns `true` if the entire string was written, or `false` if truncated due to small buffer.
+/// Legacy borrowed output: report full required byte length through out_len.
+/// A null pointer or zero capacity is a size query; mutating operations are
+/// NOT retry-safe. Insufficient capacity returns false without writing ANY
+/// bytes; success writes exactly required bytes without a NUL terminator.
+/// Prefer owned-output variants for mutating methods with variable-size text.
 unsafe fn copy_utf8_to_buffer(
     text: &str,
     out_utf8: *mut u8,
@@ -158,29 +152,149 @@ unsafe fn copy_utf8_to_buffer(
     out_len: *mut usize,
 ) -> bool {
     let bytes = text.as_bytes();
-    let full_len = bytes.len();
-
+    let required = bytes.len();
+    if !out_len.is_null() {
+        *out_len = required;
+    }
     if out_utf8.is_null() || max_out_len == 0 {
-        if !out_len.is_null() {
-            *out_len = full_len;
-        }
         return true;
     }
-
-    let mut safe_len = full_len.min(max_out_len);
-    while safe_len > 0 && !text.is_char_boundary(safe_len) {
-        safe_len -= 1;
+    if max_out_len < required {
+        return false;
     }
-
-    if safe_len > 0 {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_utf8, safe_len);
+    if required != 0 {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_utf8, required);
     }
+    true
+}
 
-    if !out_len.is_null() {
-        *out_len = safe_len;
+/// Owned UTF-8 result. Caller must release the exact pointer+length by calling
+/// vf_owned_utf8_free exactly once. Empty output is a null pointer, len 0.
+#[repr(C)]
+pub struct VfOwnedUtf8 {
+    pub data: *mut u8,
+    pub len: usize,
+}
+
+unsafe fn write_owned_utf8(text: String, result: *mut VfOwnedUtf8) -> bool {
+    if result.is_null() {
+        return false;
     }
+    if text.is_empty() {
+        *result = VfOwnedUtf8 {
+            data: std::ptr::null_mut(),
+            len: 0,
+        };
+        return true;
+    }
+    let boxed = text.into_bytes().into_boxed_slice();
+    let len = boxed.len();
+    *result = VfOwnedUtf8 {
+        data: Box::into_raw(boxed) as *mut u8,
+        len,
+    };
+    true
+}
 
-    safe_len == full_len
+/// # Safety
+/// The value must come unchanged from a successful owned-result call and must
+/// never be freed twice.
+#[no_mangle]
+pub unsafe extern "C" fn vf_owned_utf8_free(value: VfOwnedUtf8) {
+    if !value.data.is_null() {
+        let slice = std::ptr::slice_from_raw_parts_mut(value.data, value.len);
+        drop(Box::from_raw(slice));
+    }
+}
+
+/// Process one key exactly once, returning complete UTF-8 without truncation.
+/// # Safety
+/// A valid live engine and writable unowned result are required.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_process_key_owned(
+    engine: *mut c_void,
+    ch: u32,
+    result: *mut VfOwnedUtf8,
+    out_backspaces: *mut usize,
+) -> bool {
+    if result.is_null() {
+        return false;
+    }
+    *result = VfOwnedUtf8 {
+        data: std::ptr::null_mut(),
+        len: 0,
+    };
+    let Some(engine) = (engine as *mut VietFlowEngine).as_mut() else {
+        return false;
+    };
+    let Some(c) = char::from_u32(ch) else {
+        return false;
+    };
+    let (backspaces, text) = engine.process_key(c);
+    if !out_backspaces.is_null() {
+        *out_backspaces = backspaces;
+    }
+    write_owned_utf8(text.as_str().to_owned(), result)
+}
+
+/// Read complete preedit. Valid live engine and writable result required.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_get_preedit_owned(
+    engine: *mut c_void,
+    result: *mut VfOwnedUtf8,
+) -> bool {
+    if result.is_null() {
+        return false;
+    }
+    *result = VfOwnedUtf8 {
+        data: std::ptr::null_mut(),
+        len: 0,
+    };
+    let Some(engine) = (engine as *mut VietFlowEngine).as_ref() else {
+        return false;
+    };
+    write_owned_utf8(engine.current_preedit_text(), result)
+}
+
+/// Finalize once and return complete text. Valid live engine/result required.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_finish_on_break_owned(
+    engine: *mut c_void,
+    break_char: u32,
+    result: *mut VfOwnedUtf8,
+) -> bool {
+    if result.is_null() {
+        return false;
+    }
+    *result = VfOwnedUtf8 {
+        data: std::ptr::null_mut(),
+        len: 0,
+    };
+    let Some(engine) = (engine as *mut VietFlowEngine).as_mut() else {
+        return false;
+    };
+    let c = char::from_u32(break_char).unwrap_or(' ');
+    write_owned_utf8(engine.finish_composition_on_break(c), result)
+}
+
+/// Backspace once and return complete preedit. Live engine/result required.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_process_backspace_owned(
+    engine: *mut c_void,
+    result: *mut VfOwnedUtf8,
+) -> bool {
+    if result.is_null() {
+        return false;
+    }
+    *result = VfOwnedUtf8 {
+        data: std::ptr::null_mut(),
+        len: 0,
+    };
+    let Some(engine) = (engine as *mut VietFlowEngine).as_mut() else {
+        return false;
+    };
+    let _ = engine.process_key('\x08');
+    write_owned_utf8(engine.current_preedit_text(), result)
 }
 
 /// Output is UTF-8 encoded into `out_utf8`.
@@ -214,8 +328,7 @@ pub unsafe extern "C" fn vf_engine_process_key(
         *out_backspaces = backspaces;
     }
 
-    copy_utf8_to_buffer(&text, out_utf8, max_out_len, out_len);
-    true
+    copy_utf8_to_buffer(&text, out_utf8, max_out_len, out_len)
 }
 
 /// Returns the current preedit text for in-line IME composition.
@@ -235,8 +348,7 @@ pub unsafe extern "C" fn vf_engine_get_preedit(
     };
 
     let text = engine.current_preedit_text();
-    copy_utf8_to_buffer(&text, out_utf8, max_out_len, out_len);
-    true
+    copy_utf8_to_buffer(&text, out_utf8, max_out_len, out_len)
 }
 
 /// Finalizes composition on a word break delimiter (Space, punctuation, Enter).
@@ -258,8 +370,7 @@ pub unsafe extern "C" fn vf_engine_finish_on_break(
 
     let c = char::from_u32(break_char).unwrap_or(' ');
     let text = engine.finish_composition_on_break(c);
-    copy_utf8_to_buffer(&text, out_utf8, max_out_len, out_len);
-    true
+    copy_utf8_to_buffer(&text, out_utf8, max_out_len, out_len)
 }
 
 /// Process backspace in composition mode and return the updated preedit string.
@@ -280,8 +391,7 @@ pub unsafe extern "C" fn vf_engine_process_backspace(
 
     let _ = engine.process_key('\x08');
     let text = engine.current_preedit_text();
-    copy_utf8_to_buffer(&text, out_utf8, max_out_len, out_len);
-    true
+    copy_utf8_to_buffer(&text, out_utf8, max_out_len, out_len)
 }
 
 /// Sets whether free marking is enabled in the engine.
@@ -326,53 +436,204 @@ mod tests {
 
     #[test]
     fn test_copy_utf8_to_buffer_boundaries() {
-        // 'ệ' is 3 bytes (0xE1, 0xBB, 0x87), '🦀' is 4 bytes (0xF0, 0x9F, 0xA6, 0x80)
-        let sample = "việt🦀";
-        let mut buf = [0u8; 32];
-        let mut out_len = 0usize;
-
-        // 1. Buffer length 0: queries length, writes 0 bytes
-        unsafe {
-            let ok = copy_utf8_to_buffer(sample, buf.as_mut_ptr(), 0, &mut out_len);
-            assert!(ok);
-            assert_eq!(out_len, sample.len());
-        }
-
-        // 2. Buffer length truncated inside 'ệ' (starts at index 2, length 3, ends at 5)
-        // If max_out_len is 3 (contains 'v', 'i', and first byte of 'ệ'):
-        // Safe cut must not split 'ệ', so it should write "vi" (len 2)
-        unsafe {
-            let ok = copy_utf8_to_buffer(sample, buf.as_mut_ptr(), 3, &mut out_len);
-            assert!(!ok); // truncated
-            assert_eq!(out_len, 2);
-            assert_eq!(std::str::from_utf8(&buf[..out_len]).unwrap(), "vi");
-        }
-
-        // If max_out_len is 4:
-        unsafe {
-            let ok = copy_utf8_to_buffer(sample, buf.as_mut_ptr(), 4, &mut out_len);
-            assert!(!ok);
-            assert_eq!(out_len, 2);
-            assert_eq!(std::str::from_utf8(&buf[..out_len]).unwrap(), "vi");
-        }
-
-        // If max_out_len is 5 (contains "việt" exactly without the 4-byte crab):
-        // "việt" = 1 + 1 + 3 + 1 = 6 bytes. Index of 't' is 5..6.
-        // Let's test every slice length from 0 to sample.len() + 2:
-        for limit in 0..=(sample.len() + 2) {
-            let mut test_buf = [0u8; 32];
-            let mut written = 0usize;
-            unsafe {
-                let _ = copy_utf8_to_buffer(sample, test_buf.as_mut_ptr(), limit, &mut written);
-            }
-            if limit == 0 {
-                assert_eq!(written, sample.len());
+        let sample = "vi?t??";
+        let required = sample.len();
+        for cap in 0..=(required + 2) {
+            let mut buf = [0xa5u8; 64];
+            let mut out_len = usize::MAX;
+            let ok = unsafe { copy_utf8_to_buffer(sample, buf.as_mut_ptr(), cap, &mut out_len) };
+            assert_eq!(out_len, required);
+            if cap == 0 {
+                assert!(ok, "zero capacity is a size query");
+                assert!(buf.iter().all(|b| *b == 0xa5));
+            } else if cap < required {
+                assert!(!ok, "insufficient capacity must fail");
+                assert!(buf.iter().all(|b| *b == 0xa5), "no partial bytes");
             } else {
-                assert!(written <= limit);
-                // Valid UTF-8 must be guaranteed
-                let s = std::str::from_utf8(&test_buf[..written]).expect("must be valid utf8");
-                assert!(sample.starts_with(s));
+                assert!(ok);
+                assert_eq!(&buf[..required], sample.as_bytes());
+                assert!(buf[required..].iter().all(|b| *b == 0xa5));
             }
         }
+        let mut query_size = 0usize;
+        assert!(unsafe { copy_utf8_to_buffer(sample, std::ptr::null_mut(), 8, &mut query_size) });
+        assert_eq!(query_size, required);
+    }
+
+    #[test]
+    fn test_owned_utf8_large_supplementary_payload_and_empty() {
+        let text = "Ti?ng Vi?t ????".repeat(2048);
+        let mut owned = VfOwnedUtf8 {
+            data: std::ptr::null_mut(),
+            len: 0,
+        };
+        assert!(unsafe { write_owned_utf8(text.clone(), &mut owned) });
+        assert_eq!(owned.len, text.len());
+        assert!(!owned.data.is_null());
+        let restored = unsafe {
+            std::str::from_utf8(std::slice::from_raw_parts(owned.data, owned.len)).unwrap()
+        };
+        assert_eq!(restored, text);
+        unsafe { vf_owned_utf8_free(owned) };
+
+        let mut empty = VfOwnedUtf8 {
+            data: std::ptr::null_mut(),
+            len: 0,
+        };
+        assert!(unsafe { write_owned_utf8(String::new(), &mut empty) });
+        assert!(empty.data.is_null());
+        assert_eq!(empty.len, 0);
+        unsafe { vf_owned_utf8_free(empty) };
+    }
+
+    #[test]
+    fn test_owned_mutating_api_single_pass_and_fail_closed() {
+        unsafe {
+            let engine = vf_engine_create();
+            assert!(!engine.is_null());
+            let mut data = VfOwnedUtf8 {
+                data: std::ptr::null_mut(),
+                len: 0,
+            };
+            let mut backspaces = usize::MAX;
+            assert!(vf_engine_process_key_owned(
+                engine,
+                'a' as u32,
+                &mut data,
+                &mut backspaces
+            ));
+            if data.len > 0 {
+                assert!(!data.data.is_null());
+                assert!(
+                    std::str::from_utf8(std::slice::from_raw_parts(data.data, data.len)).is_ok()
+                );
+            } else {
+                assert!(data.data.is_null());
+            }
+            vf_owned_utf8_free(data);
+
+            let mut preedit = VfOwnedUtf8 {
+                data: std::ptr::null_mut(),
+                len: 0,
+            };
+            assert!(vf_engine_get_preedit_owned(engine, &mut preedit));
+            assert_eq!(
+                std::str::from_utf8(std::slice::from_raw_parts(preedit.data, preedit.len)).unwrap(),
+                "a"
+            );
+            vf_owned_utf8_free(preedit);
+
+            let mut rejected = VfOwnedUtf8 {
+                data: std::ptr::null_mut(),
+                len: 0,
+            };
+            assert!(!vf_engine_process_key_owned(
+                engine,
+                0x110000,
+                &mut rejected,
+                &mut backspaces
+            ));
+            assert!(rejected.data.is_null());
+
+            let mut after_rejection = VfOwnedUtf8 {
+                data: std::ptr::null_mut(),
+                len: 0,
+            };
+            assert!(vf_engine_get_preedit_owned(engine, &mut after_rejection));
+            assert_eq!(
+                std::str::from_utf8(std::slice::from_raw_parts(
+                    after_rejection.data,
+                    after_rejection.len
+                ))
+                .unwrap(),
+                "a"
+            );
+            vf_owned_utf8_free(after_rejection);
+
+            let mut after_backspace = VfOwnedUtf8 {
+                data: std::ptr::null_mut(),
+                len: 0,
+            };
+            assert!(vf_engine_process_backspace_owned(
+                engine,
+                &mut after_backspace
+            ));
+            vf_owned_utf8_free(after_backspace);
+
+            let mut finalized = VfOwnedUtf8 {
+                data: std::ptr::null_mut(),
+                len: 0,
+            };
+            assert!(vf_engine_finish_on_break_owned(
+                engine,
+                ' ' as u32,
+                &mut finalized
+            ));
+            vf_owned_utf8_free(finalized);
+            vf_engine_destroy(engine);
+        }
+    }
+
+    #[test]
+    fn test_owned_ffi_preserves_long_macro_expansion_after_single_finalize() {
+        unsafe {
+            let engine = vf_engine_create();
+            assert!(!engine.is_null());
+            let expansion = "Vi?t Nam ???? ".repeat(600);
+            let typed = &mut *(engine as *mut VietFlowEngine);
+            typed.options.enable_macro = true;
+            typed.macros.clear();
+            typed.macros.insert("vf", &expansion);
+
+            for c in ['v', 'f'] {
+                let mut output = VfOwnedUtf8 {
+                    data: std::ptr::null_mut(),
+                    len: 0,
+                };
+                let mut backspaces = 0;
+                assert!(vf_engine_process_key_owned(
+                    engine,
+                    c as u32,
+                    &mut output,
+                    &mut backspaces
+                ));
+                vf_owned_utf8_free(output);
+            }
+
+            let mut output = VfOwnedUtf8 {
+                data: std::ptr::null_mut(),
+                len: 0,
+            };
+            assert!(vf_engine_finish_on_break_owned(
+                engine,
+                ' ' as u32,
+                &mut output
+            ));
+            assert_eq!(output.len, expansion.len());
+            assert!(!output.data.is_null());
+            let actual =
+                std::str::from_utf8(std::slice::from_raw_parts(output.data, output.len)).unwrap();
+            assert_eq!(actual, expansion);
+            vf_owned_utf8_free(output);
+            vf_engine_destroy(engine);
+        }
+    }
+
+    #[test]
+    fn test_keyword_list_never_returns_truncated_multibyte_text() {
+        let required = unsafe { vf_english_keywords(std::ptr::null_mut(), 0) };
+        assert!(required > 10);
+        let mut small = [0xa5u8; 8];
+        assert_eq!(
+            unsafe { vf_english_keywords(small.as_mut_ptr(), small.len()) },
+            required
+        );
+        assert_eq!(small, [0xa5u8; 8]);
+        let mut buffer = vec![0u8; required];
+        assert_eq!(
+            unsafe { vf_english_keywords(buffer.as_mut_ptr(), buffer.len()) },
+            required
+        );
+        assert!(std::str::from_utf8(&buffer).is_ok());
     }
 }
