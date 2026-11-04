@@ -11,9 +11,9 @@ desktop text control or installed MSI works.
 | F03 Unicode | Windows injection UTF-16 surrogate-pair unit test; multi-app E2E pending |
 | F04 UTF-8 C ABI | Existing Rust UTF-8 boundary tests; C++ integration acceptance pending |
 | F07 Architecture | Strict PE checks for x64/x86/ARM64 plus TSF core .lib paths; cross-architecture CI pending |
-| F08 Settings | Atomic Rust/C++ staged write, last valid .bak, interprocess writer lock, corrupted primary test |
+| F08 Settings | Production load first reads a valid primary or last valid .bak (without destroying corrupt primary), atomic Rust/C++ staged saves, interprocess writer lock and corrupted-primary recovery regression |
 | F09 Uninstall | WiX authoring inspection, separate clean/upgrade MSI VM tests pending |
-| F10 Hook callback | Async worker prewarmed before hook installation; queued macros tagged with exact foreground window/process/thread; worker drops stale focus work and checks target on every SendInput batch. Unit coverage for focus changes; real 24h and p95/p99 hook latency receipt still pending |
+| F10 Hook callback | Async worker prewarmed before hook installation; bounded nonblocking 8-job queue, 750 ms expiry, exact foreground HWND/process/thread check before each worker SendInput batch. Queue saturation and stale-job unit tests; real app E2E, 24h and p95/p99 hook latency receipts still pending |
 | F11 SendInput | Partial input stops without replaying accepted backspaces/code units, releases pressed injected keys; unit tests cover UTF-16, Backspace, Shift, repeated VK; independent host fault injection still pending |
 | F12 TSF IPC | Rust secure mappings test and isolated C++ focus/config snapshot smoke |
 | Q01 Release | Verification script checks architecture, ZIP contents, MSI presence and SHA-256 metadata; publication preflight |
@@ -49,6 +49,8 @@ installer or UI automation is unavailable, report BLOCKED, never PASS.
   must never grant AppContainer write access.
 - Source changes to WiX permissions do not automatically remove ACL grants
   left by a previously installed older version. Test old-to-new upgrades.
-- Existing async injection can race focus change; no production promotion
-  until the independent host-input and latency tests pass.
+- Existing async injection can race focus change; the bounded queue intentionally
+  drops saturated/expired jobs rather than injecting into a different window.
+  Tests must verify user-visible behavior under saturation and concurrent typing;
+  no production promotion until independent host-input and latency tests pass.
 - Exact official release metadata integrity does not replace vendor code signing.

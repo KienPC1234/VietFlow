@@ -639,7 +639,17 @@ impl AppConfig {
     pub fn load() -> Self {
         let path = Self::config_path_ref();
 
-        // 1. Try reading the active config file
+        // Prefer a complete, normalized primary or last valid backup without
+        // replacing an invalid primary during the initial read. The next
+        // explicit save will atomically update it, preserving a valid .bak.
+        if let Some(cfg) = read_config_with_backup(path) {
+            if path.is_file() && !backup_path(path).is_file() {
+                let _ = fs::copy(path, backup_path(path));
+            }
+            return cfg;
+        }
+
+        // 1. Attempt legacy fallback/migration only if neither file is valid.
         if path.is_file() {
             if let Ok(content) = fs::read_to_string(path) {
                 if !content.trim().is_empty() {
