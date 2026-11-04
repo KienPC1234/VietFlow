@@ -17,10 +17,12 @@ endif()
 
 # Locate static vietflow_core.lib
 if(NOT VIETFLOW_CORE_LIB)
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        set(VIETFLOW_CORE_LIB "${CMAKE_CURRENT_SOURCE_DIR}/../../target/release/vietflow_core.lib")
-    else()
+    if(CMAKE_GENERATOR_PLATFORM MATCHES "ARM64|arm64" OR CMAKE_VS_PLATFORM_NAME MATCHES "ARM64|arm64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64|arm64")
+        set(VIETFLOW_CORE_LIB "${CMAKE_CURRENT_SOURCE_DIR}/../../target/aarch64-pc-windows-msvc/release/vietflow_core.lib")
+    elseif(CMAKE_GENERATOR_PLATFORM MATCHES "Win32|x86" OR CMAKE_VS_PLATFORM_NAME MATCHES "Win32|x86" OR CMAKE_SIZEOF_VOID_P EQUAL 4)
         set(VIETFLOW_CORE_LIB "${CMAKE_CURRENT_SOURCE_DIR}/../../target/i686-pc-windows-msvc/release/vietflow_core.lib")
+    else()
+        set(VIETFLOW_CORE_LIB "${CMAKE_CURRENT_SOURCE_DIR}/../../target/release/vietflow_core.lib")
     endif()
 endif()
 

@@ -200,7 +200,8 @@ foreach ($a in $archs) {
         Write-Host "  Compiling x86 C++ TSF DLL..." -ForegroundColor DarkGray
         $tsfDir = Join-Path $root "platforms/windows_tsf"
         $tsfBuildDir = Join-Path $tsfDir "build-x86"
-        & cmake -B $tsfBuildDir -S $tsfDir -A Win32 -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=$staticCrtValue
+        $coreLibX86 = (Join-Path $root "target\i686-pc-windows-msvc\release\vietflow_core.lib").Replace('\', '/')
+        & cmake -B $tsfBuildDir -S $tsfDir -A Win32 -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=$staticCrtValue -DVIETFLOW_CORE_LIB="$coreLibX86"
         if ($LASTEXITCODE -ne 0) {
             Write-Error "x86 TSF CMake configure failed!"
             exit $LASTEXITCODE
@@ -224,15 +225,19 @@ foreach ($a in $archs) {
             Write-Error "ARM64 release build failed!"
             exit $LASTEXITCODE
         }
+        Write-Host "  Compiling ARM64 C++ TSF DLL..." -ForegroundColor DarkGray
         $tsfDir = Join-Path $root "platforms/windows_tsf"
         $tsfBuildDir = Join-Path $tsfDir "build-arm64"
-        try {
-            & cmake -B $tsfBuildDir -S $tsfDir -A ARM64 -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=$staticCrtValue
-            if ($LASTEXITCODE -eq 0) {
-                & cmake --build $tsfBuildDir --config Release
-            }
-        } catch {
-            Write-Warning "ARM64 TSF compilation skipped (cross-compilation toolchain not installed)."
+        $coreLibArm64 = (Join-Path $root "target\aarch64-pc-windows-msvc\release\vietflow_core.lib").Replace('\', '/')
+        & cmake -B $tsfBuildDir -S $tsfDir -A ARM64 -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=$staticCrtValue -DVIETFLOW_CORE_LIB="$coreLibArm64"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "ARM64 TSF CMake configure failed!"
+            exit $LASTEXITCODE
+        }
+        & cmake --build $tsfBuildDir --config Release
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "ARM64 TSF CMake build failed!"
+            exit $LASTEXITCODE
         }
         $src = Join-Path $root "target\aarch64-pc-windows-msvc\release\VietFlow.exe"
         $distName = "VietFlow-arm64.exe"
@@ -251,7 +256,8 @@ foreach ($a in $archs) {
         Write-Host "  Compiling x64 C++ TSF DLL..." -ForegroundColor DarkGray
         $tsfDir = Join-Path $root "platforms/windows_tsf"
         $tsfBuildDir = Join-Path $tsfDir "build"
-        & cmake -B $tsfBuildDir -S $tsfDir -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=$staticCrtValue
+        $coreLibX64 = (Join-Path $root "target\release\vietflow_core.lib").Replace('\', '/')
+        & cmake -B $tsfBuildDir -S $tsfDir -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=$staticCrtValue -DVIETFLOW_CORE_LIB="$coreLibX64"
         if ($LASTEXITCODE -ne 0) {
             Write-Error "x64 TSF CMake configure failed!"
             exit $LASTEXITCODE
