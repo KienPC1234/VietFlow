@@ -46,6 +46,10 @@ jobs:
         shell: pwsh
         run: ./scripts/tests/test_release_asset_sources.ps1
 
+      - name: Verify MSI safe-upgrade and uninstall authoring offline
+        shell: pwsh
+        run: ./scripts/tests/test_msi_authoring.ps1
+
       - name: Run workspace tests
         shell: pwsh
         env:
@@ -89,6 +93,46 @@ jobs:
       - name: Verify architecture and artifact provenance
         shell: pwsh
         run: ./scripts/verify_release_artifacts.ps1 -Arch ${{ matrix.arch }}
+
+      - name: Compile MSI authoring with WiX v5 (x64, no installation)
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = $env:GITHUB_WORKSPACE
+          $toolDir = Join-Path $env:RUNNER_TEMP 'vietflow-wix-compile-only'
+          dotnet tool install wix --version 5.0.2 --tool-path $toolDir
+          if ($LASTEXITCODE -ne 0) { throw 'WiX installation failed' }
+          $wix = Join-Path $toolDir 'wix.exe'
+          Push-Location $toolDir
+          try {
+            & $wix extension add WixToolset.UI.wixext/5.0.2
+            if ($LASTEXITCODE -ne 0) { throw 'WiX UI extension unavailable' }
+            & $wix extension add WixToolset.Util.wixext/5.0.2
+            if ($LASTEXITCODE -ne 0) { throw 'WiX Util extension unavailable' }
+            $version = (Get-Content (Join-Path $repo 'VERSION') -Raw).Trim()
+            $exe = Join-Path $repo 'dist/VietFlow-x64.exe'
+            $dll = Join-Path $repo 'dist/vietflow_tsf.dll'
+            if (-not (Test-Path -LiteralPath $exe) -or -not (Test-Path -LiteralPath $dll)) {
+              throw 'Canonical x64 MSI build inputs unavailable'
+            }
+            $output = Join-Path $toolDir 'vietflow-msi-authoring-only.msi'
+            & $wix build (Join-Path $repo 'installer/wix/VietFlow.wxs') -arch x64 -ext WixToolset.UI.wixext/5.0.2 -ext WixToolset.Util.wixext/5.0.2 -d "Version=$version" -d "SourceDir=$repo" -d "BinaryPath=$exe" -d "TsfDllPath=$dll" -o $output
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) {
+              throw 'WiX compile-only MSI validation failed'
+            }
+            $decompiled = Join-Path $toolDir 'msi-authoring-decompiled.wxs'
+            & $wix msi decompile $output -out $decompiled
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot verify compiled MSI tables' }
+            $compiledSource = Get-Content -LiteralPath $decompiled -Raw
+            if (-not $compiledSource.Contains('--msi-final-unregister-tsf') -or
+                -not $compiledSource.Contains('NOT UPGRADINGPRODUCTCODE')) {
+              throw 'Compiled MSI lost the final-uninstall TSF guard'
+            }
+            Write-Host 'PASS: compiled x64 MSI contains final-uninstall-only TSF action; no installation performed'
+          } finally {
+            Pop-Location
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7

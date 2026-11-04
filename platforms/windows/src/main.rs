@@ -344,6 +344,17 @@ fn main() {
             }
         }
     }
+    if args.iter().any(|a| a == "--msi-final-unregister-tsf") {
+        // MSI runs as the installer service, not as the signed-in user.
+        // Preserve user config, macros, keyboard layouts and shortcuts.
+        match crate::tsf::unregister_tsf_from_msi_final_uninstall() {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("MSI final TSF unregister failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     if args.iter().any(|a| a == "--unregister-tsf") {
         match crate::tsf::unregister_tsf() {
             Ok(_) => {

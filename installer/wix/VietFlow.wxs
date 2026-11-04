@@ -17,7 +17,7 @@
     <SummaryInformation Description="VietFlow - Bộ gõ tiếng Việt hiện đại" Manufacturer="VietFlow Team" />
 
     <MajorUpgrade DowngradeErrorMessage="Một phiên bản mới hơn của VietFlow đã được cài đặt."
-                  AllowSameVersionUpgrades="yes"
+                  AllowSameVersionUpgrades="no"
                   Schedule="afterInstallInitialize" />
 
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
@@ -35,30 +35,21 @@
     <Property Id="ARPREADME" Value="https://github.com/KienPC1234/VietFlow#readme" />
     <Property Id="ARPNOREPAIR" Value="yes" />
 
-    <!-- Close running instances before installation/uninstallation with 5s timeout and force termination (exit code 1) -->
-    <util:CloseApplication Target="VietFlow.exe" CloseMessage="yes" Timeout="5" TerminateProcess="1" RebootPrompt="no" PromptToContinue="no" />
+    <!-- Graceful close only. Never force-kill the IME and lose in-flight text;
+         offer Retry/Abort/Ignore while running, or a reboot if still locked. -->
+    <util:CloseApplication Target="VietFlow.exe" CloseMessage="yes" Timeout="15"
+                           Description="Please close VietFlow before updating or uninstalling."
+                           PromptToContinue="yes" RebootPrompt="yes" />
 
     <!-- Custom Actions -->
-    <!-- TSF Unregistration on Uninstall / Upgrade: Cleans up TIP registration if previously registered by user -->
+    <!-- Only FINAL uninstall removes machine COM/TSF registration.
+         On upgrade the TSF CLSID/path is stable; unregistering would break
+         existing user layouts and flip the preserved use_tsf preference.
+         This deferred action runs as SYSTEM, so it must not change HKCU or
+         user configuration. Installer-owned shortcuts are MSI components. -->
     <CustomAction Id="UnregisterTSF"
                   Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;[#VietFlowExe]&quot; --unregister-tsf"
-                  Execute="deferred"
-                  Impersonate="no"
-                  Return="ignore" />
-
-    <!-- Clean shortcuts on Upgrade -->
-    <CustomAction Id="CleanupShortcutsOnUninstall"
-                  Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;[#VietFlowExe]&quot; --clean-shortcuts"
-                  Execute="deferred"
-                  Impersonate="no"
-                  Return="ignore" />
-
-    <!-- Shortcut cleanup on uninstall (preserve ProgramData config, macros and user files) -->
-    <CustomAction Id="CleanupShortcutsOnFinalUninstall"
-                  Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;[#VietFlowExe]&quot; --clean-shortcuts"
+                  ExeCommand="&quot;[#VietFlowExe]&quot; --msi-final-unregister-tsf"
                   Execute="deferred"
                   Impersonate="no"
                   Return="ignore" />
@@ -71,12 +62,10 @@
                   Return="asyncNoWait" />
 
     <InstallExecuteSequence>
-      <!-- TSF Unregistration on uninstall or upgrade: cleans up TIP COM/Layout if previously registered by user -->
-      <Custom Action="UnregisterTSF" Before="RemoveFiles" Condition="(Installed AND (REMOVE=&quot;ALL&quot; OR UPGRADINGPRODUCTCODE))" />
-
-      <!-- Shortcut-only cleanup on uninstall or upgrade; do not erase user data -->
-      <Custom Action="CleanupShortcutsOnFinalUninstall" After="UnregisterTSF" Condition="(Installed AND REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE)" />
-      <Custom Action="CleanupShortcutsOnUninstall" After="UnregisterTSF" Condition="(Installed AND UPGRADINGPRODUCTCODE)" />
+      <!-- Never unregister TSF on repair/major upgrade; only final uninstall.
+           MSI manages its own shortcuts and registry marker on removal. -->
+      <Custom Action="UnregisterTSF" Before="RemoveFiles"
+              Condition="Installed AND REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
 
     <!-- UI Configuration -->

@@ -12,7 +12,7 @@ desktop text control or installed MSI works.
 | F04 UTF-8 C ABI | Owned UTF-8 results replace fixed 256/512-byte TSF output buffers; caller frees Rust memory explicitly. Legacy API reports full required bytes and rejects insufficient capacity without partial copying. Rust tests include long macro/emoji and C++/Rust native ABI smoke passes; real TSF typing and sanitizer/architecture matrix still pending |
 | F07 Architecture | MSI and ZIP packaging now share a canonical dist-only EXE/TSF resolver, checking PE architecture x64/x86/ARM64 with no stale build/target fallback. Offline positive/negative tests run on Windows CI. Cross-architecture real MSI installation and signing still pending |
 | F08 Settings | Production load first reads a valid primary or last valid .bak (without destroying corrupt primary), atomic Rust/C++ staged saves, interprocess writer lock and corrupted-primary recovery regression |
-| F09 Uninstall | WiX authoring inspection, separate clean/upgrade MSI VM tests pending |
+| F09 Uninstall | MSI no longer forcibly terminates running IME, allows same-version major replacement, or unregisters TSF during an upgrade or invokes blanket shortcut cleanup under SYSTEM. Final uninstall uses a separate TSF COM-only command pointed at the installed sibling DLL, without rewriting user preferences; offline authoring tests detect forced termination, same-version replacement and missing upgrade guards. A native WiX 5.0.2 x64 MSI was compiled and all ICE validation checks returned zero errors/warnings; CI compiles/decompiles MSI x64 without installing it. Real MSI/VM and multiuser registry cleanup still pending |
 | F10 Hook callback | Async worker prewarmed; bounded nonblocking 8-job queue, 750 ms expiry and exact foreground identity; admission status now propagated to hook to pass original key on rejection and reset composition; 64 KiB text / 4096-backspace limits. Host input-order, 24h and p95/p99 E2E still pending |
 | F11 SendInput | Partial input stops without replaying accepted backspaces/code units, releases pressed injected keys; unit tests cover UTF-16, Backspace, Shift, repeated VK; independent host fault injection still pending |
 | F12 TSF IPC | Rust writer clamps malformed enum/flag/version fields before publishing; C++ reader rejects malformed yet sequence-consistent snapshots and retains last valid config. Independent native smoke tests cover every field; AppContainer ACL and multi-process long-run tests pending |
@@ -69,4 +69,14 @@ installer or UI automation is unavailable, report BLOCKED, never PASS.
   Once a job is already admitted, subsequent window changes/expiry may still
   cancel an output; this cannot be treated as lossless input without more
   extensive text-control synchronization. Verify with real apps before release.
+- Final MSI uninstall can remove machine COM/TSF registration under SYSTEM, but
+  per-user TIP registrations of other Windows profiles may remain. Never claim
+  multi-user cleanup until a tested user-context deactivation route exists.
+- Same-version major upgrade replacement is disabled to satisfy ICE61. MSI
+  compares only the first three version fields; repackaging a different
+  ProductCode under the same version can still result in side-by-side products.
+  Bump the first three version fields and preserve the release-tag immutability
+  gate for every production update.
+- MSI-owned shortcuts are removed by Windows Installer. Legacy user-created
+  shortcuts and per-user startup entries are not forcibly deleted by SYSTEM.
 - Exact official release metadata integrity does not replace vendor code signing.

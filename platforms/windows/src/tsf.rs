@@ -759,6 +759,28 @@ pub fn register_tsf() -> Result<(), String> {
     Ok(())
 }
 
+/// Remove machine-wide COM/TSF integration on FINAL MSI uninstall only.
+/// Called by an installer custom action using the SYSTEM identity.
+///
+/// Never invoke the interactive unregister_tsf path from MSI: it updates
+/// HKCU keyboard layouts and persists a changed use_tsf user preference.
+/// Per-user TIP registrations in other profiles still need VM acceptance.
+pub fn unregister_tsf_from_msi_final_uninstall() -> Result<(), String> {
+    // The MSI-owned DLL must be beside the executing MSI-owned EXE.
+    // Do NOT use the interactive tsf_dll_path() fallback search over CWD,
+    // parents, debug or dist; that could unregister an unrelated dev DLL.
+    let exe = std::env::current_exe()
+        .map_err(|err| format!("Cannot locate MSI executable: {err}"))?;
+    let dll = exe.parent()
+        .ok_or_else(|| "MSI executable has no parent directory".to_string())?
+        .join("vietflow_tsf.dll");
+    if !dll.is_file() {
+        return Err("MSI-owned TSF DLL missing beside executable".to_string());
+    }
+    let params = format!("/u /s \"{}\"", dll.to_string_lossy());
+    run_elevated_wait("regsvr32.exe", &params)
+}
+
 /// Unregisters the VietFlow TSF in-process COM DLL via regsvr32 with elevation.
 pub fn unregister_tsf() -> Result<(), String> {
     // 1. Remove layout from active user keyboard layout list so Windows immediately deactivates it
