@@ -14,7 +14,7 @@ desktop text control or installed MSI works.
 | F08 Settings | Atomic Rust/C++ staged write, last valid .bak, interprocess writer lock, corrupted primary test |
 | F09 Uninstall | WiX authoring inspection, separate clean/upgrade MSI VM tests pending |
 | F10 Hook callback | Long macro asynchronous worker exists on current main; real hook latency measurement pending |
-| F11 SendInput | Partial input does not blindly replay already acknowledged events; fault injection pending |
+| F11 SendInput | Partial input stops without replaying accepted backspaces/code units, releases pressed injected keys; unit tests cover UTF-16, Backspace, Shift, repeated VK; independent host fault injection still pending |
 | F12 TSF IPC | Rust secure mappings test and isolated C++ focus/config snapshot smoke |
 | Q01 Release | Verification script checks architecture, ZIP contents, MSI presence and SHA-256 metadata; publication preflight |
 | Q02 Independent E2E | Matrix below must be run by QA and recorded for target release |

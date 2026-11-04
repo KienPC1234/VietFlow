@@ -157,6 +157,72 @@ pub fn send_unicode_batch(backspaces: usize, text: &str) -> bool {
     success
 }
 
+/// On partial insertion, release only the keys in the accepted prefix.
+/// Never replay accepted backspaces, modifiers or Unicode code units.
+fn pending_releases(prefix: &[INPUT]) -> Vec<INPUT> {
+    let mut pressed: Vec<KEYBDINPUT> = Vec::new();
+    for event in prefix {
+        if event.r#type != INPUT_KEYBOARD {
+            continue;
+        }
+        let key = unsafe { event.Anonymous.ki };
+        if key.dwFlags & KEYEVENTF_KEYUP == 0 {
+            pressed.push(key);
+        } else if let Some(pos) = pressed.iter().rposition(|k| {
+            k.wVk == key.wVk
+                && k.wScan == key.wScan
+                && (k.dwFlags & KEYEVENTF_UNICODE) == (key.dwFlags & KEYEVENTF_UNICODE)
+        }) {
+            pressed.remove(pos);
+        }
+    }
+    pressed
+        .into_iter()
+        .rev()
+        .map(|mut key| {
+            key.dwFlags |= KEYEVENTF_KEYUP;
+            INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 { ki: key },
+            }
+        })
+        .collect()
+}
+
+/// Attempt every original event at most once. When Windows returns a partial
+/// prefix, best-effort release injected keys without replaying destructive input.
+fn send_checked_using<F>(inputs: &[INPUT], mut send: F) -> (bool, u32)
+where
+    F: FnMut(&[INPUT]) -> u32,
+{
+    if inputs.is_empty() {
+        return (true, 0);
+    }
+    if inputs.len() > u32::MAX as usize {
+        return (false, 0);
+    }
+    let expected = inputs.len() as u32;
+    let inserted = send(inputs).min(expected);
+    if inserted > 0 && inserted < expected {
+        let releases = pending_releases(&inputs[..inserted as usize]);
+        if !releases.is_empty() {
+            // A partial follow-up release is not safe to retry either.
+            let _ = send(&releases);
+        }
+    }
+    (inserted == expected, inserted)
+}
+
+fn send_checked(inputs: &[INPUT]) -> (bool, u32) {
+    send_checked_using(inputs, |batch| unsafe {
+        SendInput(
+            batch.len() as u32,
+            batch.as_ptr(),
+            size_of::<INPUT>() as i32,
+        )
+    })
+}
+
 /// Dispatches unicode batch returning (all_inserted, total_events_inserted)
 fn send_unicode_batch_status(backspaces: usize, text: &str) -> (bool, u32) {
     if backspaces == 0 && text.is_empty() {
@@ -187,53 +253,25 @@ fn send_unicode_batch_status(backspaces: usize, text: &str) -> (bool, u32) {
             }
         }
 
-        let inserted =
-            unsafe { SendInput(count as u32, inputs.as_ptr(), size_of::<INPUT>() as i32) };
-        if (inserted as usize) < count && inserted > 0 {
-            // Issue #11: Partial insertion retry - ONLY retry the remaining tail events
-            let remaining = count - inserted as usize;
-            let tail = &inputs[inserted as usize..count];
-            let retry_inserted = unsafe {
-                SendInput(remaining as u32, tail.as_ptr(), size_of::<INPUT>() as i32)
-            };
-            return (
-                inserted + retry_inserted == count as u32,
-                inserted + retry_inserted,
-            );
-        }
-        return (inserted == count as u32, inserted);
+        return send_checked(&inputs[..count]);
     }
 
-    // Large restorations or macro expansions
+    // Large macro restorations run on the worker. If backspaces are only
+    // partially accepted, do not insert replacement characters afterward.
     let mut total_inserted = 0u32;
-    let mut ok = true;
     if backspaces > 0 {
         let mut back_inputs = Vec::with_capacity(backspaces * 2);
         for _ in 0..backspaces {
             back_inputs.push(create_vk_input(VK_BACK, false));
             back_inputs.push(create_vk_input(VK_BACK, true));
         }
-        let inserted = unsafe {
-            SendInput(
-                back_inputs.len() as u32,
-                back_inputs.as_ptr(),
-                size_of::<INPUT>() as i32,
-            )
-        };
-        total_inserted += inserted;
-        if (inserted as usize) < back_inputs.len() && inserted > 0 {
-            let tail = &back_inputs[inserted as usize..];
-            let retry_ins = unsafe {
-                SendInput(tail.len() as u32, tail.as_ptr(), size_of::<INPUT>() as i32)
-            };
-            total_inserted += retry_ins;
-            ok &= (inserted + retry_ins) as usize == back_inputs.len();
-        } else {
-            ok &= inserted as usize == back_inputs.len();
+        let (complete, inserted) = send_checked(&back_inputs);
+        total_inserted = total_inserted.saturating_add(inserted);
+        if !complete {
+            return (false, total_inserted);
         }
         sleep(Duration::from_millis(3));
     }
-
     if !text.is_empty() {
         let mut char_inputs = Vec::with_capacity(char_count * 4);
         let mut utf16_buf = [0u16; 2];
@@ -243,26 +281,10 @@ fn send_unicode_batch_status(backspaces: usize, text: &str) -> (bool, u32) {
                 char_inputs.push(create_utf16_input(unit, true));
             }
         }
-        let inserted = unsafe {
-            SendInput(
-                char_inputs.len() as u32,
-                char_inputs.as_ptr(),
-                size_of::<INPUT>() as i32,
-            )
-        };
-        total_inserted += inserted;
-        if (inserted as usize) < char_inputs.len() && inserted > 0 {
-            let tail = &char_inputs[inserted as usize..];
-            let retry_ins = unsafe {
-                SendInput(tail.len() as u32, tail.as_ptr(), size_of::<INPUT>() as i32)
-            };
-            total_inserted += retry_ins;
-            ok &= (inserted + retry_ins) as usize == char_inputs.len();
-        } else {
-            ok &= inserted as usize == char_inputs.len();
-        }
+        let (complete, inserted) = send_checked(&char_inputs);
+        return (complete, total_inserted.saturating_add(inserted));
     }
-    (ok, total_inserted)
+    (true, total_inserted)
 }
 
 /// Scan-code mode for DirectInput-style windows. ASCII characters use the
@@ -304,13 +326,7 @@ fn send_scancode_batch(backspaces: usize, text: &str) {
     }
 
     if !inputs.is_empty() {
-        unsafe {
-            SendInput(
-                inputs.len() as u32,
-                inputs.as_ptr(),
-                size_of::<INPUT>() as i32,
-            );
-        }
+        let _ = send_checked(&inputs);
     }
 }
 
@@ -323,26 +339,25 @@ fn send_safe_batch(backspaces: usize, text: &str) {
             inputs.push(create_vk_input(VK_BACK, false));
             inputs.push(create_vk_input(VK_BACK, true));
         }
-        unsafe {
-            SendInput(
-                inputs.len() as u32,
-                inputs.as_ptr(),
-                size_of::<INPUT>() as i32,
-            );
+        let (complete, _) = send_checked(&inputs);
+        if !complete {
+            return;
         }
         sleep(Duration::from_millis(4));
     }
-
     let mut utf16_buf = [0u16; 2];
     for c in text.chars() {
+        // Do not split a supplementary-plane scalar over separate SendInput calls.
+        let mut inputs: [INPUT; 4] = unsafe { std::mem::zeroed() };
+        let mut count = 0;
         for unit in c.encode_utf16(&mut utf16_buf).iter().copied() {
-            let one = [
-                create_utf16_input(unit, false),
-                create_utf16_input(unit, true),
-            ];
-            unsafe {
-                SendInput(2, one.as_ptr(), size_of::<INPUT>() as i32);
-            }
+            inputs[count] = create_utf16_input(unit, false);
+            inputs[count + 1] = create_utf16_input(unit, true);
+            count += 2;
+        }
+        let (complete, _) = send_checked(&inputs[..count]);
+        if !complete {
+            return;
         }
         sleep(Duration::from_millis(1));
     }
@@ -351,6 +366,130 @@ fn send_safe_batch(backspaces: usize, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_unicode_prefix_releases_only_unmatched_key() {
+        let events = [
+            create_utf16_input(0xD83E, false),
+            create_utf16_input(0xD83E, true),
+            create_utf16_input(0xDD80, false),
+            create_utf16_input(0xDD80, true),
+        ];
+        assert!(pending_releases(&events[..0]).is_empty());
+        assert!(pending_releases(&events[..2]).is_empty());
+        assert!(pending_releases(&events[..4]).is_empty());
+        for (count, unit) in [(1usize, 0xD83E), (3usize, 0xDD80)] {
+            let releases = pending_releases(&events[..count]);
+            assert_eq!(releases.len(), 1);
+            let key = unsafe { releases[0].Anonymous.ki };
+            assert_eq!(key.wScan, unit);
+            assert_ne!(key.dwFlags & KEYEVENTF_KEYUP, 0);
+            assert_ne!(key.dwFlags & KEYEVENTF_UNICODE, 0);
+        }
+    }
+
+    #[test]
+    fn partial_scancode_prefix_cleans_shift_without_replaying_vk() {
+        let events = [
+            create_vk_input_scanned(VK_SHIFT, 42, false),
+            create_vk_input_scanned(b'A' as u16, 30, false),
+            create_vk_input_scanned(b'A' as u16, 30, true),
+            create_vk_input_scanned(VK_SHIFT, 42, true),
+        ];
+        assert_eq!(
+            unsafe { pending_releases(&events[..1])[0].Anonymous.ki.wVk },
+            VK_SHIFT
+        );
+        let releases = pending_releases(&events[..2]);
+        assert_eq!(releases.len(), 2);
+        assert_eq!(unsafe { releases[0].Anonymous.ki.wVk }, b'A' as u16);
+        assert_eq!(unsafe { releases[1].Anonymous.ki.wVk }, VK_SHIFT);
+        assert_eq!(
+            unsafe { pending_releases(&events[..3])[0].Anonymous.ki.wVk },
+            VK_SHIFT
+        );
+        assert!(pending_releases(&events).is_empty());
+    }
+
+    #[test]
+    fn partial_backspace_prefix_only_releases_pressed_key() {
+        let events = [
+            create_vk_input_scanned(VK_BACK, 14, false),
+            create_vk_input_scanned(VK_BACK, 14, true),
+        ];
+        let releases = pending_releases(&events[..1]);
+        assert_eq!(releases.len(), 1);
+        assert_eq!(unsafe { releases[0].Anonymous.ki.wVk }, VK_BACK);
+        assert_ne!(
+            unsafe { releases[0].Anonymous.ki.dwFlags } & KEYEVENTF_KEYUP,
+            0
+        );
+        assert!(pending_releases(&events).is_empty());
+    }
+
+    #[test]
+    fn repeated_vk_events_pair_with_latest_keydown() {
+        let events = [
+            create_vk_input_scanned(VK_BACK, 14, false),
+            create_vk_input_scanned(VK_BACK, 14, true),
+            create_vk_input_scanned(VK_BACK, 14, false),
+            create_vk_input_scanned(VK_BACK, 14, true),
+        ];
+        assert!(pending_releases(&events[..2]).is_empty());
+        assert_eq!(pending_releases(&events[..3]).len(), 1);
+        assert!(pending_releases(&events).is_empty());
+    }
+
+    #[test]
+    fn mocked_partial_sendinput_never_replays_accepted_destructive_events() {
+        let original = [
+            create_vk_input_scanned(VK_BACK, 14, false),
+            create_vk_input_scanned(VK_BACK, 14, true),
+            create_utf16_input('x' as u16, false),
+            create_utf16_input('x' as u16, true),
+        ];
+        let mut calls: Vec<Vec<(u16, u16, u32)>> = Vec::new();
+        let (ok, count) = send_checked_using(&original, |batch| {
+            let keys: Vec<(u16, u16, u32)> = batch
+                .iter()
+                .map(|event| {
+                    let key = unsafe { event.Anonymous.ki };
+                    (key.wVk, key.wScan, key.dwFlags)
+                })
+                .collect();
+            calls.push(keys);
+            if calls.len() == 1 {
+                1
+            } else {
+                batch.len() as u32
+            }
+        });
+        assert!(!ok);
+        assert_eq!(count, 1);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].len(), original.len());
+        assert_eq!(calls[1].len(), 1);
+        assert_eq!(calls[1][0].0, VK_BACK);
+        assert_ne!(calls[1][0].2 & KEYEVENTF_KEYUP, 0);
+    }
+
+    #[test]
+    fn mocked_rejection_or_full_acceptance_never_retries_batch() {
+        let inputs = [
+            create_utf16_input('a' as u16, false),
+            create_utf16_input('a' as u16, true),
+        ];
+        for accepted in [0u32, 2u32] {
+            let mut calls = 0;
+            let (ok, count) = send_checked_using(&inputs, |_batch| {
+                calls += 1;
+                accepted
+            });
+            assert_eq!(calls, 1);
+            assert_eq!(count, accepted);
+            assert_eq!(ok, accepted == 2);
+        }
+    }
 
     #[test]
     fn test_create_utf16_input_surrogate_pairs() {
