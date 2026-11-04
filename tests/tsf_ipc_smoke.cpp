@@ -49,6 +49,50 @@ int main() {
         config->sequence = 2;
         if (reader.Get().method != 5)
             result = Fail("committed config reader");
+
+        // The native reader must not accept tampered or malformed IPC fields,
+        // even if the shared sequence/version look coherent.
+        const TsfSharedConfig valid = *config;
+        auto rejectMalformed = [&](TsfSharedConfig candidate, const char* reason) {
+            // Use method=6 as a valid changed sentinel; an incorrectly
+            // accepted snapshot would switch from the last trusted method=5.
+            candidate.method = 6;
+            candidate.sequence = config->sequence + 2;
+            *config = candidate;
+            if (reader.Get().method != 5) result = Fail(reason);
+            *config = valid;
+            config->sequence = candidate.sequence + 2;
+            if (reader.Get().method != 5) result = Fail("valid config recovery");
+        };
+        TsfSharedConfig malformed = valid;
+        malformed.method = 7;
+        malformed.sequence = config->sequence + 2;
+        *config = malformed;
+        if (reader.Get().method != 5) result = Fail("invalid method");
+        *config = valid;
+        config->sequence = malformed.sequence + 2;
+        reader.Get();
+        malformed = valid; malformed.charset = 5;
+        rejectMalformed(malformed, "invalid charset");
+        malformed = valid; malformed.enabled = 2;
+        rejectMalformed(malformed, "invalid enabled");
+        malformed = valid; malformed.modern_style = 3;
+        rejectMalformed(malformed, "invalid modern_style");
+        malformed = valid; malformed.spell_check = 3;
+        rejectMalformed(malformed, "invalid spell_check");
+        malformed = valid; malformed.free_marking = 3;
+        rejectMalformed(malformed, "invalid free_marking");
+        malformed = valid; malformed.auto_restore = 3;
+        rejectMalformed(malformed, "invalid auto_restore");
+        malformed = valid; malformed.auto_switch_by_typing = 3;
+        rejectMalformed(malformed, "invalid auto_switch_by_typing");
+        malformed = valid; malformed.enable_macro = 3;
+        rejectMalformed(malformed, "invalid enable_macro");
+        malformed = valid; malformed.version = 3;
+        rejectMalformed(malformed, "invalid version");
+        malformed = valid; malformed.reserved = 0xFFFFFFFF;
+        rejectMalformed(malformed, "invalid reserved");
+
         reader.UpdateActiveKeystroke(true);
         if (focus->is_composing != 1)
             result = Fail("composition signal");

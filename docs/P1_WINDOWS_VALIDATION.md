@@ -15,7 +15,7 @@ desktop text control or installed MSI works.
 | F09 Uninstall | WiX authoring inspection, separate clean/upgrade MSI VM tests pending |
 | F10 Hook callback | Async worker prewarmed; bounded nonblocking 8-job queue, 750 ms expiry and exact foreground identity; admission status now propagated to hook to pass original key on rejection and reset composition; 64 KiB text / 4096-backspace limits. Host input-order, 24h and p95/p99 E2E still pending |
 | F11 SendInput | Partial input stops without replaying accepted backspaces/code units, releases pressed injected keys; unit tests cover UTF-16, Backspace, Shift, repeated VK; independent host fault injection still pending |
-| F12 TSF IPC | Rust secure mappings test and isolated C++ focus/config snapshot smoke |
+| F12 TSF IPC | Rust writer clamps malformed enum/flag/version fields before publishing; C++ reader rejects malformed yet sequence-consistent snapshots and retains last valid config. Independent native smoke tests cover every field; AppContainer ACL and multi-process long-run tests pending |
 | Q01 Release | Verification script checks architecture, ZIP contents, MSI presence and SHA-256 metadata; publication preflight |
 | Q02 Independent E2E | Matrix below must be run by QA and recorded for target release |
 

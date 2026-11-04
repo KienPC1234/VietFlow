@@ -21,6 +21,24 @@ static TsfSharedConfig DisabledFallback() {
     return c;
 }
 
+// Do not trust a mapping merely because its version and sequence match.
+// Bad enum values otherwise wrap in the C ABI's uint8_t and malformed
+// booleans get silently interpreted as enabled in the text processor.
+static bool IsValidTsfConfig(const TsfSharedConfig& c) {
+    auto validFlag = [](uint32_t value) { return value <= 1; };
+    return c.version == 2
+        && c.method <= 6     // core InputMethod (Telex .. UserCustom)
+        && c.charset <= 4    // core CharsetId (Unicode .. VIQR)
+        && c.reserved == 0
+        && validFlag(c.enabled)
+        && validFlag(c.modern_style)
+        && validFlag(c.spell_check)
+        && validFlag(c.free_marking)
+        && validFlag(c.auto_restore)
+        && validFlag(c.auto_switch_by_typing)
+        && validFlag(c.enable_macro);
+}
+
 SharedConfigReader::SharedConfigReader(const wchar_t* configName, const wchar_t* focusName)
     : m_cached(DisabledFallback()),
       m_configName(configName ? configName : CONFIG_MAP_NAME),
@@ -78,7 +96,7 @@ TsfSharedConfig SharedConfigReader::Get() {
         std::memcpy(&snapshot, m_pView, sizeof(snapshot));
         MemoryBarrier();
         LONG last = *seq;
-        if (first == last && !(last & 1) && snapshot.version == 2) {
+        if (first == last && !(last & 1) && IsValidTsfConfig(snapshot)) {
             m_cached = snapshot;
             return snapshot;
         }

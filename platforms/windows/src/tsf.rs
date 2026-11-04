@@ -136,6 +136,32 @@ impl Default for TsfSharedConfig {
         }
     }
 }
+/// Only publish values representable by the versioned native IPC contract.
+/// Malformed user JSON or a caller's raw u32 must not wrap on the C++ FFI side.
+/// Keep this deliberately aligned with the InputMethod and CharsetId enums.
+fn normalized_tsf_ipc_config(source: &TsfSharedConfig) -> TsfSharedConfig {
+    let mut cfg = *source;
+    cfg.method = if cfg.method <= 6 { cfg.method } else { 0 };
+    cfg.charset = if cfg.charset <= 4 { cfg.charset } else { 0 };
+    fn flag(value: u32) -> u32 {
+        if value <= 1 {
+            value
+        } else {
+            0
+        }
+    }
+    cfg.enabled = flag(cfg.enabled);
+    cfg.modern_style = flag(cfg.modern_style);
+    cfg.spell_check = flag(cfg.spell_check);
+    cfg.free_marking = flag(cfg.free_marking);
+    cfg.auto_restore = flag(cfg.auto_restore);
+    cfg.auto_switch_by_typing = flag(cfg.auto_switch_by_typing);
+    cfg.enable_macro = flag(cfg.enable_macro);
+    cfg.version = 2;
+    cfg.reserved = 0;
+    cfg
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TsfFocusState {
@@ -249,6 +275,7 @@ impl SharedConfigWriter {
         if self.view.is_null() {
             return;
         }
+        let cfg = normalized_tsf_ipc_config(cfg);
         unsafe {
             let ptr = self.view;
             let sequence = &*std::ptr::addr_of!((*ptr).sequence).cast::<AtomicU32>();
@@ -281,7 +308,8 @@ impl SharedConfigWriter {
                 std::ptr::addr_of_mut!((*ptr).enable_macro),
                 cfg.enable_macro,
             );
-            std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).version), 2);
+            std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).version), cfg.version);
+            std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).reserved), cfg.reserved);
             sequence.store(old.wrapping_add(2), Ordering::Release);
         }
     }
@@ -783,6 +811,43 @@ pub fn reinstall_tsf() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ipc_config_normalization_clamps_invalid_fields_without_losing_valid_enums() {
+        let mut valid = TsfSharedConfig::default();
+        valid.method = 6; // custom input method
+        valid.charset = 4; // VIQR output charset
+        assert_eq!(normalized_tsf_ipc_config(&valid).method, 6);
+        assert_eq!(normalized_tsf_ipc_config(&valid).charset, 4);
+
+        let mut invalid = valid;
+        invalid.enabled = u32::MAX;
+        invalid.method = u32::MAX;
+        invalid.charset = 5;
+        invalid.modern_style = 2;
+        invalid.spell_check = 3;
+        invalid.free_marking = 7;
+        invalid.auto_restore = 9;
+        invalid.auto_switch_by_typing = 100;
+        invalid.enable_macro = 42;
+        invalid.version = 99;
+        invalid.reserved = 0xdead_beef;
+        let sanitized = normalized_tsf_ipc_config(&invalid);
+        assert_eq!(sanitized.enabled, 0);
+        assert_eq!(sanitized.method, 0);
+        assert_eq!(sanitized.charset, 0);
+        assert_eq!(sanitized.modern_style, 0);
+        assert_eq!(sanitized.spell_check, 0);
+        assert_eq!(sanitized.free_marking, 0);
+        assert_eq!(sanitized.auto_restore, 0);
+        assert_eq!(sanitized.auto_switch_by_typing, 0);
+        assert_eq!(sanitized.enable_macro, 0);
+        assert_eq!(sanitized.version, 2);
+        assert_eq!(sanitized.reserved, 0);
+        // The raw config value remains available to the caller for reporting;
+        // normalizing a snapshot must not change the user's settings in place.
+        assert_eq!(invalid.method, u32::MAX);
+    }
 
     #[test]
     fn test_tsf_shared_config_layout() {
