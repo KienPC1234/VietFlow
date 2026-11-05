@@ -7,8 +7,9 @@ use std::sync::{mpsc, OnceLock};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyboardLayout, SendInput, VkKeyScanExW, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_BACK, VK_SHIFT,
+    GetKeyboardLayout, MapVirtualKeyExW, SendInput, VkKeyScanExW, INPUT, INPUT_0, INPUT_KEYBOARD,
+    KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE,
+    VK_BACK, VK_SHIFT,
 };
 
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
@@ -546,6 +547,41 @@ fn simple_scancode_vk(mapped: i16) -> Option<(u16, bool)> {
     }
 }
 
+/// SendInput treats wScan as a physical scan code ONLY when SCANCODE is set.
+/// Keep this separate from the VK-key events used in Unicode/Safe modes.
+/// MapVirtualKeyExW mode 4 reports an E0 prefix for extended keys.
+fn physical_scancode_pair(vk: u16, layout: *mut std::ffi::c_void) -> Option<[INPUT; 2]> {
+    if layout.is_null() {
+        return None;
+    }
+    const MAPVK_VK_TO_VSC_EX: u32 = 4;
+    let raw = unsafe { MapVirtualKeyExW(vk as u32, MAPVK_VK_TO_VSC_EX, layout) };
+    let scan = (raw & 0xff) as u16;
+    let prefix = raw >> 8;
+    if scan == 0 || (prefix != 0 && prefix != 0xe0) {
+        return None;
+    }
+    let flags = KEYEVENTF_SCANCODE
+        | if prefix == 0xe0 {
+            KEYEVENTF_EXTENDEDKEY
+        } else {
+            0
+        };
+    let make = |key_up: bool| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: 0,
+                wScan: scan,
+                dwFlags: flags | if key_up { KEYEVENTF_KEYUP } else { 0 },
+                time: 0,
+                dwExtraInfo: VIETFLOW_MAGIC,
+            },
+        },
+    };
+    Some([make(false), make(true)])
+}
+
 /// Construct a bounded, ordered scan-code transaction. ASCII uses the
 /// foreground window's keyboard layout (NOT the hook/worker's HKL) and
 /// non-mappable or AltGr-dependent characters use UTF-16 fallback;
@@ -559,40 +595,46 @@ fn build_scancode_inputs(
         return None;
     }
     let mut inputs = Vec::with_capacity((backspaces + text.chars().count() * 3) * 2);
-    for _ in 0..backspaces {
-        inputs.push(create_vk_input(VK_BACK, false));
-        inputs.push(create_vk_input(VK_BACK, true));
-    }
 
-    // A foreground application may have a different HKL from VietFlow's
-    // hook thread. Never synthesize an ASCII VK using the wrong layout.
+    // The destination's HKL matters, not the input worker's own thread HKL.
+    // On a headless test desktop without a foreground HWND, the test thread's
+    // HKL is acceptable; a real destination always takes priority.
     let foreground_layout = unsafe {
         let hwnd = GetForegroundWindow();
-        if hwnd.is_null() {
-            std::ptr::null_mut()
+        let thread_id = if hwnd.is_null() {
+            0
         } else {
-            let thread_id = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
-            if thread_id == 0 {
-                std::ptr::null_mut()
-            } else {
-                GetKeyboardLayout(thread_id)
-            }
-        }
+            GetWindowThreadProcessId(hwnd, std::ptr::null_mut())
+        };
+        GetKeyboardLayout(thread_id)
     };
+    let backspace = physical_scancode_pair(VK_BACK, foreground_layout)?;
+    for _ in 0..backspaces {
+        inputs.extend(backspace);
+    }
+
     let mut utf16_buf = [0u16; 2];
     for c in text.chars() {
         if c.is_ascii() && !foreground_layout.is_null() {
             let mapped = unsafe { VkKeyScanExW(c as u16, foreground_layout) };
             if let Some((vk, shift)) = simple_scancode_vk(mapped) {
-                if shift {
-                    inputs.push(create_vk_input(VK_SHIFT, false));
+                if let Some(keys) = physical_scancode_pair(vk, foreground_layout) {
+                    let shifted = if shift {
+                        physical_scancode_pair(VK_SHIFT, foreground_layout)
+                    } else {
+                        None
+                    };
+                    if !shift || shifted.is_some() {
+                        if let Some(pair) = shifted {
+                            inputs.push(pair[0]);
+                        }
+                        inputs.extend(keys);
+                        if let Some(pair) = shifted {
+                            inputs.push(pair[1]);
+                        }
+                        continue;
+                    }
                 }
-                inputs.push(create_vk_input(vk, false));
-                inputs.push(create_vk_input(vk, true));
-                if shift {
-                    inputs.push(create_vk_input(VK_SHIFT, true));
-                }
-                continue;
             }
         }
         for unit in c.encode_utf16(&mut utf16_buf).iter().copied() {
@@ -602,8 +644,7 @@ fn build_scancode_inputs(
     }
 
     if let Some(vk) = break_vk {
-        inputs.push(create_vk_input(vk, false));
-        inputs.push(create_vk_input(vk, true));
+        inputs.extend(physical_scancode_pair(vk, foreground_layout)?);
     }
     Some(inputs)
 }
@@ -818,17 +859,29 @@ mod tests {
         assert!(events.len() >= 12);
         for event in &events[..4] {
             let ki = unsafe { event.Anonymous.ki };
-            assert_eq!(ki.wVk, VK_BACK);
+            assert_eq!(ki.wVk, 0);
+            assert_ne!(ki.wScan, 0);
+            assert_ne!(ki.dwFlags & KEYEVENTF_SCANCODE, 0);
         }
         let tail_down = unsafe { events[events.len() - 2].Anonymous.ki };
         let tail_up = unsafe { events[events.len() - 1].Anonymous.ki };
-        assert_eq!(tail_down.wVk, 0x0D);
-        assert_eq!(tail_up.wVk, 0x0D);
+        assert_eq!(tail_down.wVk, 0);
+        assert_eq!(tail_up.wVk, 0);
+        assert_ne!(tail_down.wScan, 0);
+        assert_eq!(tail_down.wScan, tail_up.wScan);
+        assert_ne!(tail_down.dwFlags & KEYEVENTF_SCANCODE, 0);
+        assert_ne!(tail_up.dwFlags & KEYEVENTF_SCANCODE, 0);
         assert_eq!(tail_down.dwFlags & KEYEVENTF_KEYUP, 0);
         assert_ne!(tail_up.dwFlags & KEYEVENTF_KEYUP, 0);
         assert!(events[4..events.len() - 2].iter().any(|event| {
             let ki = unsafe { event.Anonymous.ki };
             ki.wVk == 0 && ki.wScan == 0x1EC7 && (ki.dwFlags & KEYEVENTF_UNICODE) != 0
+        }));
+        assert!(events[4..events.len() - 2].iter().any(|event| {
+            let ki = unsafe { event.Anonymous.ki };
+            (ki.dwFlags & KEYEVENTF_SCANCODE) != 0
+                && (ki.dwFlags & KEYEVENTF_UNICODE) == 0
+                && ki.wScan != 0
         }));
         assert!(build_scancode_inputs(2, "abc", Some(VK_BACK)).is_none());
     }
