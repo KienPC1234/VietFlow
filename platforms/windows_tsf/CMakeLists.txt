@@ -32,6 +32,7 @@ add_library(vietflow_tsf SHARED
     debug_log.cpp
     edit_session.cpp
     ipc.cpp
+    keyboard_layout.cpp
     register.cpp
     tip.cpp
     vietflow_tsf.def
@@ -57,12 +58,15 @@ target_link_libraries(vietflow_tsf PRIVATE
 # Optional isolated native protocol test; does not load/register a TIP.
 option(VIETFLOW_BUILD_IPC_SMOKE "Build TSF IPC protocol smoke test" OFF)
 if(VIETFLOW_BUILD_IPC_SMOKE)
+    add_executable(vietflow_tsf_layout_smoke keyboard_layout.cpp ../../tests/tsf_layout_smoke.cpp)
+    target_include_directories(vietflow_tsf_layout_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     add_executable(vietflow_tsf_ipc_smoke ipc.cpp ../../tests/tsf_ipc_smoke.cpp)
     target_include_directories(vietflow_tsf_ipc_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     add_executable(vietflow_tsf_ipc_process_stress
         ipc.cpp ../../tests/tsf_ipc_process_stress.cpp)
     target_include_directories(vietflow_tsf_ipc_process_stress PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     enable_testing()
+    add_test(NAME vietflow_tsf_layout_smoke COMMAND vietflow_tsf_layout_smoke)
     add_test(NAME vietflow_tsf_ipc_smoke COMMAND vietflow_tsf_ipc_smoke)
     add_test(NAME vietflow_tsf_ipc_process_stress COMMAND vietflow_tsf_ipc_process_stress)
 

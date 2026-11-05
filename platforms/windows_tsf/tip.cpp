@@ -4,6 +4,7 @@
 #include "tip.h"
 #include "edit_session.h"
 #include "debug_log.h"
+#include "keyboard_layout.h"
 
 // Convert an owned Rust allocation exactly once, including macro expansions
 // that exceed the old 256/512-byte fixed buffers.
@@ -371,60 +372,6 @@ bool CVietFlowTip::IsModifierPressed() {
     return ctrl || alt || win;
 }
 
-bool CVietFlowTip::IsCompositionKey(UINT vk, bool shift, uint32_t method) {
-    if (vk >= 'A' && vk <= 'Z') return true;
-    if (vk >= '0' && vk <= '9' && !shift && (method == 1 || method == 5 || method == 6)) {
-        return true;
-    }
-    if ((vk == 0xDB || vk == 0xDD) && !shift && (method == 0 || method == 6)) {
-        return true; // [ and ] for Telex
-    }
-    if (method == 2 || method == 6) { // VIQR
-        if (vk == 0xDE || vk == 0xC0 || vk == 0xBF || vk == 0xBE || vk == 0xBB) return true;
-        if ((vk == '6' && shift) || (vk == '9' && shift)) return true;
-    }
-    return false;
-}
-
-wchar_t CVietFlowTip::VkToChar(UINT vk, bool shift, bool caps) {
-    if (vk >= 'A' && vk <= 'Z') {
-        bool upper = shift ^ caps;
-        return upper ? static_cast<wchar_t>(L'A' + (vk - 'A')) : static_cast<wchar_t>(L'a' + (vk - 'A'));
-    }
-    if (vk >= '0' && vk <= '9') {
-        if (!shift) {
-            return static_cast<wchar_t>(L'0' + (vk - '0'));
-        }
-        switch (vk) {
-            case '0': return L')';
-            case '1': return L'!';
-            case '2': return L'@';
-            case '3': return L'#';
-            case '4': return L'$';
-            case '5': return L'%';
-            case '6': return L'^';
-            case '7': return L'&';
-            case '8': return L'*';
-            case '9': return L'(';
-            default: return 0;
-        }
-    }
-    switch (vk) {
-        case VK_OEM_1: return shift ? L':' : L';';
-        case VK_OEM_PLUS: return shift ? L'+' : L'=';
-        case VK_OEM_COMMA: return shift ? L'<' : L',';
-        case VK_OEM_MINUS: return shift ? L'_' : L'-';
-        case VK_OEM_PERIOD: return shift ? L'>' : L'.';
-        case VK_OEM_2: return shift ? L'?' : L'/';
-        case VK_OEM_3: return shift ? L'~' : L'`';
-        case VK_OEM_4: return shift ? L'{' : L'[';
-        case VK_OEM_5: return shift ? L'|' : L'\\';
-        case VK_OEM_6: return shift ? L'}' : L']';
-        case VK_OEM_7: return shift ? L'"' : L'\'';
-        default: return 0;
-    }
-}
-
 std::wstring CVietFlowTip::Utf8ToWide(const std::string& str) {
     if (str.empty()) return std::wstring();
     int needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), static_cast<int>(str.length()), nullptr, 0);
@@ -436,7 +383,6 @@ std::wstring CVietFlowTip::Utf8ToWide(const std::string& str) {
 
 STDMETHODIMP CVietFlowTip::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
     (void)pic;
-    (void)lParam;
     if (!pfEaten) return E_INVALIDARG;
     *pfEaten = FALSE;
 
@@ -446,22 +392,21 @@ STDMETHODIMP CVietFlowTip::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM 
     if (IsModifierPressed()) return S_OK;
 
     UINT vk = static_cast<UINT>(wParam);
-    bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-    bool caps = (GetKeyState(VK_CAPITAL) & 1) != 0;
+    wchar_t character = VfTsfKeyToAscii(vk, lParam);
 
     // Navigation keys pass through natively
     if ((vk >= VK_PRIOR && vk <= VK_DOWN) || vk == VK_DELETE) {
         return S_OK;
     }
 
-    bool isComp = IsCompositionKey(vk, shift, cfg.method);
+    bool isComp = VfTsfIsCompositionChar(character, cfg.method);
 
     if (m_pComposition != nullptr) {
         if (vk == VK_TAB || vk == VK_RETURN) {
             return S_OK; // Commit composition and pass through to host (no swallow)
         }
         if (vk == VK_BACK || vk == VK_ESCAPE || vk == VK_SPACE ||
-            isComp || VkToChar(vk, shift, caps) != 0) {
+            isComp || character != 0) {
             *pfEaten = TRUE;
             VF_LOG(L"OnTestKeyDown: vk=0x%02X (%c), inside comp -> pfEaten=TRUE", vk, (vk >= 32 && vk < 127) ? vk : '?');
             return S_OK;
@@ -477,7 +422,6 @@ STDMETHODIMP CVietFlowTip::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM 
 }
 
 STDMETHODIMP CVietFlowTip::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
-    (void)lParam;
     if (!pfEaten) return E_INVALIDARG;
     *pfEaten = FALSE;
 
@@ -501,8 +445,7 @@ STDMETHODIMP CVietFlowTip::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lPar
     SyncConfig();
 
     UINT vk = static_cast<UINT>(wParam);
-    bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-    bool caps = (GetKeyState(VK_CAPITAL) & 1) != 0;
+    wchar_t character = VfTsfKeyToAscii(vk, lParam);
 
     // Navigation keys (Arrows, Home, End, PgUp, PgDn, Delete) commit active composition cleanly and pass through
     if ((vk >= VK_PRIOR && vk <= VK_DOWN) || vk == VK_DELETE) {
@@ -589,11 +532,11 @@ STDMETHODIMP CVietFlowTip::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lPar
         return S_OK;
     }
 
-    bool isComp = IsCompositionKey(vk, shift, cfg.method);
+    bool isComp = VfTsfIsCompositionChar(character, cfg.method);
 
     // 6. Composition key (letter, VNI number, bracket, VIQR mark)
     if (isComp) {
-        wchar_t ch = VkToChar(vk, shift, caps);
+        wchar_t ch = character;
         if (ch == 0) return S_OK;
 
         size_t outBackspaces = 0;
@@ -629,15 +572,22 @@ STDMETHODIMP CVietFlowTip::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lPar
         return S_OK;
     }
 
-    // 7. Non-composition printable character while composing (punctuation, etc.)
+    // 7. Punctuation commits with the actual layout character. Unknown,
+    // dead-key, multi-unit and non-ASCII input commits the current preedit
+    // and passes the original key through to Windows without swallowing it.
     if (m_pComposition) {
-        wchar_t ch = VkToChar(vk, shift, caps);
-        if (ch != 0) {
-            VF_LOG(L"OnKeyDown PUNCTUATION while composing: ch='%c'", ch);
-            FinishCompositionWithBreak(pic, ch);
+        if (character != 0) {
+            VF_LOG(L"OnKeyDown PUNCTUATION while composing: ch='%c'", character);
+            FinishCompositionWithBreak(pic, character);
             m_configReader.UpdateActiveKeystroke(false);
             *pfEaten = TRUE;
             return S_OK;
+        }
+        // Modifier presses alone must never commit a live composition.
+        if (vk != VK_SHIFT && vk != VK_LSHIFT && vk != VK_RSHIFT &&
+            vk != VK_CAPITAL && vk != VK_NUMLOCK && vk != VK_SCROLL) {
+            FinishCompositionWithBreak(pic, 0);
+            m_configReader.UpdateActiveKeystroke(false);
         }
     }
 

@@ -72,8 +72,6 @@ private:
     void ReplaceAndEndComposition(ITfContext* pContext, const std::wstring& text);
 
     static bool IsModifierPressed();
-    static bool IsCompositionKey(UINT vk, bool shift, uint32_t method);
-    static wchar_t VkToChar(UINT vk, bool shift, bool caps);
     static std::wstring Utf8ToWide(const std::string& str);
 
     LONG m_cRef;
