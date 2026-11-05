@@ -1025,6 +1025,97 @@ mod tests {
     }
 
     #[test]
+    fn seqlock_write_claim_is_exclusive_across_windows_processes() {
+        const NAME_ENV: &str = "VIETFLOW_TSFCAS_QA_MAP";
+        const MODE_ENV: &str = "VIETFLOW_TSFCAS_QA_MODE";
+        const TEST_NAME: &str =
+            "tsf::tests::seqlock_write_claim_is_exclusive_across_windows_processes";
+
+        // The spawned child runs this same one test in a separate process.
+        // Only a private named mapping is opened; no TSF registration, real
+        // keyboard state, production mapping or other project is affected.
+        if let Some(mode) = std::env::var_os(MODE_ENV) {
+            let name = std::env::var(NAME_ENV).expect("parent mapping name");
+            let wide_name = to_wide(&name);
+            unsafe {
+                let handle = windows_sys::Win32::System::Memory::OpenFileMappingW(
+                    FILE_MAP_ALL_ACCESS,
+                    0,
+                    wide_name.as_ptr(),
+                );
+                assert!(!handle.is_null(), "child can open isolated mapping");
+                let view = MapViewOfFile(
+                    handle,
+                    FILE_MAP_ALL_ACCESS,
+                    0,
+                    0,
+                    std::mem::size_of::<TsfSharedConfig>(),
+                );
+                assert!(!view.Value.is_null(), "child can map same config");
+                let config = view.Value.cast::<TsfSharedConfig>();
+                let sequence = &*std::ptr::addr_of!((*config).sequence).cast::<AtomicU32>();
+                let claim = try_claim_config_write(sequence);
+                if mode == "busy" {
+                    assert_eq!(claim, None, "second process must not enter held epoch");
+                    assert_eq!(sequence.load(Ordering::SeqCst), 1);
+                } else {
+                    assert_eq!(mode, "free");
+                    assert_eq!(claim, Some(2), "second process can claim released epoch");
+                    sequence.store(4, Ordering::SeqCst);
+                }
+                UnmapViewOfFile(view);
+                CloseHandle(handle);
+            }
+            return;
+        }
+
+        let suffix = format!(
+            "{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let name = format!("Local\\VietFlow_CAS_Child_QA_{suffix}");
+        let (mapping, view) = unsafe {
+            create_secure_mapping(&name, std::mem::size_of::<TsfSharedConfig>() as u32, false)
+        }
+        .expect("private test mapping");
+        let seq = unsafe {
+            std::ptr::write(view.cast::<TsfSharedConfig>(), TsfSharedConfig::default());
+            &*std::ptr::addr_of!((*view.cast::<TsfSharedConfig>()).sequence).cast::<AtomicU32>()
+        };
+        assert_eq!(try_claim_config_write(seq), Some(0));
+
+        let exe = std::env::current_exe().expect("current Rust test binary");
+        for mode in ["busy", "free"] {
+            let output = std::process::Command::new(&exe)
+                .args(["--exact", TEST_NAME, "--nocapture"])
+                .env(NAME_ENV, &name)
+                .env(MODE_ENV, mode)
+                .output()
+                .expect("spawn isolated second process");
+            assert!(
+                output.status.success(),
+                "second process {mode} failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            if mode == "busy" {
+                assert_eq!(seq.load(Ordering::SeqCst), 1);
+                seq.store(2, Ordering::SeqCst);
+            } else {
+                assert_eq!(seq.load(Ordering::SeqCst), 4);
+            }
+        }
+        unsafe {
+            UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: view });
+            CloseHandle(mapping);
+        }
+    }
+
+    #[test]
     fn test_tsf_shared_config_layout() {
         assert_eq!(std::mem::size_of::<TsfSharedConfig>(), 48);
         assert_eq!(std::mem::size_of::<TsfFocusState>(), 16);
