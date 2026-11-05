@@ -348,6 +348,10 @@ pub fn send_unicode_batch(backspaces: usize, text: &str) -> bool {
 /// On partial insertion, release only the keys in the accepted prefix.
 /// Never replay accepted backspaces, modifiers or Unicode code units.
 fn pending_releases(prefix: &[INPUT]) -> Vec<INPUT> {
+    // A keypad Enter (E0 1C) and a normal Enter (1C) have the same scan
+    // byte but must be released independently. Unicode and physical scan
+    // codes are distinct input namespaces as well.
+    const KEY_IDENTITY_FLAGS: u32 = KEYEVENTF_UNICODE | KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY;
     let mut pressed: Vec<KEYBDINPUT> = Vec::new();
     for event in prefix {
         if event.r#type != INPUT_KEYBOARD {
@@ -359,7 +363,7 @@ fn pending_releases(prefix: &[INPUT]) -> Vec<INPUT> {
         } else if let Some(pos) = pressed.iter().rposition(|k| {
             k.wVk == key.wVk
                 && k.wScan == key.wScan
-                && (k.dwFlags & KEYEVENTF_UNICODE) == (key.dwFlags & KEYEVENTF_UNICODE)
+                && (k.dwFlags & KEY_IDENTITY_FLAGS) == (key.dwFlags & KEY_IDENTITY_FLAGS)
         }) {
             pressed.remove(pos);
         }
@@ -777,6 +781,64 @@ mod tests {
             VK_SHIFT
         );
         assert!(pending_releases(&events).is_empty());
+    }
+
+    #[test]
+    fn partial_scancode_cleanup_preserves_extended_key_identity() {
+        // Both physical keys have wVk=0 and the same scan byte, but their
+        // E0 prefix makes them different keys. Cleaning a partial SendInput
+        // prefix must never release the one already matched by a key-up.
+        let physical = |extended: bool, key_up: bool| {
+            let mut event = create_vk_input_scanned(0, 0x1C, key_up);
+            unsafe {
+                event.Anonymous.ki.dwFlags |= KEYEVENTF_SCANCODE;
+                if extended {
+                    event.Anonymous.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+                }
+            }
+            event
+        };
+        let normal = physical(false, false);
+        let extended = physical(true, false);
+        let normal_up = physical(false, true);
+        let extended_up = physical(true, true);
+
+        let first = [normal, extended, normal_up, extended_up];
+        let remain = pending_releases(&first[..3]);
+        assert_eq!(remain.len(), 1);
+        let release = unsafe { remain[0].Anonymous.ki };
+        assert_eq!(release.wScan, 0x1C);
+        assert_ne!(release.dwFlags & KEYEVENTF_KEYUP, 0);
+        assert_ne!(release.dwFlags & KEYEVENTF_EXTENDEDKEY, 0);
+        assert_ne!(release.dwFlags & KEYEVENTF_SCANCODE, 0);
+        assert!(pending_releases(&first).is_empty());
+
+        let reversed = [extended, normal, extended_up, normal_up];
+        let remain = pending_releases(&reversed[..3]);
+        assert_eq!(remain.len(), 1);
+        let release = unsafe { remain[0].Anonymous.ki };
+        assert_eq!(release.dwFlags & KEYEVENTF_EXTENDEDKEY, 0);
+        assert_ne!(release.dwFlags & KEYEVENTF_SCANCODE, 0);
+
+        // Mock an actual partial SendInput result and inspect ONLY the
+        // cleanup event; accepted destructive inputs must never be replayed.
+        let mut sent: Vec<Vec<INPUT>> = Vec::new();
+        let (complete, inserted) = send_checked_using(&first, |batch| {
+            sent.push(batch.to_vec());
+            if sent.len() == 1 {
+                3
+            } else {
+                batch.len() as u32
+            }
+        });
+        assert!(!complete);
+        assert_eq!(inserted, 3);
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1].len(), 1);
+        assert_ne!(
+            unsafe { sent[1][0].Anonymous.ki.dwFlags } & KEYEVENTF_EXTENDEDKEY,
+            0
+        );
     }
 
     #[test]
