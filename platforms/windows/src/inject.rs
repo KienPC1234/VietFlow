@@ -7,8 +7,8 @@ use std::sync::{mpsc, OnceLock};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, VkKeyScanW, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-    KEYEVENTF_UNICODE, VK_BACK, VK_SHIFT,
+    GetKeyboardLayout, SendInput, VkKeyScanExW, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_BACK, VK_SHIFT,
 };
 
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
@@ -528,8 +528,27 @@ fn send_unicode_batch_status(backspaces: usize, text: &str) -> (bool, u32) {
     (true, total_inserted)
 }
 
+/// Only plain or Shift-only VK mappings can be emitted without extra
+/// modifiers. AltGr is represented by Ctrl+Alt in VkKeyScanExW, which we
+/// must NOT approximate with a bare key or accidentally trigger a shortcut.
+/// Unsupported mappings use native Unicode SendInput instead.
+fn simple_scancode_vk(mapped: i16) -> Option<(u16, bool)> {
+    if mapped == -1 {
+        return None;
+    }
+    let bits = mapped as u16;
+    let vk = bits & 0xff;
+    let modifiers = bits >> 8;
+    if vk == 0 || modifiers > 1 {
+        None
+    } else {
+        Some((vk, modifiers == 1))
+    }
+}
+
 /// Construct a bounded, ordered scan-code transaction. ASCII uses the
-/// active layout's VK and non-mappable characters use UTF-16 fallback;
+/// foreground window's keyboard layout (NOT the hook/worker's HKL) and
+/// non-mappable or AltGr-dependent characters use UTF-16 fallback;
 /// the optional Enter/Tab always comes last.
 fn build_scancode_inputs(
     backspaces: usize,
@@ -545,19 +564,32 @@ fn build_scancode_inputs(
         inputs.push(create_vk_input(VK_BACK, true));
     }
 
+    // A foreground application may have a different HKL from VietFlow's
+    // hook thread. Never synthesize an ASCII VK using the wrong layout.
+    let foreground_layout = unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            std::ptr::null_mut()
+        } else {
+            let thread_id = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
+            if thread_id == 0 {
+                std::ptr::null_mut()
+            } else {
+                GetKeyboardLayout(thread_id)
+            }
+        }
+    };
     let mut utf16_buf = [0u16; 2];
     for c in text.chars() {
-        if c.is_ascii() {
-            let mapped = unsafe { VkKeyScanW(c as u16) };
-            if mapped != -1 {
-                let vk = (mapped as u16) & 0xFF;
-                let shift_state = ((mapped as u16) >> 8) & 0xFF;
-                if shift_state & 1 != 0 {
+        if c.is_ascii() && !foreground_layout.is_null() {
+            let mapped = unsafe { VkKeyScanExW(c as u16, foreground_layout) };
+            if let Some((vk, shift)) = simple_scancode_vk(mapped) {
+                if shift {
                     inputs.push(create_vk_input(VK_SHIFT, false));
                 }
                 inputs.push(create_vk_input(vk, false));
                 inputs.push(create_vk_input(vk, true));
-                if shift_state & 1 != 0 {
+                if shift {
                     inputs.push(create_vk_input(VK_SHIFT, true));
                 }
                 continue;
@@ -625,6 +657,17 @@ fn send_safe_batch(backspaces: usize, text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_us_altgr_scancode_mappings_fall_back_to_unicode() {
+        assert_eq!(simple_scancode_vk(0x0041), Some((0x41, false)));
+        assert_eq!(simple_scancode_vk(0x0141), Some((0x41, true)));
+        assert_eq!(simple_scancode_vk(0), None);
+        assert_eq!(simple_scancode_vk(-1), None);
+        for mapping in [0x0241, 0x0441, 0x0641, 0x0741, 0x0841] {
+            assert_eq!(simple_scancode_vk(mapping), None);
+        }
+    }
 
     #[test]
     fn partial_unicode_prefix_releases_only_unmatched_key() {
