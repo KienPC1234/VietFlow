@@ -34,6 +34,9 @@ const MAX_PENDING_JOB_AGE: Duration = Duration::from_millis(750);
 const MAX_WORKER_READY_WAIT: Duration = Duration::from_millis(5);
 const ATOMIC_BACKSPACE_LIMIT: usize = 16;
 const ATOMIC_CHAR_LIMIT: usize = 32;
+/// Maximum UTF-8 bytes in a 32-scalar atomic macro replacement.
+/// Use this BEFORE copying cached clipboard macros inside a keyboard hook.
+pub const MAX_ATOMIC_WORD_BREAK_UTF8_BYTES: usize = ATOMIC_CHAR_LIMIT * 4;
 const MAX_ATOMIC_INPUTS: usize = (ATOMIC_BACKSPACE_LIMIT + 2) * 2 + (ATOMIC_CHAR_LIMIT + 4) * 4;
 
 #[inline]

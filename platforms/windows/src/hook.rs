@@ -1095,10 +1095,20 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     if !state.effective_enabled() {
         if is_key_down {
             if vk == VK_BACK {
-                state.english_word_buffer.pop();
-                if state.english_word_buffer.is_empty() {
-                    state.english_word_valid = true;
-                }
+                // Ctrl+Backspace deletes a whole word in many editors; popping
+                // just one buffered character would leave stale macro and
+                // AutoSwitch context that no longer matches the target text.
+                reconcile_english_backspace(
+                    &mut state.english_word_buffer,
+                    &mut state.english_word_valid,
+                    macro_only_route(
+                        vk,
+                        state.ctrl_pressed,
+                        state.alt_pressed,
+                        state.win_pressed,
+                        state.shift_pressed,
+                    ),
+                );
                 if state.macro_only() {
                     return handle_macro_only(state, vk, n_code, w_param, l_param);
                 }
@@ -1394,6 +1404,55 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     CallNextHookEx(null_mut(), n_code, w_param, l_param)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MacroOnlyRoute {
+    NativeShortcut,
+    Backspace,
+    BreakKey,
+    Navigation,
+    Escape,
+    Printable,
+}
+
+/// Handle OS/editor shortcuts before macro expansion or even one-character
+/// backspace bookkeeping. Shift+Enter/Tab/Arrow are editing/selection commands,
+/// not macro delimiters. Plain Shift+letters/punctuation remain printable.
+fn macro_only_route(vk: u16, ctrl: bool, alt: bool, win: bool, shift: bool) -> MacroOnlyRoute {
+    if ctrl
+        || alt
+        || win
+        || (shift && matches!(vk, VK_RETURN | VK_TAB | VK_BACK | 0x25..=0x28))
+    {
+        MacroOnlyRoute::NativeShortcut
+    } else {
+        match vk {
+            VK_BACK => MacroOnlyRoute::Backspace,
+            VK_RETURN | VK_TAB => MacroOnlyRoute::BreakKey,
+            0x25..=0x28 => MacroOnlyRoute::Navigation,
+            VK_ESCAPE => MacroOnlyRoute::Escape,
+            _ => MacroOnlyRoute::Printable,
+        }
+    }
+}
+
+/// Keep the English AutoSwitch buffer consistent with what an editor deletes.
+/// Ctrl+Backspace is word deletion, not a one-character backspace.
+fn reconcile_english_backspace(
+    buffer: &mut String,
+    valid: &mut bool,
+    key_route: MacroOnlyRoute,
+) {
+    if key_route == MacroOnlyRoute::NativeShortcut {
+        buffer.clear();
+        *valid = false;
+    } else {
+        buffer.pop();
+        if buffer.is_empty() {
+            *valid = true;
+        }
+    }
+}
+
 /// Macro-only path used when Vietnamese typing is disabled but the user asked
 /// for macros to keep working (English mode or an excluded app). Printable
 /// keys are allowed to reach the target app; only the trigger is remembered and
@@ -1407,37 +1466,37 @@ unsafe fn handle_macro_only(
 ) -> LRESULT {
     let pass = || CallNextHookEx(null_mut(), n_code, w_param, l_param);
 
-    if vk == VK_BACK {
-        state.macro_buffer.pop();
-        return pass();
-    }
-
-    if matches!(vk, VK_RETURN | VK_TAB) {
-        // Macro text and Enter/Tab are an indivisible keyboard transaction.
-        // Never queue a delayed rewrite then let the original break through.
-        if expand_macro_only(state, None, Some(vk)) {
-            return 1;
+    let route = macro_only_route(
+        vk,
+        state.ctrl_pressed || is_vk_down(VK_CONTROL),
+        state.alt_pressed || is_vk_down(VK_MENU),
+        state.win_pressed || is_vk_down(VK_LWIN) || is_vk_down(VK_RWIN),
+        state.shift_pressed,
+    );
+    match route {
+        MacroOnlyRoute::NativeShortcut | MacroOnlyRoute::Escape => {
+            // A shortcut may delete/select an entire word, switch tabs or
+            // move the caret: discard all assumptions about the typed trigger.
+            state.macro_buffer.clear();
+            return pass();
         }
-        return pass();
-    }
-    if matches!(vk, 0x25..=0x28) {
-        // Arrow navigation keeps its original OS semantics. A bounded
-        // synchronous rewrite may complete before navigation; otherwise
-        // preserve the unmodified typed trigger and the physical arrow.
-        let _ = expand_macro_only(state, None, None);
-        return pass();
-    }
-    if vk == VK_ESCAPE {
-        state.macro_buffer.clear();
-        return pass();
-    }
-
-    let ctrl = state.ctrl_pressed || is_vk_down(VK_CONTROL);
-    let alt = state.alt_pressed || is_vk_down(VK_MENU);
-    let win = state.win_pressed || is_vk_down(VK_LWIN) || is_vk_down(VK_RWIN);
-    if ctrl || alt || win {
-        state.macro_buffer.clear();
-        return pass();
+        MacroOnlyRoute::Backspace => {
+            state.macro_buffer.pop();
+            return pass();
+        }
+        MacroOnlyRoute::BreakKey => {
+            // Macro text and Enter/Tab are an indivisible transaction.
+            if expand_macro_only(state, None, Some(vk)) {
+                return 1;
+            }
+            return pass();
+        }
+        MacroOnlyRoute::Navigation => {
+            // Unmodified arrow navigation keeps its native semantics.
+            let _ = expand_macro_only(state, None, None);
+            return pass();
+        }
+        MacroOnlyRoute::Printable => {}
     }
 
     let c = vk_to_char_with_layout(vk, state.shift_pressed);
@@ -1486,9 +1545,18 @@ fn expand_macro_only(
     let trigger = state.macro_buffer.to_lowercase();
     let result = if let Some(replacement) = state.engine.macros.get(&trigger) {
         let backspaces = state.macro_buffer.chars().count();
-        let expanded = crate::clipboard::expand_clipboard(&replacement);
-        let output = macro_output_with_delimiter(expanded.into_owned(), delimiter);
-        crate::inject::send_atomic_word_break(backspaces, &output, break_vk, state.injection_mode)
+        // The cached clipboard may contain megabytes of text. Preflight the
+        // 32-scalar atomic budget without cloning it or waiting for the cache
+        // mutex; rejected macros must keep the native trigger/break intact.
+        if let Some(expanded) = crate::clipboard::expand_clipboard_bounded(
+            &replacement,
+            crate::inject::MAX_ATOMIC_WORD_BREAK_UTF8_BYTES,
+        ) {
+            let output = macro_output_with_delimiter(expanded.into_owned(), delimiter);
+            crate::inject::send_atomic_word_break(backspaces, &output, break_vk, state.injection_mode)
+        } else {
+            false
+        }
     } else {
         false
     };
@@ -2016,6 +2084,81 @@ mod tests {
         let (bk_bs, out_bs) = engine.process_key_with_time('\x08', 0);
         assert_eq!(bk_bs, 0);
         assert_eq!(out_bs.as_str(), "");
+    }
+
+    #[test]
+    fn ctrl_backspace_clears_english_lookback_instead_of_popping_one_char() {
+        let mut buffer = String::from("abc");
+        let mut valid = true;
+        reconcile_english_backspace(
+            &mut buffer,
+            &mut valid,
+            macro_only_route(VK_BACK, true, false, false, false),
+        );
+        assert!(buffer.is_empty());
+        assert!(!valid, "editor word deletion invalidates AutoSwitch guess");
+
+        buffer.push_str("def");
+        reconcile_english_backspace(
+            &mut buffer,
+            &mut valid,
+            macro_only_route(VK_BACK, false, false, false, false),
+        );
+        assert_eq!(buffer, "de");
+        assert!(!valid);
+        buffer.clear();
+        buffer.push('a');
+        reconcile_english_backspace(&mut buffer, &mut valid, MacroOnlyRoute::Backspace);
+        assert_eq!(buffer, "");
+        assert!(valid, "ordinary one-letter Backspace resets word boundary");
+    }
+
+    #[test]
+    fn macro_only_shortcuts_never_trigger_expansion_or_backspace_pop() {
+        for vk in [VK_RETURN, VK_TAB, VK_BACK, 0x25, 0x26, 0x27, 0x28, b'A' as u16] {
+            for (ctrl, alt, win) in [(true, false, false), (false, true, false), (false, false, true)] {
+                assert_eq!(
+                    macro_only_route(vk, ctrl, alt, win, false),
+                    MacroOnlyRoute::NativeShortcut,
+                    "modified VK {vk} must retain editor/Windows shortcut semantics"
+                );
+            }
+        }
+        for vk in [VK_RETURN, VK_TAB, VK_BACK, 0x25, 0x28] {
+            assert_eq!(
+                macro_only_route(vk, false, false, false, true),
+                MacroOnlyRoute::NativeShortcut,
+                "Shift navigation/line-break must remain native"
+            );
+        }
+        assert_eq!(
+            macro_only_route(VK_BACK, false, false, false, false),
+            MacroOnlyRoute::Backspace
+        );
+        assert_eq!(
+            macro_only_route(VK_RETURN, false, false, false, false),
+            MacroOnlyRoute::BreakKey
+        );
+        assert_eq!(
+            macro_only_route(VK_TAB, false, false, false, false),
+            MacroOnlyRoute::BreakKey
+        );
+        assert_eq!(
+            macro_only_route(0x25, false, false, false, false),
+            MacroOnlyRoute::Navigation
+        );
+        assert_eq!(
+            macro_only_route(VK_ESCAPE, false, false, false, false),
+            MacroOnlyRoute::Escape
+        );
+        assert_eq!(
+            macro_only_route(b'A' as u16, false, false, false, true),
+            MacroOnlyRoute::Printable
+        );
+        assert_eq!(
+            macro_only_route(VK_OEM_PERIOD, false, false, false, true),
+            MacroOnlyRoute::Printable
+        );
     }
 
     #[test]
