@@ -942,6 +942,163 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs the independently compiled C++ GUI config QA executable"]
+    fn cross_language_rust_daemon_and_cpp_gui_config_writers() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        const NAME_ENV: &str = "VIETFLOW_F08_CROSS_LANG_PATH";
+        const TEST_NAME: &str =
+            "config::tests::cross_language_rust_daemon_and_cpp_gui_config_writers";
+        const WRITES: usize = 60;
+
+        // The Rust writer is this same test binary in a separate OS process.
+        // It never loads the installed application's real config path.
+        if let Some(raw_path) = std::env::var_os(NAME_ENV) {
+            let path = PathBuf::from(raw_path);
+            for _ in 0..WRITES {
+                let mut config = AppConfig {
+                    method: 5,
+                    enabled: false,
+                    ..Default::default()
+                };
+                config
+                    .macros
+                    .insert("writer-marker".into(), "rust-five".into());
+                let json = serde_json::to_string(&config).unwrap();
+                assert!(
+                    AppConfig::save_atomic(&path, &json),
+                    "Rust writer could not atomically publish settings"
+                );
+            }
+            fs::write(path.with_extension("rust.done"), WRITES.to_string()).unwrap();
+            return;
+        }
+
+        let cpp_exe = std::env::var_os("VIETFLOW_CPP_CONFIG_QA_EXE")
+            .expect("Set VIETFLOW_CPP_CONFIG_QA_EXE to the built GUI QA executable");
+        assert!(
+            Path::new(&cpp_exe).is_file(),
+            "C++ GUI QA executable missing"
+        );
+
+        let dir = std::env::temp_dir().join(format!(
+            "vietflow-f08-cross-lang-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        struct RemoveTestDir(PathBuf);
+        impl Drop for RemoveTestDir {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = RemoveTestDir(dir.clone());
+        let file = dir.join("settings.json");
+
+        let mut initial = AppConfig {
+            method: 5,
+            enabled: false,
+            ..Default::default()
+        };
+        initial
+            .macros
+            .insert("writer-marker".into(), "rust-five".into());
+        assert!(AppConfig::save_atomic(
+            &file,
+            &serde_json::to_string(&initial).unwrap()
+        ));
+
+        let rust_exe = std::env::current_exe().unwrap();
+        let mut children = [
+            Command::new(&rust_exe)
+                .args(["--exact", TEST_NAME, "--ignored", "--nocapture"])
+                .env(NAME_ENV, &file)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn independent Rust daemon writer"),
+            Command::new(&cpp_exe)
+                .arg("--stress-writer")
+                .arg(&file)
+                .arg("1")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn independent C++ GUI writer"),
+        ];
+
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut finished = [false; 2];
+        let mut failure = String::new();
+        while !finished.iter().all(|&done| done) {
+            for (index, child) in children.iter_mut().enumerate() {
+                if finished[index] {
+                    continue;
+                }
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        finished[index] = true;
+                        if !status.success() {
+                            failure = format!("config writer {index} exited with {status}");
+                            break;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        failure = format!("cannot poll config writer {index}: {error}");
+                        break;
+                    }
+                }
+            }
+            if !failure.is_empty() {
+                break;
+            }
+            if Instant::now() > deadline {
+                failure = "mixed GUI/Rust config writers timed out".into();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        for (index, child) in children.iter_mut().enumerate() {
+            if !finished[index] {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        assert!(failure.is_empty(), "{failure}");
+        assert_eq!(
+            fs::read_to_string(file.with_extension("rust.done"))
+                .expect("separate Rust test process must run all writes"),
+            WRITES.to_string(),
+            "Rust child did not actually execute the expected write loop"
+        );
+
+        let coherent = |path: &Path| {
+            let cfg = read_config_file(path).expect("fully parse cross-language output");
+            let marker = cfg.macros.get("writer-marker").map(String::as_str);
+            (cfg.method == 5 && !cfg.enabled && marker == Some("rust-five"))
+                || (cfg.method == 1 && cfg.enabled && marker == Some("writer-one"))
+        };
+        assert!(coherent(&file), "mixed-writer primary contains torn fields");
+        assert!(
+            coherent(&backup_path(&file)),
+            "mixed-writer backup contains torn fields"
+        );
+        for entry in fs::read_dir(&dir).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            assert!(
+                !name.contains(".tmp."),
+                "mixed-writer config staging file was abandoned: {name}"
+            );
+        }
+    }
+
+    #[test]
     fn atomic_save_and_backup_creation() {
         let temp_dir =
             std::env::temp_dir().join(format!("vietflow_cfg_test_{}", std::process::id()));

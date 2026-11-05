@@ -65,6 +65,19 @@ jobs:
           RUSTFLAGS: -C target-feature=+crt-static
         run: cargo test --workspace --locked
 
+      - name: Verify Rust daemon and C++ GUI config writers across processes
+        shell: pwsh
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:VIETFLOW_CPP_CONFIG_QA_EXE = Join-Path $env:GITHUB_WORKSPACE 'ui_imgui/build/Release/vietflow_config_persistence_test.exe'
+          if (-not (Test-Path -LiteralPath $env:VIETFLOW_CPP_CONFIG_QA_EXE)) {
+            throw 'Missing independent C++ GUI config QA executable'
+          }
+          cargo test -p vietflow-windows --locked cross_language_rust_daemon_and_cpp_gui_config_writers -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Rust/C++ config writer regression failed' }
+
       - name: Verify isolated TSF layout and cross-process IPC consistency
         shell: pwsh
         run: |
