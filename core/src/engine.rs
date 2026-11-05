@@ -1249,17 +1249,24 @@ impl VietFlowEngine {
 
                 if should_switch || is_english_keyword {
                     let is_already_raw = display_word == raw_word;
-                    let (backspaces, out) = if is_already_raw {
-                        (0, KeyText::from_char(c))
-                    } else {
-                        let mut o = KeyText::from_str(&raw_word);
-                        o.push_char(c);
-                        (self.display_len, o)
-                    };
+                    if is_already_raw {
+                        // Bilingual smoothness: the English word needed no visible
+                        // correction (e.g. "open", "report", "hello"), so keep VN
+                        // mode instead of ping-ponging V->E on every code-switched
+                        // word. Only request a mode switch when we actually had to
+                        // restore mangled text (display != raw).
+                        self.auto_switch_requested = None;
+                        self.lookback.push_word(&raw_word, &raw_word, true);
+                        self.reset_word();
+                        return (0, KeyText::from_char(c));
+                    }
+                    let bk = self.display_len;
+                    let mut o = KeyText::from_str(&raw_word);
+                    o.push_char(c);
                     self.auto_switch_requested = Some(false);
                     self.lookback.push_word(&raw_word, &raw_word, true);
                     self.reset_word();
-                    return (backspaces, out);
+                    return (bk, o);
                 }
             }
 

@@ -298,8 +298,8 @@ fn test_plain_english_word_switch_without_jitter() {
         CharsetId::Unicode,
     );
 
-    // Typing plain English word "open" in Vietnamese mode:
-    // Each key emits natively. At space:
+    // Bilingual smoothness: plain English word "open" needs no VN correction
+    // (display == raw), so it must stay in VN mode instead of ping-ponging V->E.
     for c in "open".chars() {
         let (bk, _) = engine.process_key(c);
         assert_eq!(bk, 0);
@@ -310,7 +310,22 @@ fn test_plain_english_word_switch_without_jitter() {
     let (bk, text) = engine.process_key(' ');
     assert_eq!(bk, 0, "Plain English word must not backspace and retype");
     assert_eq!(text.as_str(), " ");
-    assert_eq!(engine.take_auto_switch_request(), Some(false), "Must switch to English");
+    assert_eq!(
+        engine.take_auto_switch_request(),
+        None,
+        "Plain passthrough must stay in VN mode for song-ngu bilingual typing"
+    );
+
+    // Mangled English word "was" (typed as "ứa" on screen) must still restore
+    // and switch to English, since a visible correction happened.
+    engine.reset();
+    let out = process_string(&mut engine, "was ");
+    assert_eq!(out, "was ");
+    assert_eq!(
+        engine.take_auto_switch_request(),
+        Some(false),
+        "Mangled English word must restore and switch to English"
+    );
 }
 
 #[test]
@@ -332,10 +347,18 @@ fn test_custom_english_keywords_autoswitch() {
     let check_props = engine.check_english_word_at_break("props", ' ');
     assert!(check_props.is_none(), "Custom keyword props must stay in English mode");
 
-    // In Vietnamese mode, typing custom keyword "redux" should restore to raw English and switch to English mode
+    // In Vietnamese mode, plain custom keyword "redux" (display == raw) stays
+    // in VN mode for smooth bilingual typing.
     engine.reset();
     let out = process_string(&mut engine, "redux ");
     assert_eq!(out, "redux ");
+    assert_eq!(engine.take_auto_switch_request(), None);
+
+    // Mangled custom keyword "props" (typed as "próp" on screen) must restore
+    // and switch to English.
+    engine.reset();
+    let out_props = process_string(&mut engine, "props ");
+    assert_eq!(out_props, "props ");
     assert_eq!(engine.take_auto_switch_request(), Some(false));
 }
 
