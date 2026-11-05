@@ -36,8 +36,12 @@ jobs:
       - name: Build ImGui UI (x64)
         shell: pwsh
         run: |
-          cmake -B ui_imgui/build -S ui_imgui -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=ON
+          cmake -B ui_imgui/build -S ui_imgui -DCMAKE_BUILD_TYPE=Release -DVIETFLOW_STATIC_CRT=ON -DVIETFLOW_BUILD_CONFIG_TESTS=ON
+          if ($LASTEXITCODE -ne 0) { throw 'ImGui config QA configure failed' }
           cmake --build ui_imgui/build --config Release
+          if ($LASTEXITCODE -ne 0) { throw 'ImGui build failed' }
+          ctest --test-dir ui_imgui/build -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'C++ GUI config persistence/recovery regression failed' }
 
       - name: Verify offline release preflight and tampering rejection
         shell: pwsh

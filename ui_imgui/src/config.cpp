@@ -156,16 +156,22 @@ std::string Config::GetDefaultConfigPath() {
     return CONFIG_FILE_NAME;
 }
 
-bool Config::Load(const std::string& custom_path) {
-    std::string path = custom_path.empty() ? GetDefaultConfigPath() : custom_path;
-    json j;
+bool Config::Load(const std::string& custom_path, bool use_backup) {
+    const std::string path = custom_path.empty() ? GetDefaultConfigPath() : custom_path;
     const std::filesystem::path primary(path);
-    if (!ReadConfigJson(primary, j)) {
-        auto backup = primary;
-        backup += L".bak";
-        if (!ReadConfigJson(backup, j)) return false;
-    }
-    try {
+    auto backup = primary;
+    backup += L".bak";
+    const Config previous = *this;
+
+    // A syntactically valid JSON object may still contain invalid types.
+    // Try the complete conversion before accepting it; on any failure
+    // restore the original in-memory config and try the last good backup.
+    // This also prevents partially changed macros/options escaping from
+    // an unsuccessful Load call.
+    auto try_load = [&](const std::filesystem::path& candidate) -> bool {
+        json j;
+        if (!ReadConfigJson(candidate, j)) return false;
+        try {
         enabled = j.value("enabled", enabled);
         method = j.value("method", method);
         charset = j.value("charset", charset);
@@ -289,9 +295,12 @@ bool Config::Load(const std::string& custom_path) {
         }
 
         return true;
-    } catch (...) {
-        return false;
-    }
+        } catch (...) {
+            *this = previous;
+            return false;
+        }
+    };
+    return try_load(primary) || (use_backup && try_load(backup));
 }
 
 bool Config::Save(const std::string& custom_path) const {
@@ -413,8 +422,9 @@ bool Config::Save(const std::string& custom_path) const {
             return false;
         }
 
-        json previous;
-        if (ReadConfigJson(target, previous)) {
+        // A parseable object with wrong typed fields is NOT a valid backup.
+        Config previous;
+        if (previous.Load(path, false)) {
             // Backup only a valid previous config; never poison the last good copy.
             if (!CopyFileW(target.c_str(), backupTemp.c_str(), FALSE) ||
                 !FlushFileToDisk(backupTemp) ||

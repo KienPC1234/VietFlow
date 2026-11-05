@@ -99,7 +99,9 @@ struct Config {
     CustomKeymap custom_keymap;
 
     static std::string GetDefaultConfigPath();
-    bool Load(const std::string& path = "");
+    // Optional primary-only validation avoids promoting semantically corrupt
+    // JSON to the last-known-good backup during Save().
+    bool Load(const std::string& path = "", bool use_backup = true);
     bool Save(const std::string& path = "") const;
 };
 
