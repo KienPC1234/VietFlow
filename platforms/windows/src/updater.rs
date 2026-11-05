@@ -295,14 +295,21 @@ fn fetch_url(url: &str) -> Result<String, FetchError> {
 }
 
 pub fn is_trusted_download_url(url: &str) -> bool {
-    let lower = url.to_ascii_lowercase();
-    if !lower.starts_with("https://") {
+    // Only the exact release-asset path authorized by the official API can
+    // enter the download routine. WinINet follows GitHub's signed CDN
+    // redirects internally; arbitrary CDN URLs must not be initial inputs.
+    let Some(path) = url.strip_prefix("https://github.com/KienPC1234/VietFlow/releases/download/")
+    else {
         return false;
-    }
-    lower.starts_with("https://github.com/kienpc1234/vietflow/")
-        || lower.starts_with("https://objects.githubusercontent.com/")
-        || lower.starts_with("https://github-releases.githubusercontent.com/")
-        || lower.starts_with("https://raw.githubusercontent.com/kienpc1234/vietflow/")
+    };
+    let Some((tag, filename)) = path.split_once('/') else {
+        return false;
+    };
+    safe_release_tag(tag)
+        && matches!(
+            filename,
+            "VietFlow-win-x64.msi" | "VietFlow-win-x86.msi" | "VietFlow-win-arm64.msi"
+        )
 }
 
 /// Download a file (e.g. MSI installer) directly to disk using streaming buffer.
@@ -468,6 +475,26 @@ pub fn is_installed_via_msi() -> bool {
     dir.join(".installed").is_file() || dir.join("msi.tag").is_file()
 }
 
+/// Keep all release-page navigations inside the official VietFlow repository.
+/// Release metadata is for display, never an authority to redirect users.
+fn safe_release_tag(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag.len() <= 128
+        && !tag.contains("..")
+        && tag
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+fn is_official_release_page(url: &str) -> bool {
+    if url == RELEASES_URL {
+        return true;
+    }
+    url.strip_prefix(RELEASES_URL)
+        .and_then(|suffix| suffix.strip_prefix("/tag/"))
+        .is_some_and(safe_release_tag)
+}
+
 pub(crate) fn parse_manifest_for_arch(
     body: &str,
     is_msi: bool,
@@ -475,7 +502,7 @@ pub(crate) fn parse_manifest_for_arch(
 ) -> Option<ReleaseInfo> {
     let json: serde_json::Value = serde_json::from_str(body).ok()?;
     let version = normalize_version(json.get("version")?.as_str()?);
-    if version.is_empty() {
+    if version_key(&version).is_none() || !safe_release_tag(&format!("v{version}")) {
         return None;
     }
     let notes = json
@@ -486,7 +513,7 @@ pub(crate) fn parse_manifest_for_arch(
     let url = json
         .get("url")
         .and_then(|value| value.as_str())
-        .filter(|value| !value.is_empty())
+        .filter(|value| is_official_release_page(value))
         .unwrap_or(RELEASES_URL)
         .to_string();
 
@@ -549,13 +576,7 @@ fn parse_api_release_for_arch(body: &str, is_msi: bool, arch: &str) -> Option<Re
     let json: serde_json::Value = serde_json::from_str(body).ok()?;
     let tag = json.get("tag_name")?.as_str()?;
     let version = normalize_version(tag);
-    if version_key(&version).is_none()
-        || tag.is_empty()
-        || !tag
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
-        || tag.contains("..")
-    {
+    if version_key(&version).is_none() || !safe_release_tag(tag) {
         return None;
     }
     let notes = json
@@ -640,7 +661,7 @@ fn fetch_release_info() -> Result<ReleaseInfo, FetchError> {
     match fetch_url(VERSION_ASSET_URL) {
         Ok(body) => {
             let version = normalize_version(&body);
-            if !version.is_empty() && version.lines().count() <= 1 {
+            if version_key(&version).is_some() && safe_release_tag(&format!("v{version}")) {
                 return Ok(ReleaseInfo {
                     version: version.clone(),
                     notes: String::new(),
@@ -1017,7 +1038,7 @@ mod tests {
         .expect("manifest should parse");
         assert_eq!(info.version, "0.2.0");
         assert_eq!(info.notes, "hello");
-        assert_eq!(info.url, "https://example.test");
+        assert_eq!(info.url, RELEASES_URL);
         assert_eq!(info.download, None);
         assert!(parse_manifest("{}").is_none());
         assert!(parse_manifest("not json").is_none());
@@ -1042,7 +1063,7 @@ mod tests {
         // Portable mode: download is None (directs user to url)
         let portable_x64 = parse_manifest_for_arch(manifest_json, false, "x64").unwrap();
         assert_eq!(portable_x64.download, None);
-        assert_eq!(portable_x64.url, "https://example.test/release");
+        assert_eq!(portable_x64.url, RELEASES_URL);
 
         let portable_x86 = parse_manifest_for_arch(manifest_json, false, "x86").unwrap();
         assert_eq!(portable_x86.download, None);
@@ -1084,7 +1105,50 @@ mod tests {
 
         let info = parse_manifest_for_arch(manifest_no_msi, true, "x64").unwrap();
         assert_eq!(info.download, None);
-        assert_eq!(info.url, "https://example.test/release");
+        assert_eq!(info.url, RELEASES_URL);
+    }
+
+    #[test]
+    fn untrusted_release_manifest_cannot_redirect_portable_users() {
+        let official = format!("{RELEASES_URL}/tag/v0.2.0");
+        assert!(is_official_release_page(RELEASES_URL));
+        assert!(is_official_release_page(&official));
+
+        for untrusted in [
+            "https://evil.example/installer",
+            "http://github.com/KienPC1234/VietFlow/releases",
+            "https://github.com/KienPC1234/VietFlow/releases/tag/v0.2.0/../../other",
+            "https://github.com/KienPC1234/VietFlow/releases/tag/v0.2.0?next=evil",
+            "https://github.com/KienPC1234/VietFlow/releases/tag/v0.2.0%2fother",
+            "https://github.com/KienPC1234/VietFlow/releases/tag/..",
+            "https://github.com/KienPC1234/VietFlow.evil/releases",
+        ] {
+            assert!(
+                !is_official_release_page(untrusted),
+                "accepted: {untrusted}"
+            );
+            let manifest = serde_json::json!({
+                "version": "0.2.0", "url": untrusted, "notes": "notes"
+            });
+            let release = parse_manifest_for_arch(&manifest.to_string(), false, "x64").unwrap();
+            assert_eq!(release.url, RELEASES_URL);
+            assert!(release.download.is_none());
+        }
+
+        let official_manifest = serde_json::json!({
+            "version": "0.2.0", "url": official,
+        });
+        assert_eq!(
+            parse_manifest_for_arch(&official_manifest.to_string(), false, "x64")
+                .unwrap()
+                .url,
+            official
+        );
+
+        for version in ["", "bad", "1.2.3/other", "1.2.3?redirect=evil"] {
+            let invalid = serde_json::json!({"version":version});
+            assert!(parse_manifest_for_arch(&invalid.to_string(), false, "x64").is_none());
+        }
     }
 
     #[test]
@@ -1265,10 +1329,26 @@ mod tests {
         assert!(is_trusted_download_url(
             "https://github.com/KienPC1234/VietFlow/releases/download/v0.1.4/VietFlow-win-x64.msi"
         ));
-        assert!(is_trusted_download_url("https://objects.githubusercontent.com/github-production-release-asset-2e65be/12345/VietFlow.msi"));
-        assert!(is_trusted_download_url(
-            "https://github-releases.githubusercontent.com/12345/VietFlow.msi"
-        ));
+        for arch in ["x86", "arm64"] {
+            assert!(is_trusted_download_url(&format!(
+                "https://github.com/KienPC1234/VietFlow/releases/download/v0.2.0/VietFlow-win-{arch}.msi"
+            )));
+        }
+        // A redirect target is never an authorized initial installer URL.
+        // GitHub's CDN hops are followed by WinINet only after an official URL
+        // was selected; byte length and official API SHA-256 still gate launch.
+        for rejected in [
+            "https://objects.githubusercontent.com/github-production-release-asset-2e65be/12345/VietFlow.msi",
+            "https://github-releases.githubusercontent.com/12345/VietFlow.msi",
+            "https://github.com/KienPC1234/VietFlow/README.md",
+            "https://github.com/KienPC1234/VietFlow/releases/download/v0.2.0/other.msi",
+            "https://github.com/KienPC1234/VietFlow/releases/download/../VietFlow-win-x64.msi",
+            "https://github.com/KienPC1234/VietFlow/releases/download/v0.2.0/VietFlow-win-x64.msi?mirror=evil",
+            "https://github.com/KienPC1234/VietFlow/releases/download/v0.2.0/extra/VietFlow-win-x64.msi",
+            "https://github.com/KienPC1234/VietFlow/releases/download/v0.2.0%2fother/VietFlow-win-x64.msi",
+        ] {
+            assert!(!is_trusted_download_url(rejected), "accepted: {rejected}");
+        }
 
         // Reject non-https, untrusted hosts, or fake domains
         assert!(!is_trusted_download_url(
