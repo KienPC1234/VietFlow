@@ -1446,6 +1446,44 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires an external, authenticode-signed, read-only Windows fixture"]
+    fn valid_windows_signature_passes_winverifytrust_when_fixture_is_supplied() {
+        use std::io::{Read, Seek, SeekFrom, Write};
+
+        let path = std::env::var_os("VIETFLOW_SIGNED_TEST_FILE")
+            .expect("set VIETFLOW_SIGNED_TEST_FILE to a trusted signed binary");
+        let path = std::path::Path::new(&path);
+        assert!(path.is_file(), "signed test fixture is unavailable");
+        verify_msi_authenticode(path)
+            .unwrap_or_else(|error| panic!("Windows rejected trusted fixture: {}", error.message));
+
+        // A byte changed in the signed image must not remain trusted.
+        // Never modify the source fixture: test only an isolated temp copy.
+        assert!(std::fs::metadata(path).unwrap().len() > 8193);
+        let tampered = std::env::temp_dir().join(format!(
+            "VietFlow-signature-tamper-{}-{}.exe",
+            std::process::id(),
+            crate::hook::get_tick_count_64()
+        ));
+        std::fs::copy(path, &tampered).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&tampered)
+            .unwrap();
+        file.seek(SeekFrom::Start(8192)).unwrap();
+        let mut byte = [0u8; 1];
+        file.read_exact(&mut byte).unwrap();
+        file.seek(SeekFrom::Start(8192)).unwrap();
+        file.write_all(&[byte[0] ^ 1]).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        let invalid = verify_msi_authenticode(&tampered).is_err();
+        std::fs::remove_file(tampered).unwrap();
+        assert!(invalid, "tampered signed binary must fail WinVerifyTrust");
+    }
+
+    #[test]
     fn formats_notes() {
         let formatted = format_notes("### Added\n- One\n\n- Two");
         assert_eq!(formatted, "Added\n• One\n• Two");

@@ -25,6 +25,17 @@ desktop text control or installed MSI works.
 | Q01 Release | Official publisher routes to one verified gate; default is offline. Preflight verifies PE/ZIP architecture, genuine read-only Windows Installer MSI database identity, 12 payload hashes, updater URLs, SHA256SUMS and 6 metadata assets. A shared Windows Installer COM verifier now reads actual MSI ProductVersion, ProductCode, UpgradeCode, architecture, scope and language in both manifest generation and publishing; minimal synthetic MSI databases and 20 positive/negative offline scenarios run in CI. Canonical-dist packaging regression prevents stale MSI/ZIP inputs. Explicit publish still requires clean source, matching origin/main and tag, plus remote asset digests; signing/MSI VM/public release remain NO-GO pending independent approval |
 | Q02 Independent E2E | Matrix below must be run by QA and recorded for target release |
 
+### F06 Authenticode positive and tamper QA
+
+The source includes an ignored, explicitly opt-in Windows test
+`valid_windows_signature_passes_winverifytrust_when_fixture_is_supplied`.
+Set `VIETFLOW_SIGNED_TEST_FILE` to a trusted, signed Windows binary and run
+the filtered Rust test with `--ignored`. It checks that WinVerifyTrust accepts
+the unchanged fixture and rejects a separate temporary copy with one signed
+image byte modified. On the staging Windows host, the read-only Google-signed
+Chrome executable was used and both checks passed. This **does not** establish
+that a real VietFlow MSI is signed by the intended publisher or installs safely.
+
 ## Offline publisher gate (Q01)
 
 The safe entry point is scripts/publish-release.ps1 without -Publish. It
