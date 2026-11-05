@@ -640,6 +640,129 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_ffi_all_output_paths_are_complete_or_write_nothing() {
+        // Each mutating FFI invocation uses a fresh engine because querying
+        // required size is deliberately NOT a retry of a consumed keystroke.
+        // Canary bytes protect both zero-capacity and undersized buffers.
+        fn verify_caps(
+            name: &str,
+            expected: &[u8],
+            mut invoke: impl FnMut(*mut u8, usize, *mut usize) -> bool,
+        ) {
+            assert!(std::str::from_utf8(expected).is_ok());
+            let required = expected.len();
+            for capacity in 0..=required + 2 {
+                let mut buffer = vec![0xA5u8; required + 20];
+                let mut reported = usize::MAX;
+                let accepted = invoke(buffer.as_mut_ptr(), capacity, &mut reported);
+                assert_eq!(reported, required, "{name}: required bytes at {capacity}");
+                if capacity == 0 {
+                    assert!(accepted, "{name}: zero-capacity is a query");
+                    assert!(buffer.iter().all(|&b| b == 0xA5));
+                } else if capacity < required {
+                    assert!(!accepted, "{name}: undersized buffer must fail");
+                    assert!(buffer.iter().all(|&b| b == 0xA5), "{name}: partial write");
+                } else {
+                    assert!(accepted, "{name}: sufficient buffer rejected");
+                    assert_eq!(&buffer[..required], expected);
+                    assert!(
+                        buffer[required..].iter().all(|&b| b == 0xA5),
+                        "{name}: wrote a terminator or overflowed"
+                    );
+                }
+            }
+            let mut reported = usize::MAX;
+            assert!(invoke(std::ptr::null_mut(), 0, &mut reported));
+            assert_eq!(reported, required, "{name}: null-output size query");
+        }
+
+        unsafe fn seeded(chars: &str) -> *mut c_void {
+            let raw = vf_engine_create();
+            assert!(!raw.is_null());
+            let engine = &mut *(raw as *mut VietFlowEngine);
+            for ch in chars.chars() {
+                let _ = engine.process_key(ch);
+            }
+            raw
+        }
+
+        unsafe fn with_macro() -> *mut c_void {
+            const EXPANSION: &str = "Vi\u{1EC7}t Nam \u{1F980} ";
+            let raw = seeded("");
+            let engine = &mut *(raw as *mut VietFlowEngine);
+            engine.options.enable_macro = true;
+            engine.macros.clear();
+            engine.macros.insert("vf", EXPANSION);
+            for ch in ['v', 'f'] {
+                let _ = engine.process_key(ch);
+            }
+            raw
+        }
+
+        unsafe {
+            // The Telex 's' after 'a' generates a multibyte accent rewrite.
+            let reference_engine = seeded("a");
+            let (_, key_text) = (&mut *(reference_engine as *mut VietFlowEngine)).process_key('s');
+            let key_bytes = key_text.as_bytes().to_vec();
+            vf_engine_destroy(reference_engine);
+            assert!(
+                !std::str::from_utf8(&key_bytes).unwrap().is_ascii(),
+                "test fixture must exercise multibyte UTF-8"
+            );
+            verify_caps("process_key", &key_bytes, |out, cap, len| {
+                let engine = seeded("a");
+                let mut backspaces = usize::MAX;
+                let ok = vf_engine_process_key(engine, 's' as u32, out, cap, len, &mut backspaces);
+                vf_engine_destroy(engine);
+                ok
+            });
+
+            let reference_engine = seeded("as");
+            let preedit = (&*(reference_engine as *const VietFlowEngine))
+                .current_preedit_text()
+                .into_bytes();
+            vf_engine_destroy(reference_engine);
+            verify_caps("get_preedit", &preedit, |out, cap, len| {
+                let engine = seeded("as");
+                let ok = vf_engine_get_preedit(engine, out, cap, len);
+                vf_engine_destroy(engine);
+                ok
+            });
+
+            let reference_engine = seeded("asx");
+            let (_, _) = (&mut *(reference_engine as *mut VietFlowEngine)).process_key('\x08');
+            let after_backspace = (&*(reference_engine as *const VietFlowEngine))
+                .current_preedit_text()
+                .into_bytes();
+            vf_engine_destroy(reference_engine);
+            verify_caps("process_backspace", &after_backspace, |out, cap, len| {
+                let engine = seeded("asx");
+                let ok = vf_engine_process_backspace(engine, out, cap, len);
+                vf_engine_destroy(engine);
+                ok
+            });
+
+            let reference_engine = with_macro();
+            let macro_bytes = (&mut *(reference_engine as *mut VietFlowEngine))
+                .finish_composition_on_break(' ')
+                .into_bytes();
+            vf_engine_destroy(reference_engine);
+            assert!(
+                std::str::from_utf8(&macro_bytes)
+                    .unwrap()
+                    .contains('\u{1F980}'),
+                "macro fixture must exercise supplementary-plane UTF-8"
+            );
+            verify_caps("finish_on_break", &macro_bytes, |out, cap, len| {
+                let engine = with_macro();
+                let ok = vf_engine_finish_on_break(engine, ' ' as u32, out, cap, len);
+                vf_engine_destroy(engine);
+                ok
+            });
+        }
+    }
+
+    #[test]
     fn test_keyword_list_never_returns_truncated_multibyte_text() {
         let required = unsafe { vf_english_keywords(std::ptr::null_mut(), 0) };
         assert!(required > 10);
