@@ -237,6 +237,34 @@ unsafe fn create_secure_mapping(
     Some((mapping, mapped.Value))
 }
 
+/// Atomically claim the odd seqlock epoch, even if another VietFlow daemon
+/// process has opened the same session-local mapping. A load-then-store
+/// sequence would allow both writers to publish simultaneously.
+fn try_claim_config_write(sequence: &AtomicU32) -> Option<u32> {
+    // Bounded retry: sync_tsf_config can run from the keyboard hot path.
+    // Never wait indefinitely for a stalled/untrusted second process.
+    for _ in 0..16 {
+        let old = sequence.load(Ordering::Acquire);
+        if old & 1 != 0 {
+            std::hint::spin_loop();
+            continue;
+        }
+        if sequence
+            .compare_exchange(
+                old,
+                old.wrapping_add(1),
+                Ordering::SeqCst,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            return Some(old);
+        }
+        std::hint::spin_loop();
+    }
+    None
+}
+
 impl SharedConfigWriter {
     pub fn new() -> Option<Self> {
         unsafe {
@@ -279,11 +307,12 @@ impl SharedConfigWriter {
         unsafe {
             let ptr = self.view;
             let sequence = &*std::ptr::addr_of!((*ptr).sequence).cast::<AtomicU32>();
-            let old = sequence.load(Ordering::Acquire);
-            if old & 1 != 0 {
-                return;
-            }
-            sequence.store(old.wrapping_add(1), Ordering::Release);
+            let Some(old) = try_claim_config_write(sequence) else {
+                return; // Failed to claim this update; do not tear another writer's snapshot.
+            };
+            // The odd marker must become visible before any shared field is
+            // modified, including on ARM64's weaker memory-ordering model.
+            std::sync::atomic::fence(Ordering::SeqCst);
             std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).enabled), cfg.enabled);
             std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).method), cfg.method);
             std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).charset), cfg.charset);
@@ -310,7 +339,9 @@ impl SharedConfigWriter {
             );
             std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).version), cfg.version);
             std::ptr::write_volatile(std::ptr::addr_of_mut!((*ptr).reserved), cfg.reserved);
-            sequence.store(old.wrapping_add(2), Ordering::Release);
+            // Publish all fields before making the sequence even again.
+            std::sync::atomic::fence(Ordering::SeqCst);
+            sequence.store(old.wrapping_add(2), Ordering::SeqCst);
         }
     }
 }
@@ -784,9 +815,10 @@ pub fn unregister_tsf_from_msi_final_uninstall() -> Result<(), String> {
     // The MSI-owned DLL must be beside the executing MSI-owned EXE.
     // Do NOT use the interactive tsf_dll_path() fallback search over CWD,
     // parents, debug or dist; that could unregister an unrelated dev DLL.
-    let exe = std::env::current_exe()
-        .map_err(|err| format!("Cannot locate MSI executable: {err}"))?;
-    let dll = exe.parent()
+    let exe =
+        std::env::current_exe().map_err(|err| format!("Cannot locate MSI executable: {err}"))?;
+    let dll = exe
+        .parent()
         .ok_or_else(|| "MSI executable has no parent directory".to_string())?
         .join("vietflow_tsf.dll");
     if !dll.is_file() {
@@ -888,6 +920,108 @@ mod tests {
         // The raw config value remains available to the caller for reporting;
         // normalizing a snapshot must not change the user's settings in place.
         assert_eq!(invalid.method, u32::MAX);
+    }
+
+    #[test]
+    fn seqlock_claim_rejects_busy_writer_and_handles_wraparound() {
+        let seq = AtomicU32::new(0);
+        assert_eq!(try_claim_config_write(&seq), Some(0));
+        assert_eq!(seq.load(Ordering::Acquire), 1);
+        assert_eq!(try_claim_config_write(&seq), None);
+        seq.store(2, Ordering::Release);
+        assert_eq!(try_claim_config_write(&seq), Some(2));
+        assert_eq!(seq.load(Ordering::Acquire), 3);
+
+        let wrap = AtomicU32::new(u32::MAX - 1);
+        assert_eq!(try_claim_config_write(&wrap), Some(u32::MAX - 1));
+        assert_eq!(wrap.load(Ordering::Acquire), u32::MAX);
+        wrap.store(0, Ordering::SeqCst);
+        assert_eq!(try_claim_config_write(&wrap), Some(0));
+    }
+
+    #[test]
+    fn seqlock_concurrent_writers_never_overlap() {
+        use std::sync::atomic::AtomicUsize;
+        let sequence = AtomicU32::new(0);
+        let active_writers = AtomicUsize::new(0);
+        let completed = AtomicUsize::new(0);
+        const WRITERS: usize = 8;
+        const UPDATES: usize = 300;
+        std::thread::scope(|scope| {
+            for _ in 0..WRITERS {
+                let sequence = &sequence;
+                let active_writers = &active_writers;
+                let completed = &completed;
+                scope.spawn(move || {
+                    for _ in 0..UPDATES {
+                        loop {
+                            let Some(old) = try_claim_config_write(sequence) else {
+                                std::thread::yield_now();
+                                continue;
+                            };
+                            assert_eq!(active_writers.fetch_add(1, Ordering::SeqCst), 0);
+                            std::thread::yield_now();
+                            assert_eq!(active_writers.fetch_sub(1, Ordering::SeqCst), 1);
+                            sequence.store(old.wrapping_add(2), Ordering::SeqCst);
+                            completed.fetch_add(1, Ordering::SeqCst);
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(active_writers.load(Ordering::SeqCst), 0);
+        assert_eq!(completed.load(Ordering::SeqCst), WRITERS * UPDATES);
+        assert_eq!(
+            sequence.load(Ordering::SeqCst),
+            (WRITERS * UPDATES * 2) as u32
+        );
+    }
+
+    #[test]
+    fn seqlock_claim_works_across_independent_views_of_windows_shared_mapping() {
+        // Isolated ephemeral mapping. Do not touch production TSF or COM.
+        let suffix = format!(
+            "{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let name = format!("Local\\VietFlow_Seqlock_QA_{suffix}");
+        let size = std::mem::size_of::<TsfSharedConfig>();
+        let (mapping, first) = unsafe { create_secure_mapping(&name, size as u32, false) }
+            .expect("isolated config mapping");
+        let second = unsafe { MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, size) };
+        assert!(!second.Value.is_null(), "second view of same named mapping");
+
+        unsafe {
+            std::ptr::write(first.cast::<TsfSharedConfig>(), TsfSharedConfig::default());
+            let first_cfg = first.cast::<TsfSharedConfig>();
+            let second_cfg = second.Value.cast::<TsfSharedConfig>();
+            let first_seq = &*std::ptr::addr_of!((*first_cfg).sequence).cast::<AtomicU32>();
+            let second_seq = &*std::ptr::addr_of!((*second_cfg).sequence).cast::<AtomicU32>();
+
+            assert_eq!(try_claim_config_write(first_seq), Some(0));
+            assert_eq!(second_seq.load(Ordering::SeqCst), 1);
+            assert_eq!(try_claim_config_write(second_seq), None);
+            std::ptr::write_volatile(std::ptr::addr_of_mut!((*first_cfg).method), 5);
+            std::sync::atomic::fence(Ordering::SeqCst);
+            first_seq.store(2, Ordering::SeqCst);
+            assert_eq!(
+                std::ptr::read_volatile(std::ptr::addr_of!((*second_cfg).method)),
+                5
+            );
+
+            assert_eq!(try_claim_config_write(second_seq), Some(2));
+            second_seq.store(4, Ordering::SeqCst);
+            assert_eq!(first_seq.load(Ordering::SeqCst), 4);
+
+            UnmapViewOfFile(second);
+            UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: first });
+            CloseHandle(mapping);
+        }
     }
 
     #[test]
