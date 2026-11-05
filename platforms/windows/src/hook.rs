@@ -517,6 +517,22 @@ fn repeated_hotkey_is_consumed(latch: &AtomicU8) -> bool {
     latch.load(Ordering::Acquire) == HOTKEY_CONSUMED
 }
 
+/// Record an initial physical key-down and classify subsequent auto-repeat.
+/// Never index the 256-element key table with an unchecked VK (an unusual
+/// device or malformed hook message must not panic across the system ABI).
+fn track_held_key_repeat(held_vks: &mut [bool; 256], vk: u16, physically_down: bool) -> bool {
+    let Some(held) = held_vks.get_mut(usize::from(vk)) else {
+        return false;
+    };
+    // A missed release can be recovered when Windows reports key-up state.
+    if !physically_down {
+        *held = false;
+    }
+    let repeated = *held;
+    *held = true;
+    repeated
+}
+
 
 fn engine_options_from_config(
     config: &AppConfig,
@@ -1454,16 +1470,11 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             VK_LMENU | VK_RMENU | VK_MENU |
             VK_LWIN | VK_RWIN
         );
-        if !is_mod {
-            let is_physically_down = is_vk_down(vk);
-            if !is_physically_down {
-                state.held_vks[vk as usize] = false;
-            } else if vk < 256 && state.held_vks[vk as usize] {
-                return CallNextHookEx(null_mut(), n_code, w_param, l_param);
-            }
-            if vk < 256 {
-                state.held_vks[vk as usize] = true;
-            }
+        if !is_mod
+            && vk < 256
+            && track_held_key_repeat(&mut state.held_vks, vk, is_vk_down(vk))
+        {
+            return CallNextHookEx(null_mut(), n_code, w_param, l_param);
         }
     }
 
@@ -2460,19 +2471,30 @@ mod tests {
 
     #[test]
     fn test_held_key_repeat_detection() {
-        let mut state = hook_state(false, false, true);
-        assert!(!state.held_vks[0x41]);
+        let mut held = [false; 256];
 
-        // Key down sets held_vks for 'A' and 'W' simultaneously
-        state.held_vks[0x41] = true;
-        state.held_vks[0x57] = true;
-        assert!(state.held_vks[0x41]);
-        assert!(state.held_vks[0x57]);
+        // Independent simultaneous WASD keys must not overwrite one another.
+        for vk in [0x57, 0x41, 0x53, 0x44] {
+            assert!(!track_held_key_repeat(&mut held, vk, true));
+        }
+        for vk in [0x44, 0x53, 0x41, 0x57] {
+            assert!(track_held_key_repeat(&mut held, vk, true));
+        }
 
-        // Releasing 'A' clears 'A' but retains 'W'
-        state.held_vks[0x41] = false;
-        assert!(!state.held_vks[0x41]);
-        assert!(state.held_vks[0x57]);
+        // Releasing A leaves W/S/D marked held. A new press is not a repeat.
+        held[0x41] = false;
+        assert!(!track_held_key_repeat(&mut held, 0x41, true));
+        assert!(held[0x57] && held[0x53] && held[0x44]);
+
+        // A lost physical key-up can be recovered from the actual key state.
+        assert!(!track_held_key_repeat(&mut held, 0x57, false));
+        assert!(track_held_key_repeat(&mut held, 0x57, true));
+
+        // Out-of-range virtual keys must never index or corrupt the array.
+        let previous = held;
+        assert!(!track_held_key_repeat(&mut held, 256, true));
+        assert!(!track_held_key_repeat(&mut held, u16::MAX, false));
+        assert_eq!(held, previous);
     }
 
     #[test]
