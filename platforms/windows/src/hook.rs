@@ -2,6 +2,7 @@
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::ptr::null_mut;
 use std::sync::{mpsc, Mutex, OnceLock};
 use vietflow_core::models::{CharsetId, EngineOptions, InputMethod};
@@ -468,6 +469,41 @@ impl HookState {
 
 pub static STATE: Mutex<Option<HookState>> = Mutex::new(None);
 
+// 0: idle, 1: a modifier hotkey whose physical key-up must pass, 2: a
+// consumed hotkey whose key-up must also be suppressed. Keep this independent
+// from STATE so key-up can release the latch even if the hook mutex is busy.
+const HOTKEY_IDLE: u8 = 0;
+const HOTKEY_MODIFIER: u8 = 1;
+const HOTKEY_CONSUMED: u8 = 2;
+static HOTKEY_PRESS_LATCH: [AtomicU8; 256] =
+    [const { AtomicU8::new(HOTKEY_IDLE) }; 256];
+
+/// Exactly one command per physical key press, even if Windows sends repeated
+/// WM_KEYDOWN/WM_SYSKEYDOWN. Only the key that triggers the chord is latched.
+fn claim_hotkey_press(latch: &AtomicU8, consume_native_key: bool) -> bool {
+    let state = if consume_native_key {
+        HOTKEY_CONSUMED
+    } else {
+        HOTKEY_MODIFIER
+    };
+    latch
+        .compare_exchange(HOTKEY_IDLE, state, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
+/// Release must run before trying STATE.try_lock. A consumed key's physical
+/// key-up is suppressed to avoid an orphan key-up in the target application.
+fn release_hotkey_press(latch: &AtomicU8) -> bool {
+    latch.swap(HOTKEY_IDLE, Ordering::AcqRel) == HOTKEY_CONSUMED
+}
+
+/// All other physical events are untouched; only auto-repeat of a previously
+/// consumed hotkey can be suppressed before trying the shared-state mutex.
+fn repeated_hotkey_is_consumed(latch: &AtomicU8) -> bool {
+    latch.load(Ordering::Acquire) == HOTKEY_CONSUMED
+}
+
+
 fn engine_options_from_config(
     config: &AppConfig,
     profile: Option<&AppProfile>,
@@ -743,6 +779,10 @@ pub unsafe fn apply_config(config: AppConfig) {
 }
 
 pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
+    // A reconnect/reinstall must not inherit hotkey presses from a prior hook.
+    for latch in &HOTKEY_PRESS_LATCH {
+        latch.store(HOTKEY_IDLE, Ordering::Release);
+    }
     let initial_foreground = GetForegroundWindow();
     let initial_proc = get_process_name_for_window(initial_foreground);
     let initial_excluded = is_app_excluded(
@@ -967,6 +1007,23 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
+    // Track physical hotkey key-up even if STATE.try_lock fails. Otherwise
+    // a held Ctrl+Space/Alt+Z repeats the toggle or leaks a native key-up
+    // after VietFlow swallowed the corresponding key-down.
+    let msg = w_param as u32;
+    let vk = kbd.vkCode as u16;
+    if vk < 256 {
+        let latch = &HOTKEY_PRESS_LATCH[vk as usize];
+        if matches!(msg, WM_KEYUP | WM_SYSKEYUP) && release_hotkey_press(latch) {
+            return 1;
+        }
+        if matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN)
+            && repeated_hotkey_is_consumed(latch)
+        {
+            return 1;
+        }
+    }
+
     let foreground = GetForegroundWindow();
 
     let mut lock = match STATE.try_lock() {
@@ -1028,7 +1085,13 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         if !hotkeys_locked {
             // Configurable global settings hotkey (default: Ctrl+Shift+F5).
             if check_custom_hotkey(&state.config.hotkey_settings, ctrl, alt, shift, win, vk) {
-                PostMessageW(state.tray_hwnd, WM_SETTINGS, 0, 0);
+                // Do not open multiple settings windows when the shortcut
+                // auto-repeats. Settings hotkeys consume their trigger key.
+                if vk < 256
+                    && claim_hotkey_press(&HOTKEY_PRESS_LATCH[vk as usize], true)
+                {
+                    PostMessageW(state.tray_hwnd, WM_SETTINGS, 0, 0);
+                }
                 return 1;
             }
         }
@@ -1057,6 +1120,25 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                 return CallNextHookEx(null_mut(), n_code, w_param, l_param);
             }
 
+            let is_mod = matches!(
+                vk,
+                VK_LCONTROL | VK_RCONTROL | VK_CONTROL |
+                VK_LSHIFT | VK_RSHIFT | VK_SHIFT |
+                VK_LMENU | VK_RMENU | VK_MENU |
+                VK_LWIN | VK_RWIN
+            );
+            // A held physical shortcut is one action, not a sequence of
+            // toggles. Modifier hotkeys retain the native key events; other
+            // shortcuts consume their matched down/repeat/up symmetrically.
+            if vk >= 256
+                || !claim_hotkey_press(&HOTKEY_PRESS_LATCH[vk as usize], !is_mod)
+            {
+                if is_mod {
+                    return CallNextHookEx(null_mut(), n_code, w_param, l_param);
+                }
+                return 1;
+            }
+
             if state.config.pause_auto_after_manual {
                 let now_tick = get_tick_count_64();
                 state.auto_pause_until_ms = now_tick + 5000;
@@ -1082,14 +1164,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             // Notify tray window
             PostMessageW(tray_hwnd, WM_TRAYICON, 0, if effective { 1 } else { 0 });
 
-            // If toggle key is a non-modifier key (e.g. Z, Space, F-key), consume it to prevent typing
-            let is_mod = matches!(
-                vk,
-                VK_LCONTROL | VK_RCONTROL | VK_CONTROL |
-                VK_LSHIFT | VK_RSHIFT | VK_SHIFT |
-                VK_LMENU | VK_RMENU | VK_MENU |
-                VK_LWIN | VK_RWIN
-            );
+            // Non-modifier trigger keys are consumed through their key-up.
             if !is_mod {
                 return 1;
             }
@@ -1973,6 +2048,50 @@ mod tests {
         assert!(!should_commit_auto_english_switch(None, true, true));
         // When a physical key is preserved due to SendInput failure, the
         // language must remain Vietnamese on the next keystroke.
+    }
+
+    #[test]
+    fn consumed_hotkey_only_triggers_once_per_physical_press() {
+        let latch = AtomicU8::new(HOTKEY_IDLE);
+        assert!(claim_hotkey_press(&latch, true));
+        assert!(repeated_hotkey_is_consumed(&latch));
+        for _ in 0..8 {
+            assert!(!claim_hotkey_press(&latch, true),
+                    "autorepeat may not toggle language twice");
+        }
+        assert!(release_hotkey_press(&latch),
+                "consumed key-up must not leak to text editor");
+        assert!(!repeated_hotkey_is_consumed(&latch));
+        assert!(!release_hotkey_press(&latch), "extra key-up passes natively");
+        assert!(claim_hotkey_press(&latch, true),
+                "a fresh press after key-up must toggle normally");
+    }
+
+    #[test]
+    fn modifier_hotkey_repeat_keeps_native_keyup() {
+        let latch = AtomicU8::new(HOTKEY_IDLE);
+        assert!(claim_hotkey_press(&latch, false));
+        assert!(!repeated_hotkey_is_consumed(&latch));
+        assert!(!claim_hotkey_press(&latch, false));
+        assert!(!release_hotkey_press(&latch),
+                "modifier key-up must reach Windows");
+        assert!(claim_hotkey_press(&latch, false));
+    }
+
+    #[test]
+    fn hotkey_release_without_state_lock_rearms_next_shortcut() {
+        let space = AtomicU8::new(HOTKEY_IDLE);
+        let z = AtomicU8::new(HOTKEY_IDLE);
+        assert!(claim_hotkey_press(&space, true));
+        assert!(claim_hotkey_press(&z, true));
+        // A real keyboard hook releases before locking STATE, so an E2E lock
+        // collision cannot keep the next Ctrl+Space press disarmed.
+        assert!(release_hotkey_press(&space));
+        assert!(claim_hotkey_press(&space, true));
+        assert!(!claim_hotkey_press(&z, true),
+                "different held hotkeys do not share a latch");
+        assert!(release_hotkey_press(&z));
+        assert!(release_hotkey_press(&space));
     }
 
     #[test]
