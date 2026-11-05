@@ -1332,6 +1332,149 @@ mod tests {
     }
 
     #[test]
+    fn low_integrity_token_cannot_write_tsf_config_but_can_write_focus() {
+        use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+        use windows_sys::Win32::Security::{
+            DuplicateTokenEx, GetLengthSid, ImpersonateLoggedOnUser, RevertToSelf,
+            SecurityImpersonation, SetTokenInformation, TokenImpersonation, TokenIntegrityLevel,
+            SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT, TOKEN_DUPLICATE, TOKEN_IMPERSONATE,
+            TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+        };
+        use windows_sys::Win32::System::Memory::{OpenFileMappingW, FILE_MAP_READ, FILE_MAP_WRITE};
+
+        let suffix = format!(
+            "{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let config_name = format!("Local\\VietFlow_LowIL_Config_QA_{suffix}");
+        let focus_name = format!("Local\\VietFlow_LowIL_Focus_QA_{suffix}");
+        let (config_map, config_view) = unsafe {
+            create_secure_mapping(
+                &config_name,
+                std::mem::size_of::<TsfSharedConfig>() as u32,
+                false,
+            )
+        }
+        .expect("create isolated owner-writable config mapping");
+        let (focus_map, focus_view) = unsafe {
+            create_secure_mapping(
+                &focus_name,
+                std::mem::size_of::<TsfFocusState>() as u32,
+                true,
+            )
+        }
+        .expect("create isolated low-integrity-writable focus mapping");
+
+        struct MappingCleanup(HANDLE, *mut c_void, HANDLE, *mut c_void);
+        impl Drop for MappingCleanup {
+            fn drop(&mut self) {
+                unsafe {
+                    UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: self.1 });
+                    CloseHandle(self.0);
+                    UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: self.3 });
+                    CloseHandle(self.2);
+                }
+            }
+        }
+        let _mapping_cleanup = MappingCleanup(config_map, config_view, focus_map, focus_view);
+
+        unsafe {
+            let mut primary: HANDLE = std::ptr::null_mut();
+            assert_ne!(
+                OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_DUPLICATE | TOKEN_QUERY,
+                    &mut primary
+                ),
+                0,
+                "open current test process token"
+            );
+            let mut impersonation: HANDLE = std::ptr::null_mut();
+            let duplicated = DuplicateTokenEx(
+                primary,
+                TOKEN_ADJUST_DEFAULT | TOKEN_IMPERSONATE | TOKEN_QUERY,
+                std::ptr::null(),
+                SecurityImpersonation,
+                TokenImpersonation,
+                &mut impersonation,
+            );
+            CloseHandle(primary);
+            assert_ne!(
+                duplicated, 0,
+                "duplicate isolated low-IL impersonation token"
+            );
+            assert!(!impersonation.is_null());
+
+            let mut low_sid = std::ptr::null_mut();
+            let sid_text = to_wide("S-1-16-4096"); // Mandatory Low integrity SID
+            let sid_created = ConvertStringSidToSidW(sid_text.as_ptr(), &mut low_sid);
+            assert_ne!(sid_created, 0, "create low integrity SID");
+            let mandatory = TOKEN_MANDATORY_LABEL {
+                Label: SID_AND_ATTRIBUTES {
+                    Sid: low_sid,
+                    Attributes: 0x20, // SE_GROUP_INTEGRITY
+                },
+            };
+            let applied = SetTokenInformation(
+                impersonation,
+                TokenIntegrityLevel,
+                (&raw const mandatory).cast(),
+                (std::mem::size_of::<TOKEN_MANDATORY_LABEL>() as u32) + GetLengthSid(low_sid),
+            );
+            LocalFree(low_sid.cast());
+            assert_ne!(applied, 0, "restrict impersonation token to Low integrity");
+
+            struct RevertToken(HANDLE);
+            impl Drop for RevertToken {
+                fn drop(&mut self) {
+                    unsafe {
+                        RevertToSelf();
+                        CloseHandle(self.0);
+                    }
+                }
+            }
+            let _token_cleanup = RevertToken(impersonation);
+            assert_ne!(
+                ImpersonateLoggedOnUser(impersonation),
+                0,
+                "impersonate low-integrity token"
+            );
+
+            let config_name_w = to_wide(&config_name);
+            let focus_name_w = to_wide(&focus_name);
+            let config_read = OpenFileMappingW(FILE_MAP_READ, 0, config_name_w.as_ptr());
+            let config_write = OpenFileMappingW(FILE_MAP_WRITE, 0, config_name_w.as_ptr());
+            let focus_write = OpenFileMappingW(FILE_MAP_WRITE, 0, focus_name_w.as_ptr());
+
+            if !config_read.is_null() {
+                CloseHandle(config_read);
+            }
+            if !config_write.is_null() {
+                CloseHandle(config_write);
+            }
+            if !focus_write.is_null() {
+                CloseHandle(focus_write);
+            }
+            assert!(
+                !config_read.is_null(),
+                "Low integrity should read the versioned config map"
+            );
+            assert!(
+                config_write.is_null(),
+                "Low integrity MUST NOT acquire config write access"
+            );
+            assert!(
+                !focus_write.is_null(),
+                "Low integrity should write only the advisory focus map"
+            );
+        }
+    }
+
+    #[test]
     fn test_tsf_dll_path_search() {
         let _ = tsf_dll_path();
     }
