@@ -426,7 +426,15 @@ impl HookState {
     /// key may be consumed. False means the caller MUST pass through the key.
     pub fn send_engine_output(&mut self, backspaces: usize, text: &str) -> bool {
         if backspaces > 0 || !text.is_empty() {
-            let text = crate::clipboard::expand_clipboard(text);
+            // Clipboard content can be much larger than the async payload
+            // budget. Never clone it or wait for the cache mutex on the
+            // low-level keyboard callback; allow the native key on rejection.
+            let Some(text) = crate::clipboard::expand_clipboard_bounded(
+                text,
+                crate::inject::MAX_PENDING_TEXT_BYTES,
+            ) else {
+                return false;
+            };
             return send_atomic_batch_with_mode(backspaces, text.as_ref(), self.injection_mode);
         }
         true

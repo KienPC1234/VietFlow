@@ -25,7 +25,7 @@ extern "system" {
 const MAX_PENDING_INJECTION_JOBS: usize = 8;
 // Queue is bounded by both count and payload size, otherwise eight very
 // large user macros still consume unbounded memory in the keyboard callback.
-const MAX_PENDING_TEXT_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_PENDING_TEXT_BYTES: usize = 64 * 1024;
 const MAX_PENDING_BACKSPACES: usize = 4_096;
 const MAX_PENDING_JOB_AGE: Duration = Duration::from_millis(750);
 // A hook must not swallow the physical key merely because a queue accepted a
