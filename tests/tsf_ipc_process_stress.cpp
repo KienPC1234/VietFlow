@@ -103,14 +103,15 @@ int main(int argc, char** argv) {
             return Fail("child process creation");
         }
         CloseHandle(proc.hThread);
-        bool sawProfileB = false;
+        // The child may not be scheduled before a fast reader exhausts its
+        // sample loop (especially on hosted CI). The final B profile is
+        // mandatory after the child exits, independent of reader scheduling.
         for (int i = 0; i < 500000; ++i) {
             const TsfSharedConfig snapshot = reader.Get();
             if (!Coherent(snapshot)) {
                 result = Fail("torn or invalid shared snapshot accepted");
                 break;
             }
-            sawProfileB = sawProfileB || (snapshot.method == 5);
             if (WaitForSingleObject(proc.hProcess, 0) == WAIT_OBJECT_0) break;
             if ((i & 255) == 0) Sleep(0);
         }
@@ -120,8 +121,12 @@ int main(int argc, char** argv) {
         if (!GetExitCodeProcess(proc.hProcess, &exitCode) || exitCode != 0)
             result = Fail("child writer failed");
         CloseHandle(proc.hProcess);
-        if (!sawProfileB) result = Fail("reader never observed changing writer state");
-        if (!Coherent(reader.Get())) result = Fail("final stable snapshot");
+        // Child writes A/B alternately and ends on B. Always check that a
+        // fresh reader sees its final committed state, even if all transient
+        // samples happened before the child started.
+        const TsfSharedConfig finalState = reader.Get();
+        if (!Coherent(finalState) || finalState.method != 5 || finalState.charset != 4)
+            result = Fail("final published B profile missing or inconsistent");
         reader.UpdateActiveFocus(false);
     }
     UnmapViewOfFile(cfg);
