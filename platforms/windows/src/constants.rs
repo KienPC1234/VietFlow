@@ -8,6 +8,7 @@ pub const WM_TRAYICON: u32 = WM_USER + 101;
 pub const WM_SETTINGS: u32 = WM_USER + 102;
 pub const WM_CONVERT: u32 = WM_USER + 103;
 pub const WM_RELOAD_CONFIG: u32 = WM_USER + 104;
+pub const WM_PERSIST_HOTKEY_MODE: u32 = WM_USER + 105;
 
 // Tray Context Menu Action IDs
 pub const IDM_TOGGLE: usize = 1001;

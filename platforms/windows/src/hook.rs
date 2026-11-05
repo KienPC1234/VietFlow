@@ -1148,7 +1148,10 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                 state.toggle_temporary_override();
             } else {
                 state.toggle_language();
-                state.config.save();
+                // Never serialize JSON or touch disk from WH_KEYBOARD_LL.
+                // Main window handles this after the hook returns; its timer
+                // also retries if PostMessage cannot be delivered.
+                crate::request_hotkey_mode_persist(state.tray_hwnd);
             }
             state.game_detector.reset();
 

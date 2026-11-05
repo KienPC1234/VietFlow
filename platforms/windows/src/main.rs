@@ -17,6 +17,7 @@ pub mod tsf;
 use std::ffi::c_void;
 use std::mem::zeroed;
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::SystemTime;
 use vietflow_core::models::{CharsetId, InputMethod};
@@ -62,6 +63,53 @@ const TIMER_ID_CONFIG: usize = 1;
 const TIMER_ID_RETRY_TRAY: usize = 2;
 static mut TRAY_RETRY_COUNT: u32 = 0;
 static CONFIG_MTIME: Mutex<Option<SystemTime>> = Mutex::new(None);
+
+/// A toggle is already reflected in STATE; the only work deferred is the
+/// potentially slow JSON serialization + disk write. This flag coalesces
+/// repeated toggles, and TIMER_ID_CONFIG retries when PostMessage fails.
+static HOTKEY_MODE_SAVE_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Return true only for the first request of a dirty burst. A later toggle
+/// during an in-progress save gets a fresh notification after the flag clears.
+fn mark_mode_save_pending(flag: &AtomicBool) -> bool {
+    !flag.swap(true, Ordering::AcqRel)
+}
+
+fn take_mode_save_pending(flag: &AtomicBool) -> bool {
+    flag.swap(false, Ordering::AcqRel)
+}
+
+/// Safe for the low-level keyboard callback: no STATE lock and no filesystem.
+pub(crate) fn request_hotkey_mode_persist(hwnd: HWND) {
+    if mark_mode_save_pending(&HOTKEY_MODE_SAVE_PENDING) && !hwnd.is_null() {
+        unsafe {
+            let _ = PostMessageW(hwnd, WM_PERSIST_HOTKEY_MODE, 0, 0);
+        }
+    }
+}
+
+/// Runs only on the normal window message loop / shutdown path, NEVER in a
+/// keyboard hook. Snapshot the newest config before writing it; a hotkey
+/// that arrives during save sets the flag again for the next message/timer.
+fn flush_hotkey_mode_persist() {
+    if !take_mode_save_pending(&HOTKEY_MODE_SAVE_PENDING) {
+        return;
+    }
+    let snapshot = STATE
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|state| state.config.clone()));
+    if let Some(config) = snapshot {
+        config.save();
+        // No redundant reload of our own just-persisted configuration.
+        if let Ok(mut mtime) = CONFIG_MTIME.lock() {
+            *mtime = config_mtime();
+        }
+    } else {
+        // A transient missing/poisoned state cannot erase a requested save.
+        mark_mode_save_pending(&HOTKEY_MODE_SAVE_PENDING);
+    }
+}
 
 fn config_mtime() -> Option<SystemTime> {
     std::fs::metadata(AppConfig::config_path_ref())
@@ -540,6 +588,10 @@ unsafe extern "system" fn wnd_proc(
             spawn_gui();
             0
         }
+        WM_PERSIST_HOTKEY_MODE => {
+            flush_hotkey_mode_persist();
+            0
+        }
         WM_TIMER => {
             reap_ui_children();
             if w_param == TIMER_ID_RETRY_TRAY {
@@ -555,6 +607,9 @@ unsafe extern "system" fn wnd_proc(
                 return 0;
             }
             if w_param == TIMER_ID_CONFIG {
+                // Retry when hotkey's PostMessage was lost, while avoiding
+                // disk writes inside the global keyboard hook callback.
+                flush_hotkey_mode_persist();
                 let current = config_mtime();
                 let changed = {
                     let mut last = match CONFIG_MTIME.lock() {
@@ -763,7 +818,10 @@ unsafe extern "system" fn wnd_proc(
         WM_DESTROY => {
             RemoveClipboardFormatListener(hwnd);
             terminate_all_ui();
+            // Stop new keyboard callbacks BEFORE saving the final mode.
+            // Otherwise a hotkey could set the dirty flag after the last flush.
             uninstall_hook();
+            flush_hotkey_mode_persist();
             PostQuitMessage(0);
             0
         }
@@ -841,5 +899,45 @@ unsafe fn toggle_mode(_hwnd: HWND) {
                 (*TRAY_PTR).update_status(effective);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+
+    #[test]
+    fn mode_saves_are_coalesced_and_rearmed_after_snapshot() {
+        let dirty = AtomicBool::new(false);
+        assert!(!take_mode_save_pending(&dirty));
+        assert!(mark_mode_save_pending(&dirty));
+        assert!(!mark_mode_save_pending(&dirty),
+                "repeated toggle must not flood the UI message queue");
+        assert!(take_mode_save_pending(&dirty));
+        assert!(!take_mode_save_pending(&dirty));
+        // A newer toggle while an older snapshot is being saved must not
+        // be lost, even if the earlier message has already consumed its flag.
+        mark_mode_save_pending(&dirty);
+        assert!(take_mode_save_pending(&dirty));
+    }
+
+    #[test]
+    fn keyboard_hook_save_request_never_acquires_state_mutex() {
+        let _state_lock = STATE.lock().unwrap();
+        // The hook may already own STATE when requesting persistence.
+        // The request must never try to acquire it or write config to disk.
+        request_hotkey_mode_persist(std::ptr::null_mut());
+        assert!(take_mode_save_pending(&HOTKEY_MODE_SAVE_PENDING));
+    }
+
+    #[test]
+    fn saving_after_missing_state_keeps_retry_request() {
+        let dirty = AtomicBool::new(false);
+        mark_mode_save_pending(&dirty);
+        assert!(take_mode_save_pending(&dirty));
+        // When STATE is temporarily unavailable, the production handler
+        // restores the flag so WM_TIMER can try again.
+        mark_mode_save_pending(&dirty);
+        assert!(take_mode_save_pending(&dirty));
     }
 }
