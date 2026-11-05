@@ -96,7 +96,9 @@ TsfSharedConfig SharedConfigReader::Get() {
         std::memcpy(&snapshot, m_pView, sizeof(snapshot));
         MemoryBarrier();
         LONG last = *seq;
-        if (first == last && !(last & 1) && IsValidTsfConfig(snapshot)) {
+        if (first == last && !(last & 1) &&
+            snapshot.sequence == static_cast<uint32_t>(first) &&
+            IsValidTsfConfig(snapshot)) {
             m_cached = snapshot;
             return snapshot;
         }

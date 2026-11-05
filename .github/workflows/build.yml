@@ -51,15 +51,27 @@ jobs:
         shell: pwsh
         run: ./scripts/tests/test_msi_authoring.ps1
 
-      - name: Lint production workspace (deny warnings)
+      - name: Lint Rust workspace including tests (deny warnings)
         shell: pwsh
-        run: cargo clippy --workspace --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Run workspace tests
         shell: pwsh
         env:
           RUSTFLAGS: -C target-feature=+crt-static
         run: cargo test --workspace --locked
+
+      - name: Verify isolated TSF cross-process snapshot consistency
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $qaDir = Join-Path $env:RUNNER_TEMP 'vietflow-tsf-ipc-qa'
+          cmake -S platforms/windows_tsf -B $qaDir -DVIETFLOW_BUILD_IPC_SMOKE=ON
+          if ($LASTEXITCODE -ne 0) { throw 'TSF IPC configure failed' }
+          cmake --build $qaDir --config Release --target vietflow_tsf_ipc_smoke vietflow_tsf_ipc_process_stress
+          if ($LASTEXITCODE -ne 0) { throw 'TSF IPC native test build failed' }
+          ctest --test-dir $qaDir -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'TSF IPC cross-process regression failed' }
 
   build:
     name: Build ${{ matrix.arch }}
