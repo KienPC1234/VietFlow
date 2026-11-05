@@ -499,6 +499,18 @@ fn fail_config_save_at_checkpoint(path: &Path, phase: &str) {
         return;
     };
     if Path::new(&target) == path && std::env::var(PHASE_ENV).as_deref() == Ok(phase) {
+        if let Some(ready_path) = std::env::var_os("VIETFLOW_F08_QA_EXTERNAL_KILL_READY") {
+            // Parent process externally calls TerminateProcess on this test
+            // process while the named mutex is still owned. Never touch
+            // production paths or wait forever if the parent disappears.
+            let ready_path = PathBuf::from(ready_path);
+            fs::write(&ready_path, phase).expect("write test-only checkpoint");
+            fs::File::open(&ready_path)
+                .and_then(|file| file.sync_all())
+                .expect("sync external-kill checkpoint");
+            std::thread::sleep(std::time::Duration::from_secs(25));
+            std::process::exit(78); // no parent kill: this test must fail
+        }
         std::process::exit(77);
     }
 }
@@ -1293,6 +1305,131 @@ mod tests {
                     1
                 },
                 "unexpected staging residue at checkpoint {phase}"
+            );
+        }
+    }
+
+    #[test]
+    fn atomic_config_save_survives_external_windows_termination() {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        const PATH_ENV: &str = "VIETFLOW_F08_QA_CRASH_PATH";
+        const PHASE_ENV: &str = "VIETFLOW_F08_QA_CRASH_PHASE";
+        const READY_ENV: &str = "VIETFLOW_F08_QA_EXTERNAL_KILL_READY";
+        const TEST_NAME: &str =
+            "config::tests::atomic_config_save_survives_external_windows_termination";
+
+        fn fixture(method: u8) -> AppConfig {
+            let mut cfg = AppConfig {
+                method,
+                ..Default::default()
+            };
+            cfg.macros
+                .insert("kill-id".into(), format!("profile-{method}"));
+            cfg
+        }
+
+        let config_json = |method| serde_json::to_string(&fixture(method)).unwrap();
+        if let Some(file) = std::env::var_os(PATH_ENV) {
+            // This execution is a dedicated child Rust test process. The
+            // parent requests a checkpoint, then kills us from *outside*.
+            let file = PathBuf::from(file);
+            let written = AppConfig::save_atomic(&file, &config_json(5));
+            panic!("external kill did not happen, save finished: {written}");
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "vietflow-f08-parent-kill-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        struct TempDirectory(PathBuf);
+        impl Drop for TempDirectory {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = TempDirectory(dir.clone());
+        let exe = std::env::current_exe().unwrap();
+
+        for phase in [
+            "after_temp_synced",
+            "after_backup_replaced",
+            "after_primary_replaced",
+        ] {
+            let file = dir.join(format!("{phase}.json"));
+            let ready = dir.join(format!("{phase}.ready"));
+            assert!(AppConfig::save_atomic(&file, &config_json(0)));
+            assert!(AppConfig::save_atomic(&file, &config_json(1)));
+
+            let mut child = Command::new(&exe)
+                .args(["--exact", TEST_NAME, "--nocapture"])
+                .env(PATH_ENV, &file)
+                .env(PHASE_ENV, phase)
+                .env(READY_ENV, &ready)
+                .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn dedicated config writer child");
+
+            let deadline = Instant::now() + Duration::from_secs(12);
+            while !ready.is_file() {
+                if let Some(status) = child.try_wait().expect("poll config writer child") {
+                    panic!("child exited before external kill at {phase}: {status}");
+                }
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("test writer never reached checkpoint {phase}");
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(fs::read_to_string(&ready).unwrap(), phase);
+            // The child has synced its checkpoint and still holds the
+            // cross-process writer mutex. Unlike std::process::exit, kill()
+            // calls Windows TerminateProcess from the parent process.
+            child
+                .kill()
+                .expect("externally terminate paused config writer");
+            let status = child.wait().expect("reap terminated writer");
+            assert!(!status.success(), "child should not finish normally");
+
+            let committed = if phase == "after_primary_replaced" {
+                5
+            } else {
+                1
+            };
+            let backup = if phase == "after_temp_synced" { 0 } else { 1 };
+            for (path, expected) in [(&file, committed), (&backup_path(&file), backup)] {
+                let cfg = read_config_file(path).expect("config remains parseable after kill");
+                assert_eq!(cfg.method, expected, "wrong settings at {phase}: {path:?}");
+                assert_eq!(
+                    cfg.macros.get("kill-id").map(String::as_str),
+                    Some(format!("profile-{expected}").as_str())
+                );
+            }
+            assert_eq!(
+                read_config_with_backup(&file).unwrap().method,
+                committed,
+                "recovery chose wrong snapshot after {phase}"
+            );
+            // Windows reports an abandoned mutex to the next writer.
+            assert!(
+                AppConfig::save_atomic(&file, &config_json(2)),
+                "writer lock not recovered after external termination: {phase}"
+            );
+            let next = read_config_file(&file).unwrap();
+            assert_eq!(next.method, 2);
+            assert_eq!(
+                read_config_file(&backup_path(&file)).unwrap().method,
+                committed
             );
         }
     }
