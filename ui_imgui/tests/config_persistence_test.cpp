@@ -7,6 +7,7 @@
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -20,8 +21,37 @@ static bool check(bool condition, const char* message) {
     return condition;
 }
 
-int main() {
+static bool spawn_writer(const fs::path& path, int marker, PROCESS_INFORMATION& out) {
+    wchar_t exe[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH) return false;
+    const std::wstring cmd = L"\"" + std::wstring(exe) +
+        L"\" --stress-writer \"" + path.wstring() +
+        L"\" " + std::to_wstring(marker);
+    std::vector<wchar_t> args(cmd.begin(), cmd.end());
+    args.push_back(L'\0');
+    STARTUPINFOW startup = {};
+    startup.cb = sizeof(startup);
+    return CreateProcessW(
+        exe, args.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+        nullptr, nullptr, &startup, &out
+    ) != FALSE;
+}
+
+int main(int argc, char** argv) {
     try {
+        if (argc == 4 && std::string(argv[1]) == "--stress-writer") {
+            const int marker = std::stoi(argv[3]);
+            if (marker != 1 && marker != 2) return 80;
+            for (int i = 0; i < 60; ++i) {
+                vietflow::Config writer;
+                writer.method = marker;
+                writer.enabled = marker == 1;
+                writer.macros["writer-marker"] = marker == 1 ? "writer-one" : "writer-two";
+                if (!writer.Save(argv[2])) return 81;
+            }
+            return 0;
+        }
         const auto directory = fs::temp_directory_path() /
             ("vietflow-ui-config-test-" + std::to_string(GetCurrentProcessId()) +
              "-" + std::to_string(GetTickCount64()));
@@ -146,7 +176,61 @@ int main() {
             !check(after_semantic_save.method == 2,
                    "replacement did not lose the new settings")) return 16;
 
-        std::cout << "PASS: C++ config semantic validation, backup, quarantine and atomic recovery\n";
+        // Verify cross-PROCESS writer exclusion (not merely two threads).
+        // The parent and children only access this one ephemeral test path.
+        const auto simultaneous = directory / "concurrent-settings.json";
+        vietflow::Config seed;
+        seed.method = 1;
+        seed.enabled = true;
+        seed.macros["writer-marker"] = "writer-one";
+        if (!check(seed.Save(simultaneous.string()), "seed shared writer fixture")) return 17;
+
+        PROCESS_INFORMATION one = {}, two = {};
+        if (!check(spawn_writer(simultaneous, 1, one), "spawn writer one")) return 18;
+        if (!spawn_writer(simultaneous, 2, two)) {
+            TerminateProcess(one.hProcess, 99);
+            WaitForSingleObject(one.hProcess, 5000);
+            CloseHandle(one.hThread);
+            CloseHandle(one.hProcess);
+            return 19;
+        }
+        HANDLE handles[2] = {one.hProcess, two.hProcess};
+        const DWORD waited = WaitForMultipleObjects(2, handles, TRUE, 60000);
+        if (waited != WAIT_OBJECT_0) {
+            TerminateProcess(one.hProcess, 98);
+            TerminateProcess(two.hProcess, 98);
+            WaitForMultipleObjects(2, handles, TRUE, 5000);
+        }
+        DWORD code_one = 0, code_two = 0;
+        GetExitCodeProcess(one.hProcess, &code_one);
+        GetExitCodeProcess(two.hProcess, &code_two);
+        CloseHandle(one.hThread);
+        CloseHandle(two.hThread);
+        CloseHandle(one.hProcess);
+        CloseHandle(two.hProcess);
+        if (!check(waited == WAIT_OBJECT_0 && code_one == 0 && code_two == 0,
+                   "both independent config writers must complete")) return 20;
+
+        auto verify_consistent = [](const fs::path& config_path) {
+            vietflow::Config saved;
+            if (!saved.Load(config_path.string(), false)) return false;
+            const auto it = saved.macros.find("writer-marker");
+            if (it == saved.macros.end()) return false;
+            return (saved.method == 1 && saved.enabled && it->second == "writer-one") ||
+                   (saved.method == 2 && !saved.enabled && it->second == "writer-two");
+        };
+        auto simultaneous_backup = simultaneous;
+        simultaneous_backup += L".bak";
+        if (!check(verify_consistent(simultaneous), "final primary is coherent") ||
+            !check(verify_consistent(simultaneous_backup), "final backup is coherent")) return 21;
+        for (const auto& entry : fs::directory_iterator(directory)) {
+            const auto filename = entry.path().filename().string();
+            if (filename.find("concurrent-settings.json.tmp.") == 0 ||
+                filename.find("concurrent-settings.json.bak.tmp.") == 0) {
+                if (!check(false, "a concurrent Save left an incomplete staging file")) return 22;
+            }
+        }
+        std::cout << "PASS: C++ config semantic validation and 2-process atomic save\n";
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "FAIL: exception: " << ex.what() << "\n";
