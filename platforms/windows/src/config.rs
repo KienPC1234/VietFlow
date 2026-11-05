@@ -650,6 +650,11 @@ impl AppConfig {
     }
 
     pub fn save_atomic(target_path: &std::path::Path, json: &str) -> bool {
+        // The public writer must never rotate a good backup to a malformed
+        // payload supplied by a caller (including valid JSON with bad types).
+        if serde_json::from_str::<Self>(json).is_err() {
+            return false;
+        }
         let Ok(_guard) = ConfigWriteGuard::acquire() else {
             return false;
         };
@@ -1096,6 +1101,51 @@ mod tests {
                 "mixed-writer config staging file was abandoned: {name}"
             );
         }
+    }
+
+    #[test]
+    fn save_atomic_rejects_invalid_json_without_changing_primary_or_backup() {
+        let dir = std::env::temp_dir().join(format!(
+            "vietflow-f08-invalid-writer-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("settings.json");
+        let mut cfg = AppConfig {
+            method: 1,
+            ..Default::default()
+        };
+        cfg.macros.insert("marker".into(), "keep-me".into());
+        assert!(AppConfig::save_atomic(
+            &file,
+            &serde_json::to_string(&cfg).unwrap()
+        ));
+        cfg.method = 2;
+        assert!(AppConfig::save_atomic(
+            &file,
+            &serde_json::to_string(&cfg).unwrap()
+        ));
+        let original = fs::read(&file).unwrap();
+        let backup = fs::read(backup_path(&file)).unwrap();
+
+        for invalid in [
+            "{",
+            "null",
+            r#"{"enabled":"not-boolean"}"#,
+            r#"{"method":"not-a-number"}"#,
+            r#"{"macros":{"marker":123}}"#,
+        ] {
+            assert!(!AppConfig::save_atomic(&file, invalid));
+            assert_eq!(fs::read(&file).unwrap(), original);
+            assert_eq!(fs::read(backup_path(&file)).unwrap(), backup);
+        }
+        let entries: Vec<_> = fs::read_dir(&dir).unwrap().collect();
+        assert_eq!(entries.len(), 2, "invalid payload left staging files");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
