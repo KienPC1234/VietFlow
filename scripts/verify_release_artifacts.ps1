@@ -9,6 +9,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'msi_package_inspector.ps1')
 # Prevent accidental data erasure through an elevated MSI uninstall custom action.
 $wix = Get-Content (Join-Path $root 'installer/wix/VietFlow.wxs') -Raw
 if ($wix -match '--uninstall-cleanup' -or $wix -match 'FullCleanupOnUninstall') {
@@ -49,15 +50,6 @@ function Assert-PE([string]$path, [string]$arch) {
     $machine = Get-PeMachine $path
     Assert-True ($machine -eq $arch) "Architecture mismatch: expected $arch, got $machine in $path"
 }
-function Assert-Msi([string]$path) {
-    Assert-True (Test-Path -LiteralPath $path -PathType Leaf) "Missing MSI: $path"
-    $f=[IO.File]::OpenRead($path)
-    try {
-        $b = [byte[]]::new(8)
-        Assert-True ($f.Read($b,0,8) -eq 8) "MSI too short"
-        Assert-True (([BitConverter]::ToString($b)) -eq 'D0-CF-11-E0-A1-B1-1A-E1') "Invalid MSI magic: $path"
-    } finally { $f.Dispose() }
-}
 function Assert-Zip([string]$path, [string]$arch) {
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -80,6 +72,7 @@ function Assert-Zip([string]$path, [string]$arch) {
         }
     } finally { $zip.Dispose() }
 }
+$version = (Get-Content (Join-Path $root 'VERSION') -Raw).Trim()
 $archs = if ($Arch -eq 'All') { @('x64','x86','arm64') } else { @($Arch) }
 $assets = [System.Collections.Generic.List[object]]::new()
 function Record-Asset([string]$path, [string]$arch, [string]$kind) {
@@ -104,7 +97,7 @@ foreach ($a in $archs) {
     if ($RequireRelease) {
         $msi = Join-Path $ReleaseDir "VietFlow-win-$a.msi"
         $zip = Join-Path $ReleaseDir "VietFlow-win-$a-Portable.zip"
-        Assert-Msi $msi
+        Assert-MsiPackage $msi $a $version
         Assert-Zip $zip $a
         Record-Asset $msi $a 'msi'
         Record-Asset $zip $a 'portable-zip'
@@ -114,7 +107,6 @@ foreach ($a in $archs) {
                      (Get-FileHash $dll -Algorithm SHA256).Hash) "Release DLL differs from validated build"
     }
 }
-$version = (Get-Content (Join-Path $root 'VERSION') -Raw).Trim()
 $commit = (& git -C $root rev-parse HEAD)
 Assert-True ($LASTEXITCODE -eq 0) 'Cannot resolve git source commit'
 $manifest = [ordered]@{

@@ -16,7 +16,7 @@ desktop text control or installed MSI works.
 | F10 Hook callback | Async worker prewarmed; bounded nonblocking 8-job queue, 750 ms expiry and exact foreground identity; admission status now propagated to hook to pass original key on rejection and reset composition; 64 KiB text / 4096-backspace limits. Host input-order, 24h and p95/p99 E2E still pending |
 | F11 SendInput | Partial input stops without replaying accepted backspaces/code units, releases pressed injected keys; unit tests cover UTF-16, Backspace, Shift, repeated VK; independent host fault injection still pending |
 | F12 TSF IPC | Rust writer clamps malformed enum/flag/version fields before publishing; C++ reader rejects malformed yet sequence-consistent snapshots and retains last valid config. Independent native smoke tests cover every field; AppContainer ACL and multi-process long-run tests pending |
-| Q01 Release | Official publisher routes to one verified gate; default is offline. Preflight verifies PE/ZIP architecture, MSI header, 12 payload hashes, updater URLs, SHA256SUMS and 6 metadata assets. Separate canonical-dist packaging regression prevents stale MSI/ZIP inputs; offline tests run in CI. Explicit publish still requires clean source, matching origin/main and tag, plus remote asset digests; signing/MSI VM/public release remain NO-GO pending independent approval |
+| Q01 Release | Official publisher routes to one verified gate; default is offline. Preflight verifies PE/ZIP architecture, genuine read-only Windows Installer MSI database identity, 12 payload hashes, updater URLs, SHA256SUMS and 6 metadata assets. A shared Windows Installer COM verifier now reads actual MSI ProductVersion, ProductCode, UpgradeCode, architecture, scope and language in both manifest generation and publishing; minimal synthetic MSI databases and 20 positive/negative offline scenarios run in CI. Canonical-dist packaging regression prevents stale MSI/ZIP inputs. Explicit publish still requires clean source, matching origin/main and tag, plus remote asset digests; signing/MSI VM/public release remain NO-GO pending independent approval |
 | Q02 Independent E2E | Matrix below must be run by QA and recorded for target release |
 
 ## Offline publisher gate (Q01)
@@ -33,6 +33,13 @@ until a reviewed prerelease workflow exists.
 A passing preflight is NOT approval to publish. Signed assets, Windows MSI
 install/upgrade/uninstall acceptance and real TSF/hook input tests require
 independent evidence before any production release.
+
+MSI inspection uses Windows Installer COM read-only database APIs to verify
+Package properties, architecture, ProductCode/UpgradeCode and installation
+scope. It does not install the MSI, extract its CAB payloads or prove code
+signing. A minimal fixture may pass identity checks without being installable;
+independent WiX compilation/ICE validation and real VM install/repair/
+upgrade/uninstall tests are separate release gates.
 
 ## Manual / independent test IDs
 

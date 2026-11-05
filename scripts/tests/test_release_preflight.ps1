@@ -3,6 +3,7 @@
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $publisher = Join-Path $root 'scripts/publish-release.ps1'
+$artifactVerifier = Join-Path $root 'scripts/verify_release_artifacts.ps1'
 $version = (Get-Content (Join-Path $root 'VERSION') -Raw).Trim()
 $commit = (& git -C $root rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot determine source commit' }
@@ -41,6 +42,74 @@ function Make-Zip([string]$file, [byte[]]$exe, [byte[]]$dll) {
         }
     } finally { $zip.Dispose() }
 }
+# Create a real, minimal Windows Installer database for the synthetic test.
+# This is not an installable product and is NEVER submitted to msiexec.
+# The publisher must reject fake OLE headers and identity/version mismatches.
+function Make-Msi([string]$path, [string]$arch, [string]$msiVersion,
+                  [string]$name = 'VietFlow',
+                  [string]$upgrade = '{B9A5320F-D409-4BFB-A63A-9E3DA4D3A1F8}',
+                  [string]$scope = '1',
+                  [string]$productCode = '',
+                  [string]$templateOverride = '') {
+    if ([string]::IsNullOrWhiteSpace($productCode)) {
+        $productCode = '{' + [guid]::NewGuid().ToString().ToUpperInvariant() + '}'
+    }
+    $template = if ($templateOverride) { $templateOverride } else {
+        switch ($arch) {
+            'x86' { 'Intel;1033' }
+            'arm64' { 'Arm64;1033' }
+            default { 'x64;1033' }
+        }
+    }
+    $inst = New-Object -ComObject WindowsInstaller.Installer
+    $bt = [char]96
+    $db = $inst.OpenDatabase($path, 3)
+    try {
+        $create = 'CREATE TABLE ' + $bt + 'Property' + $bt + ' (' +
+                  $bt + 'Property' + $bt + ' CHAR(72) NOT NULL, ' +
+                  $bt + 'Value' + $bt + ' CHAR(255) NOT NULL PRIMARY KEY ' +
+                  $bt + 'Property' + $bt + ')'
+        $view = $db.OpenView($create)
+        $view.Execute()
+        $view.Close()
+        $view = $null
+        $properties = [ordered]@{
+            ProductVersion = $msiVersion
+            ProductName = $name
+            ProductCode = $productCode
+            UpgradeCode = $upgrade
+            ProductLanguage = '1033'
+            ALLUSERS = $scope
+        }
+        $query = 'INSERT INTO ' + $bt + 'Property' + $bt + ' (' +
+                 $bt + 'Property' + $bt + ', ' + $bt + 'Value' + $bt +
+                 ') VALUES (?, ?)'
+        foreach ($item in $properties.GetEnumerator()) {
+            $view = $db.OpenView($query)
+            $record = $inst.CreateRecord(2)
+            $record.StringData(1) = [string]$item.Key
+            $record.StringData(2) = [string]$item.Value
+            $view.Execute($record)
+            $view.Close()
+            $record = $null
+            $view = $null
+        }
+        $summary = $db.SummaryInformation(20)
+        $summary.Property(7) = $template
+        $summary.Persist()
+        $summary = $null
+        $db.Commit()
+    } finally {
+        $record = $null
+        $view = $null
+        $summary = $null
+        $db = $null
+        $inst = $null
+        [gc]::Collect()
+        [gc]::WaitForPendingFinalizers()
+    }
+}
+
 function Verify-Offline([string]$fixture, [string]$caseName, [bool]$expectPass) {
     $passed = $false
     try {
@@ -94,8 +163,7 @@ try {
         $pe = Make-Pe $arch
         [IO.File]::WriteAllBytes((Join-Path $valid $exe), $pe)
         [IO.File]::WriteAllBytes((Join-Path $valid $dll), $pe)
-        [IO.File]::WriteAllBytes((Join-Path $valid $msi),
-            [byte[]](0xD0,0xCF,0x11,0xE0,0xA1,0xB1,0x1A,0xE1,0x00))
+        Make-Msi (Join-Path $valid $msi) $arch $version
         Make-Zip (Join-Path $valid $zipName) $pe $pe
         foreach ($name in @($exe,$dll,$msi,$zipName)) {
             $file = Join-Path $valid $name
@@ -125,6 +193,23 @@ try {
 
     Verify-Offline $valid 'complete 3-architecture fixture' $true
 
+    # Exercise the earlier manifest-generating verification path, not only
+    # the final publisher. Both must reject a forged MSI database.
+    $case = New-Case 'artifact-verifier-good'
+    & $artifactVerifier -Arch All -DistDir $case -ReleaseDir $case -RequireRelease | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Artifact verifier failed a valid MSI fixture' }
+    Write-Host 'PASS offline: release manifest verifier accepts native MSI tables'
+
+    $case = New-Case 'artifact-verifier-fake-header'
+    $file = Join-Path $case 'VietFlow-win-x64.msi'
+    [IO.File]::WriteAllBytes($file, [byte[]](0xD0,0xCF,0x11,0xE0,0xA1,0xB1,0x1A,0xE1,0x00))
+    $rejected = $false
+    try { & $artifactVerifier -Arch All -DistDir $case -ReleaseDir $case -RequireRelease | Out-Null }
+    catch { $rejected = $true }
+    if (-not $rejected) { throw 'Manifest generation accepted a fake MSI container' }
+    Write-Host 'PASS offline: manifest generator rejects fake MSI header'
+
+
     $case = New-Case 'missing'
     Remove-Item (Join-Path $case 'VietFlow-win-arm64.msi')
     Verify-Offline $case 'missing MSI' $false
@@ -150,6 +235,56 @@ try {
     Make-Zip (Join-Path $case 'VietFlow-win-x64-Portable.zip') (Make-Pe 'x86') (Make-Pe 'x64')
     Update-ManifestHash $case 'VietFlow-win-x64-Portable.zip'
     Verify-Offline $case 'wrong ZIP contents even with consistent digests' $false
+
+
+    $case = New-Case 'fake-ole-msi'
+    $file = Join-Path $case 'VietFlow-win-x64.msi'
+    [IO.File]::WriteAllBytes($file, [byte[]](0xD0,0xCF,0x11,0xE0,0xA1,0xB1,0x1A,0xE1,0x00))
+    Update-ManifestHash $case 'VietFlow-win-x64.msi'
+    Verify-Offline $case 'OLE header alone cannot impersonate an MSI' $false
+
+    $case = New-Case 'msi-wrong-version'
+    $file = Join-Path $case 'VietFlow-win-x64.msi'
+    Remove-Item -LiteralPath $file -Force
+    Make-Msi $file 'x64' '9.9.9'
+    Update-ManifestHash $case 'VietFlow-win-x64.msi'
+    Verify-Offline $case 'MSI ProductVersion disagrees with tag despite matching digests' $false
+
+    $case = New-Case 'msi-wrong-arch'
+    $file = Join-Path $case 'VietFlow-win-arm64.msi'
+    Remove-Item -LiteralPath $file -Force
+    Make-Msi $file 'arm64' $version -templateOverride 'Intel;1033'
+    Update-ManifestHash $case 'VietFlow-win-arm64.msi'
+    Verify-Offline $case 'MSI database template wrong architecture' $false
+
+
+    $case = New-Case 'msi-wrong-product'
+    $file = Join-Path $case 'VietFlow-win-x86.msi'
+    Remove-Item -LiteralPath $file -Force
+    Make-Msi $file 'x86' $version -name 'Impostor'
+    Update-ManifestHash $case 'VietFlow-win-x86.msi'
+    Verify-Offline $case 'MSI ProductName is not VietFlow' $false
+
+    $case = New-Case 'msi-wrong-upgrade'
+    $file = Join-Path $case 'VietFlow-win-x86.msi'
+    Remove-Item -LiteralPath $file -Force
+    Make-Msi $file 'x86' $version -upgrade '{11111111-1111-1111-1111-111111111111}'
+    Update-ManifestHash $case 'VietFlow-win-x86.msi'
+    Verify-Offline $case 'MSI unrelated upgrade family' $false
+
+    $case = New-Case 'msi-wrong-scope'
+    $file = Join-Path $case 'VietFlow-win-x64.msi'
+    Remove-Item -LiteralPath $file -Force
+    Make-Msi $file 'x64' $version -scope '2'
+    Update-ManifestHash $case 'VietFlow-win-x64.msi'
+    Verify-Offline $case 'MSI not per-machine' $false
+
+    $case = New-Case 'msi-wrong-product-code'
+    $file = Join-Path $case 'VietFlow-win-x64.msi'
+    Remove-Item -LiteralPath $file -Force
+    Make-Msi $file 'x64' $version -productCode '{00000000-0000-0000-0000-000000000000}'
+    Update-ManifestHash $case 'VietFlow-win-x64.msi'
+    Verify-Offline $case 'MSI has empty ProductCode GUID' $false
 
     $case = New-Case 'wrong-sums'
     Set-Text (Join-Path $case 'SHA256SUMS.txt') ('0' * 64 + '  VietFlow-x64.exe')

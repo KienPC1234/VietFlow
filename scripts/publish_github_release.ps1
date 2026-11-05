@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
+. (Join-Path $PSScriptRoot 'msi_package_inspector.ps1')
 if ([string]::IsNullOrWhiteSpace($ReleasesDir)) {
     $ReleasesDir = Join-Path $root "releases"
 }
@@ -49,16 +50,6 @@ function Assert-PeArchFile([string]$file, [string]$arch) {
         }
     } finally { $f.Dispose() }
 }
-function Assert-MsiContainer([string]$file) {
-    $f = [IO.File]::OpenRead($file)
-    try {
-        $bytes = [byte[]]::new(8)
-        if ($f.Read($bytes, 0, 8) -ne 8 -or
-            [BitConverter]::ToString($bytes) -ne 'D0-CF-11-E0-A1-B1-1A-E1') {
-            throw "Invalid MSI container: $file"
-        }
-    } finally { $f.Dispose() }
-}
 function Assert-PortableZip([string]$file, [string]$arch, [string]$exeDigest, [string]$dllDigest) {
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -92,6 +83,7 @@ function Assert-PortableZip([string]$file, [string]$arch, [string]$exeDigest, [s
         }
     } finally { $zip.Dispose() }
 }
+
 
 # 0. Read-only, offline release preflight. Do not fetch credentials unless
 # -Publish was explicitly requested and every provenance check passed.
@@ -172,7 +164,7 @@ foreach ($arch in @('x64','x86','arm64')) {
     $exeName = "VietFlow-$arch.exe"
     Assert-PeArchFile (Join-Path $ReleasesDir $exeName) $arch
     Assert-PeArchFile (Join-Path $ReleasesDir $dllName) $arch
-    Assert-MsiContainer (Join-Path $ReleasesDir "VietFlow-win-$arch.msi")
+    Assert-MsiPackage (Join-Path $ReleasesDir "VietFlow-win-$arch.msi") $arch $version
     Assert-PortableZip (Join-Path $ReleasesDir "VietFlow-win-$arch-Portable.zip") $arch $actualDigests[$exeName] $actualDigests[$dllName]
 }
 
