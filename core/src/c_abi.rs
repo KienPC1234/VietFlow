@@ -208,8 +208,13 @@ pub unsafe extern "C" fn vf_owned_utf8_free(value: VfOwnedUtf8) {
 }
 
 /// Process one key exactly once, returning complete UTF-8 without truncation.
+///
 /// # Safety
-/// A valid live engine and writable unowned result are required.
+/// `engine` must point to a live VietFlow engine owned by the caller and must
+/// not be concurrently accessed or destroyed. `result` must be a valid writable
+/// `VfOwnedUtf8` slot, disjoint from the engine and all other outputs; free any
+/// previously owned `result.data` before reusing it. If non-null,
+/// `out_backspaces` must point to a separate writable `usize`.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_process_key_owned(
     engine: *mut c_void,
@@ -237,7 +242,12 @@ pub unsafe extern "C" fn vf_engine_process_key_owned(
     write_owned_utf8(text.as_str().to_owned(), result)
 }
 
-/// Read complete preedit. Valid live engine and writable result required.
+/// Read the complete UTF-8 preedit without truncation.
+///
+/// # Safety
+/// `engine` must refer to a live VietFlow engine and must not be concurrently
+/// mutated or destroyed. `result` must be a valid writable `VfOwnedUtf8` slot,
+/// disjoint from the engine; release any prior owned result before reuse.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_get_preedit_owned(
     engine: *mut c_void,
@@ -256,7 +266,12 @@ pub unsafe extern "C" fn vf_engine_get_preedit_owned(
     write_owned_utf8(engine.current_preedit_text(), result)
 }
 
-/// Finalize once and return complete text. Valid live engine/result required.
+/// Finalize composition once and return its complete UTF-8 output.
+///
+/// # Safety
+/// `engine` must refer to a live VietFlow engine with exclusive mutable access
+/// for this call. `result` must point to a writable `VfOwnedUtf8` slot that
+/// does not alias the engine; release any prior owned result before reuse.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_finish_on_break_owned(
     engine: *mut c_void,
@@ -277,7 +292,12 @@ pub unsafe extern "C" fn vf_engine_finish_on_break_owned(
     write_owned_utf8(engine.finish_composition_on_break(c), result)
 }
 
-/// Backspace once and return complete preedit. Live engine/result required.
+/// Process one Backspace and return the complete updated UTF-8 preedit.
+///
+/// # Safety
+/// `engine` must refer to a live VietFlow engine with exclusive mutable access
+/// for this call. `result` must point to a writable `VfOwnedUtf8` slot that
+/// does not alias the engine; release any prior owned result before reuse.
 #[no_mangle]
 pub unsafe extern "C" fn vf_engine_process_backspace_owned(
     engine: *mut c_void,

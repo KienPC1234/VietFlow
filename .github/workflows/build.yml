@@ -28,6 +28,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc, i686-pc-windows-msvc, aarch64-pc-windows-msvc
+          components: clippy
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -50,11 +51,15 @@ jobs:
         shell: pwsh
         run: ./scripts/tests/test_msi_authoring.ps1
 
+      - name: Lint production workspace (deny warnings)
+        shell: pwsh
+        run: cargo clippy --workspace --locked -- -D warnings
+
       - name: Run workspace tests
         shell: pwsh
         env:
           RUSTFLAGS: -C target-feature=+crt-static
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
   build:
     name: Build ${{ matrix.arch }}

@@ -32,7 +32,7 @@ fn decode_clipboard_units(units: &[u16], max_chars: usize) -> Option<String> {
 /// length. This accounts for the required UTF-16 terminator and rejects
 /// allocations with an odd number of bytes.
 fn clipboard_scan_units(allocation_bytes: usize) -> Option<usize> {
-    if allocation_bytes < size_of::<u16>() || allocation_bytes % size_of::<u16>() != 0 {
+    if allocation_bytes < size_of::<u16>() || !allocation_bytes.is_multiple_of(size_of::<u16>()) {
         return None;
     }
     Some((allocation_bytes / size_of::<u16>()).min(MAX_CLIPBOARD_CHARS + 1))

@@ -1267,33 +1267,35 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     // Automatic Game Mode Detection: when repeated movement patterns (Arrow keys or held WASD)
     // are detected, switch mode to English [E] automatically to prevent gaming disruption.
     // CRITICAL: NEVER run game detection when the engine is actively composing a syllable!
-    if is_key_down && state.config.auto_detect_game_mode && state.user_enabled {
-        if state.engine.is_empty() {
-            let now_ms = get_tick_count_64();
-            if state.game_detector.record_key(vk, now_ms, &state.held_vks) {
-                state.user_enabled = false;
-                state.config.enabled = false;
-                if let Some(proc) = &state.current_process {
-                    state.per_app_modes.insert(proc.clone(), false);
-                }
-                state.engine.reset_word();
-                state.macro_buffer.clear();
-                state.english_word_buffer.clear();
-
-                let effective = state.effective_enabled();
-                crate::tsf::sync_tsf_config(&state.config, effective);
-
-                let tray_hwnd = state.tray_hwnd;
-                if !tray_hwnd.is_null() {
-                    unsafe {
-                        PostMessageW(tray_hwnd, WM_TRAYICON, 0, 0);
-                    }
-                }
-                if state.config.notification_sound {
-                    play_notification_sound();
-                }
-                return CallNextHookEx(null_mut(), n_code, w_param, l_param);
+    if is_key_down
+        && state.config.auto_detect_game_mode
+        && state.user_enabled
+        && state.engine.is_empty()
+    {
+        let now_ms = get_tick_count_64();
+        if state.game_detector.record_key(vk, now_ms, &state.held_vks) {
+            state.user_enabled = false;
+            state.config.enabled = false;
+            if let Some(proc) = &state.current_process {
+                state.per_app_modes.insert(proc.clone(), false);
             }
+            state.engine.reset_word();
+            state.macro_buffer.clear();
+            state.english_word_buffer.clear();
+
+            let effective = state.effective_enabled();
+            crate::tsf::sync_tsf_config(&state.config, effective);
+
+            let tray_hwnd = state.tray_hwnd;
+            if !tray_hwnd.is_null() {
+                unsafe {
+                    PostMessageW(tray_hwnd, WM_TRAYICON, 0, 0);
+                }
+            }
+            if state.config.notification_sound {
+                play_notification_sound();
+            }
+            return CallNextHookEx(null_mut(), n_code, w_param, l_param);
         }
     }
 
@@ -1307,7 +1309,21 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
     }
 
-    // Backspace handling
+    // Editor shortcuts such as Ctrl+Backspace delete whole words; Alt+Backspace
+    // is Undo in some Windows controls. Never reinterpret these as an IME
+    // single-character backspace or inject an extra replacement.
+    if is_key_down
+        && vk == VK_BACK
+        && !should_process_vietnamese_backspace(
+            state.ctrl_pressed, state.alt_pressed, state.win_pressed,
+        )
+    {
+        state.engine.reset();
+        state.macro_buffer.clear();
+        return CallNextHookEx(null_mut(), n_code, w_param, l_param);
+    }
+
+    // Unmodified Backspace handling
     if is_key_down && vk == VK_BACK {
         let (backspaces, text) = state.engine.process_key('\x08');
         if backspaces > 0 || !text.is_empty() {
@@ -1371,37 +1387,57 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             let char_str = input_char.encode_utf8(&mut char_buf);
             let is_plain_passthrough = backspaces == 0 && text.as_str() == char_str;
 
-            // Always handle language switch when requested by engine
-            if let Some(target_lang) = auto_switch_req {
-                if !target_lang && state.config.auto_switch_by_typing {
-                    // Switch from Vietnamese to English
-                    state.toggle_language();
-                    let effective = state.effective_enabled();
-                    crate::tsf::sync_tsf_config(&state.config, effective);
-                    let tray_hwnd = state.tray_hwnd;
-                    let play_sound = state.config.notification_sound;
-                    PostMessageW(tray_hwnd, WM_TRAYICON, 0, if effective { 1 } else { 0 });
-                    if play_sound {
-                        play_notification_sound();
-                    }
+            // Treat AutoSwitch as a tentative engine request, not an
+            // instruction to flip language before Windows accepts the rewrite.
+            let requires_replacement =
+                !is_plain_passthrough && (backspaces > 0 || !text.is_empty());
+            let admitted = if requires_replacement {
+                if auto_switch_req == Some(false) && state.config.auto_switch_by_typing {
+                    // Language mode must not change on mere worker admission:
+                    // a queued async rewrite could later fail or be canceled
+                    // after focus switches. Require a complete synchronous
+                    // SendInput transaction for this language transition.
+                    crate::inject::send_atomic_word_break(
+                        backspaces,
+                        &text,
+                        None,
+                        state.injection_mode,
+                    )
+                } else {
+                    state.send_engine_output(backspaces, &text)
                 }
-            }
-
-            if !is_plain_passthrough && (backspaces > 0 || !text.is_empty()) {
-                let admitted = state.send_engine_output(backspaces, &text);
-                if !admitted {
-                    // The worker did not accept a replacement. Do not swallow
-                    // this physical key and do not reuse stale composition.
-                    state.engine.reset_word();
-                    state.macro_buffer.clear();
-                }
+            } else {
+                true
+            };
+            if !admitted {
+                // The physical key still reaches Windows. Its original text,
+                // not the speculative engine output, is authoritative.
+                state.engine.reset();
+                state.macro_buffer.clear();
                 drop(lock);
-                if admitted {
-                    return 1;
-                }
                 return CallNextHookEx(null_mut(), n_code, w_param, l_param);
             }
 
+            if should_commit_auto_english_switch(
+                auto_switch_req,
+                state.config.auto_switch_by_typing,
+                admitted,
+            ) {
+                state.toggle_language();
+                let effective = state.effective_enabled();
+                crate::tsf::sync_tsf_config(&state.config, effective);
+                let tray_hwnd = state.tray_hwnd;
+                let play_sound = state.config.notification_sound;
+                PostMessageW(tray_hwnd, WM_TRAYICON, 0, if effective { 1 } else { 0 });
+                if play_sound {
+                    play_notification_sound();
+                }
+            }
+
+            if requires_replacement {
+                drop(lock);
+                return 1;
+            }
             if auto_switch_req.is_some() {
                 drop(lock);
                 return CallNextHookEx(null_mut(), n_code, w_param, l_param);
@@ -1657,6 +1693,23 @@ fn vk_to_char(vk: u16, shift: bool) -> char {
     }
 }
 
+/// Only a bare Backspace is an editing key for VietFlow's composition
+/// engine; system/editor modifier chords keep their native semantics.
+fn should_process_vietnamese_backspace(ctrl: bool, alt: bool, win: bool) -> bool {
+    !ctrl && !alt && !win
+}
+
+/// A speculative Vietnamese-to-English AutoSwitch is committed only after
+/// the corresponding edit was fully accepted by synchronous SendInput, never
+/// on a worker's mere promise to execute later.
+fn should_commit_auto_english_switch(
+    requested: Option<bool>,
+    enabled: bool,
+    output_admitted: bool,
+) -> bool {
+    enabled && output_admitted && requested == Some(false)
+}
+
 fn language_hotkey_allowed(locked: bool, excluded: bool, unlocked: bool) -> bool {
     !locked || (excluded && unlocked)
 }
@@ -1872,6 +1925,54 @@ mod tests {
         state.config.injection_mode = 4;
         state.apply_runtime_profile();
         assert_eq!(state.injection_mode, 4);
+    }
+
+    #[test]
+    fn editor_modifier_backspace_is_never_ime_backspace() {
+        assert!(should_process_vietnamese_backspace(false, false, false));
+        for (ctrl, alt, win) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+            (true, true, false),
+            (true, false, true),
+            (false, true, true),
+            (true, true, true),
+        ] {
+            assert!(
+                !should_process_vietnamese_backspace(ctrl, alt, win),
+                "modified Backspace must reach the editor, not the IME"
+            );
+        }
+    }
+
+    #[test]
+    fn vietnamese_to_english_switch_never_queues_paced_or_oversized_rewrite() {
+        for mode in [3u8, 4u8] {
+            assert!(
+                !crate::inject::send_atomic_word_break(1, "english", None, mode),
+                "paced injection cannot authorize a language switch"
+            );
+        }
+        assert!(
+            !crate::inject::send_atomic_word_break(4097, "english", None, 0),
+            "oversized replacement cannot authorize a language switch"
+        );
+        assert!(
+            !crate::inject::send_atomic_word_break(0, &"e".repeat(33), None, 0),
+            "oversized text cannot authorize a language switch"
+        );
+    }
+
+    #[test]
+    fn auto_english_switch_needs_actual_rewrite_acceptance() {
+        assert!(should_commit_auto_english_switch(Some(false), true, true));
+        assert!(!should_commit_auto_english_switch(Some(false), true, false));
+        assert!(!should_commit_auto_english_switch(Some(false), false, true));
+        assert!(!should_commit_auto_english_switch(Some(true), true, true));
+        assert!(!should_commit_auto_english_switch(None, true, true));
+        // When a physical key is preserved due to SendInput failure, the
+        // language must remain Vietnamese on the next keystroke.
     }
 
     #[test]
