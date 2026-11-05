@@ -696,21 +696,78 @@ fn fetch_release_info() -> Result<ReleaseInfo, FetchError> {
 
 fn version_key(value: &str) -> Option<([u32; 3], Option<String>)> {
     let value = normalize_version(value);
-    let (core, prerelease) = match value.split_once('-') {
-        Some((core, prerelease)) => (core, Some(prerelease.to_string())),
+    // SemVer build metadata does not affect precedence. A prerelease like
+    // rc.10 must be parsed as dotted identifiers, not compared as one string.
+    let (without_build, build) = match value.split_once('+') {
+        Some((core, build)) => (core, Some(build)),
         None => (value.as_str(), None),
+    };
+    if build.is_some_and(|b| b.is_empty() || !b.split('.').all(valid_semver_identifier)) {
+        return None;
+    }
+    let (core, prerelease) = match without_build.split_once('-') {
+        Some((core, pre)) => {
+            if !pre.split('.').all(valid_semver_prerelease_identifier) {
+                return None;
+            }
+            (core, Some(pre.to_string()))
+        }
+        None => (without_build, None),
     };
     let mut parts = core.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next().unwrap_or("0").parse().ok()?;
-    let patch = parts
-        .next()
-        .unwrap_or("0")
-        .split('+')
-        .next()?
-        .parse()
-        .ok()?;
+    let patch = parts.next().unwrap_or("0").parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
     Some(([major, minor, patch], prerelease))
+}
+
+fn valid_semver_identifier(identifier: &str) -> bool {
+    !identifier.is_empty()
+        && identifier
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+fn valid_semver_prerelease_identifier(identifier: &str) -> bool {
+    valid_semver_identifier(identifier)
+        && !(identifier.len() > 1
+            && identifier.starts_with('0')
+            && identifier.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn compare_prerelease_identifiers(a: &str, b: &str) -> std::cmp::Ordering {
+    let a_numeric = a.bytes().all(|c| c.is_ascii_digit());
+    let b_numeric = b.bytes().all(|c| c.is_ascii_digit());
+    match (a_numeric, b_numeric) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        (false, false) => a.cmp(b),
+        (true, true) => {
+            // Avoid u32/u64 overflow on large numeric prerelease identifiers.
+            let a = a.trim_start_matches('0');
+            let b = b.trim_start_matches('0');
+            a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+        }
+    }
+}
+
+fn prerelease_is_newer(remote: &str, local: &str) -> bool {
+    let mut r = remote.split('.');
+    let mut l = local.split('.');
+    loop {
+        match (r.next(), l.next()) {
+            (None, None) | (None, Some(_)) => return false,
+            (Some(_), None) => return true,
+            (Some(a), Some(b)) => match compare_prerelease_identifiers(a, b) {
+                std::cmp::Ordering::Greater => return true,
+                std::cmp::Ordering::Less => return false,
+                std::cmp::Ordering::Equal => {}
+            },
+        }
+    }
 }
 
 fn is_newer_version(remote: &str, local: &str) -> bool {
@@ -724,9 +781,9 @@ fn is_newer_version(remote: &str, local: &str) -> bool {
     }
     match (remote_pre, local_pre) {
         (None, None) => false,
-        (None, Some(_)) => true, // 1.0.0 is newer than 1.0.0-beta
+        (None, Some(_)) => true, // A final release is newer than any prerelease.
         (Some(_), None) => false,
-        (Some(remote), Some(local)) => remote > local,
+        (Some(remote), Some(local)) => prerelease_is_newer(&remote, &local),
     }
 }
 
@@ -1028,6 +1085,26 @@ mod tests {
         assert!(!is_newer_version("0.1.0", "0.1.0"));
         assert!(!is_newer_version("0.1.0-alpha", "0.1.0"));
         assert!(!is_newer_version("garbage", "0.1.0"));
+        assert!(is_newer_version("1.0.0-rc.10", "1.0.0-rc.2"));
+        assert!(!is_newer_version("1.0.0-rc.2", "1.0.0-rc.10"));
+        assert!(is_newer_version("1.0.0-alpha.1", "1.0.0-alpha"));
+        assert!(is_newer_version("1.0.0-beta", "1.0.0-99"));
+        assert!(is_newer_version(
+            "1.0.0-alpha.100000000000000000000",
+            "1.0.0-alpha.9"
+        ));
+        assert!(is_newer_version("1.0.0-rc.1.2", "1.0.0-rc.1"));
+        assert!(!is_newer_version("1.0.0-rc.1", "1.0.0-rc.1.2"));
+        assert!(!is_newer_version("1.0.0+build.5", "1.0.0+build.4"));
+        assert!(is_newer_version("1.0.1+build.1", "1.0.0+build.99"));
+        assert!(!is_newer_version("1.0.0.2", "1.0.0"));
+        assert!(!is_newer_version("1.0.0-rc..1", "1.0.0"));
+        assert!(!is_newer_version("1.0.0-rc.01", "1.0.0-rc.1"));
+        assert!(!is_newer_version("1.0.0-01", "1.0.0-1"));
+        assert!(!is_newer_version(
+            "1.0.0-rc.1+build.12",
+            "1.0.0-rc.1+build.1"
+        ));
     }
 
     #[test]
