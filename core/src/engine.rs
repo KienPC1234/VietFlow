@@ -455,8 +455,8 @@ impl VietFlowEngine {
         slot.lexi = if is_upper { VnLexiName::Uh } else { VnLexiName::uh };
         slot.is_upper = is_upper;
         slot.modified = true;
-        // Clone for output before potential rebuilds move it.
-        let pushed_slot = slot.clone();
+        // Slot is Copy: retain output state before potential buffer rebuilds.
+        let pushed_slot = slot;
         self.buffer.push(slot);
 
         if self.buffer.len() == 1 {
