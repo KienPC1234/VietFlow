@@ -725,8 +725,22 @@ unsafe fn delete_hkcu_tree(subkey: &str) {
     let _ = RegDeleteTreeW(HKEY_CURRENT_USER, wide.as_ptr());
 }
 
+// Test binaries may run on developer machines with a registered, live TIP.
+// Never alter TSF registrations, HKCU layouts or machine-wide COM from
+// cargo test; explicit VM acceptance must use a non-test executable.
+#[cfg(test)]
+fn require_tsf_mutation_outside_test() -> Result<(), String> {
+    Err("TSF registration changes are disabled in Rust test builds".into())
+}
+
+#[cfg(not(test))]
+fn require_tsf_mutation_outside_test() -> Result<(), String> {
+    Ok(())
+}
+
 /// Registers the VietFlow TSF in-process COM DLL via regsvr32 with elevation.
 pub fn register_tsf() -> Result<(), String> {
+    require_tsf_mutation_outside_test()?;
     let dll = tsf_dll_path().ok_or_else(|| "vietflow_tsf.dll không tồn tại.".to_string())?;
 
     // 0. Remove legacy layouts and purge legacy HKCU entries
@@ -766,6 +780,7 @@ pub fn register_tsf() -> Result<(), String> {
 /// HKCU keyboard layouts and persists a changed use_tsf user preference.
 /// Per-user TIP registrations in other profiles still need VM acceptance.
 pub fn unregister_tsf_from_msi_final_uninstall() -> Result<(), String> {
+    require_tsf_mutation_outside_test()?;
     // The MSI-owned DLL must be beside the executing MSI-owned EXE.
     // Do NOT use the interactive tsf_dll_path() fallback search over CWD,
     // parents, debug or dist; that could unregister an unrelated dev DLL.
@@ -783,6 +798,7 @@ pub fn unregister_tsf_from_msi_final_uninstall() -> Result<(), String> {
 
 /// Unregisters the VietFlow TSF in-process COM DLL via regsvr32 with elevation.
 pub fn unregister_tsf() -> Result<(), String> {
+    require_tsf_mutation_outside_test()?;
     // 1. Remove layout from active user keyboard layout list so Windows immediately deactivates it
     call_install_layout_or_tip(&format!("0409:{CLSID_STR}{PROFILE_STR}"), true);
     call_install_layout_or_tip(&format!("042a:{CLSID_STR}{PROFILE_STR}"), true);
@@ -822,6 +838,7 @@ pub fn unregister_tsf() -> Result<(), String> {
 
 /// Reinstalls (unregisters and re-registers) the VietFlow TSF COM TIP DLL.
 pub fn reinstall_tsf() -> Result<(), String> {
+    require_tsf_mutation_outside_test()?;
     let _ = unregister_tsf();
     std::thread::sleep(std::time::Duration::from_millis(300));
     register_tsf()?;
@@ -947,10 +964,25 @@ mod tests {
     }
 
     #[test]
-    fn test_tsf_registration_lifecycle() {
-        if is_tsf_registered() {
-            let _ = unregister_tsf();
+    fn test_tsf_registration_mutations_are_blocked_in_unit_tests() {
+        // Must fail before touching HKCU, keyboard layouts, COM or elevation.
+        for action in [
+            register_tsf,
+            unregister_tsf,
+            unregister_tsf_from_msi_final_uninstall,
+            reinstall_tsf,
+        ] {
+            assert!(action().is_err());
         }
-        assert!(!is_tsf_registered());
+    }
+
+    #[test]
+    fn test_tsf_registration_probe_is_read_only() {
+        // cargo test can run on a machine with VietFlow installed. Never
+        // unregister an existing TIP or alter HKCU/COM from a unit test.
+        // Full lifecycle validation belongs to an explicitly approved VM E2E.
+        let before = is_tsf_registered();
+        let after = is_tsf_registered();
+        assert_eq!(before, after, "TSF registration probe must be stable");
     }
 }
