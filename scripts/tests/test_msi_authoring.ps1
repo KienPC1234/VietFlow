@@ -46,7 +46,7 @@ function Verify-MsiPolicy([xml]$doc) {
     Assert-True ($seq.GetAttribute('Before') -eq 'RemoveFiles') 'unregister before deleting TSF DLL'
     Assert-True ($seq.GetAttribute('Condition') -eq 'Installed AND REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE') 'only final uninstall, never upgrade/repair'
     Assert-True ($doc.SelectNodes('//w:RemoveFolder',$ns).Count -eq 0) 'no user data directory removals'
-    Assert-True ($doc.SelectNodes('//w:RemoveFile',$ns).Count -eq 2) 'only the two MSI-owned shortcuts are removed'
+    Assert-True ($doc.SelectNodes('//w:RemoveFile',$ns).Count -eq 0) 'MSI manages owned shortcuts; forbid extra name-based deletions of replaced user links'
     $appData = $doc.SelectSingleNode('//w:Directory[@Id="CommonAppDataVietFlow"]',$ns)
     Assert-True ($null -ne $appData) 'persistent ProgramData directory is preserved'
     $shortcutComponents = @($doc.SelectNodes('//w:Component/w:Shortcut',$ns))
@@ -104,4 +104,22 @@ $blocked = $false
 try { Verify-MsiPolicy $bad } catch { $blocked = $true }
 Assert-True $blocked 'regression must detect unsafe same-version major upgrades'
 Write-Host 'PASS MSI: regression detects unsafe same-version major upgrades'
+
+# An MSI-managed shortcut has its own component lifecycle. A separate
+# RemoveFile-by-name can also delete a replacement .lnk the user created.
+# Mutation-testing this prohibition prevents wildcard and exact-name cleanup.
+$bad = [xml]$document.OuterXml
+$ns = [xml.XmlNamespaceManager]::new($bad.NameTable)
+$ns.AddNamespace('w','http://wixtoolset.org/schemas/v4/wxs')
+$component = $bad.SelectSingleNode('//w:Component[@Id="DesktopShortcutComponent"]',$ns)
+Assert-True ($null -ne $component) 'test fixture has desktop shortcut component'
+$extra = $bad.CreateElement('RemoveFile', 'http://wixtoolset.org/schemas/v4/wxs')
+$extra.SetAttribute('Id', 'DangerousNameBasedDelete')
+$extra.SetAttribute('Name', 'VietFlow.lnk')
+$extra.SetAttribute('On', 'uninstall')
+[void]$component.AppendChild($extra)
+$blocked = $false
+try { Verify-MsiPolicy $bad } catch { $blocked = $true }
+Assert-True $blocked 'policy must reject name-based deletion of user-replaced shortcuts'
+Write-Host 'PASS MSI: regression detects extra name-based shortcut deletion'
 Write-Host 'PASS: isolated MSI authoring safety suite'

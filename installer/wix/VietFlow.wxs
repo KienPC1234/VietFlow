@@ -117,7 +117,6 @@
                   Target="[!VietFlowExe]"
                   WorkingDirectory="INSTALLFOLDER"
                   Icon="AppIcon.ico" />
-        <RemoveFile Id="CleanStartMenuLnk" Name="VietFlow.lnk" On="uninstall" />
         <RegistryValue Root="HKCU" Key="Software\VietFlow" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </StandardDirectory>
@@ -131,7 +130,6 @@
                   Target="[!VietFlowExe]"
                   WorkingDirectory="INSTALLFOLDER"
                   Icon="AppIcon.ico" />
-        <RemoveFile Id="CleanDesktopLnk" Name="VietFlow.lnk" On="uninstall" />
         <RegistryValue Root="HKCU" Key="Software\VietFlow" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </StandardDirectory>
