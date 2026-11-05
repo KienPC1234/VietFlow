@@ -3,16 +3,20 @@
 
 use std::mem::zeroed;
 use std::ptr::null_mut;
-use windows_sys::Win32::Foundation::{HWND, POINT};
+use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
+use windows_sys::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
 use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
     NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos,
-    PostMessageW, SetForegroundWindow, TrackPopupMenu, HICON,
-    MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
-    WM_NULL,
+    PostMessageW, SetForegroundWindow, TrackPopupMenuEx,
+    HICON, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+    TPM_RIGHTALIGN, TPM_TOPALIGN, TPMPARAMS,
+    MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, WM_NULL,
 };
 
 pub use crate::constants::*;
@@ -358,15 +362,57 @@ impl TrayIcon {
         let mut pt: POINT = zeroed();
         GetCursorPos(&mut pt);
         SetForegroundWindow(self.hwnd);
-        TrackPopupMenu(
-            hmenu,
-            TPM_LEFTALIGN | TPM_BOTTOMALIGN,
-            pt.x,
-            pt.y,
-            0,
-            self.hwnd,
-            null_mut(),
-        );
+        // Anchor the popup inside the monitor work area so the taskbar
+        // (any edge, multi-monitor aware) never covers the menu.
+        let mut align = TPM_LEFTALIGN | TPM_BOTTOMALIGN;
+        let mut tpmp: TPMPARAMS = zeroed();
+        tpmp.cbSize = std::mem::size_of::<TPMPARAMS>() as u32;
+        let mut tpmp_arg = null_mut();
+        let hmon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        if !hmon.is_null() {
+            let mut mi: MONITORINFO = zeroed();
+            mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+            if GetMonitorInfoW(hmon, &mut mi) != 0 {
+                let m = mi.rcMonitor;
+                let w = mi.rcWork;
+                // Taskbar strip = monitor rect minus work area.
+                let exclude = if w.bottom < m.bottom {
+                    RECT { left: w.left, top: w.bottom, right: w.right, bottom: m.bottom }
+                } else if w.top > m.top {
+                    RECT { left: w.left, top: m.top, right: w.right, bottom: w.top }
+                } else if w.right < m.right {
+                    RECT { left: w.right, top: w.top, right: m.right, bottom: w.bottom }
+                } else if w.left > m.left {
+                    RECT { left: m.left, top: w.top, right: w.left, bottom: w.bottom }
+                } else {
+                    RECT { left: 0, top: 0, right: 0, bottom: 0 }
+                };
+                if exclude.right > exclude.left && exclude.bottom > exclude.top {
+                    tpmp.rcExclude = exclude;
+                    tpmp_arg = &mut tpmp;
+                }
+                // Clamp the anchor into the work area.
+                if pt.x < w.left {
+                    pt.x = w.left;
+                } else if pt.x >= w.right {
+                    pt.x = w.right - 1;
+                }
+                if pt.y < w.top {
+                    pt.y = w.top;
+                } else if pt.y >= w.bottom {
+                    pt.y = w.bottom - 1;
+                }
+                // Flip alignment when there is not enough room.
+                // Menu is ~220px wide and ~370px tall.
+                if pt.x + 240 > w.right {
+                    align = (align & !TPM_LEFTALIGN) | TPM_RIGHTALIGN;
+                }
+                if pt.y - w.top < 400 {
+                    align = (align & !TPM_BOTTOMALIGN) | TPM_TOPALIGN;
+                }
+            }
+        }
+        TrackPopupMenuEx(hmenu, align, pt.x, pt.y, self.hwnd, tpmp_arg);
         PostMessageW(self.hwnd, WM_NULL, 0, 0);
         DestroyMenu(hmenu);
     }

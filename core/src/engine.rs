@@ -320,6 +320,41 @@ impl VietFlowEngine {
             }
         }
 
+        // Lone 'w' -> 'ư' fallback (Telex-family). Handled here (not inside
+        // try_apply_modify) so raw_chars is pushed exactly once.
+        {
+            let lower = to_lower_ascii(c);
+            let is_telex_w = matches!(
+                self.options.method,
+                InputMethod::Telex
+                    | InputMethod::SimpleTelex
+                    | InputMethod::TelexSimple2
+                    | InputMethod::TelexVni
+            ) && lower == 'w';
+            let is_hook_w = modify_key == ModifyKeyType::HookAll;
+            if is_telex_w || is_hook_w {
+                let is_lone_w_method = matches!(
+                    self.options.method,
+                    InputMethod::Telex | InputMethod::SimpleTelex | InputMethod::TelexVni
+                ) || (self.options.method == InputMethod::UserCustom
+                    && self.options.custom_keymap.lone_w);
+                if is_lone_w_method
+                    && self.word_form != WordForm::NonVn
+                    && !self.buffer.iter().any(|s| to_lower_ascii(s.raw_char) == 'w')
+                {
+                    // Respect the same guard as apply_hook_all: without free_marking,
+                    // 'w' after a closed nucleus is not a lone-ư (let it fall
+                    // through to subsequent-letter handling).
+                    if self.vowel_count == 0
+                        || self.options.free_marking
+                        || self.last_vowel_is_current()
+                    {
+                        return self.process_lone_w(c);
+                    }
+                }
+            }
+        }
+
         // Subsequent letters
         if is_letter_fast(c) {
             return self.process_subsequent_letter(c);
@@ -420,14 +455,36 @@ impl VietFlowEngine {
         slot.lexi = if is_upper { VnLexiName::Uh } else { VnLexiName::uh };
         slot.is_upper = is_upper;
         slot.modified = true;
+        // Clone for output before potential rebuilds move it.
+        let pushed_slot = slot.clone();
         self.buffer.push(slot);
 
-        self.word_form = WordForm::V;
-        self.has_ending_consonant = false;
-        self.recalculate_vowel_state();
+        if self.buffer.len() == 1 {
+            self.word_form = WordForm::V;
+            self.has_ending_consonant = false;
+            self.recalculate_vowel_state();
 
-        let out = self.encode_slot_str(&slot);
-        self.display_len = out.chars().count();
+            let out = self.encode_slot_str(&pushed_slot);
+            self.display_len += out.chars().count();
+            return (0, out);
+        }
+
+        self.recalculate_vowel_state();
+        let vowel_after_coda = self.update_form_after_append(true);
+
+        if vowel_after_coda && self.options.spell_check && self.options.auto_non_vn_restore && self.has_any_vietnamese_mark() {
+            return self.restore_raw_buffer_with_new_char(c);
+        }
+
+        if self.current_tone != VnLexiTone::None
+            && self.word_form != WordForm::NonVn
+            && self.refresh_tone_position()
+        {
+            return self.rebuild_from_index(self.vowel_start);
+        }
+
+        let out = self.encode_slot_str(&pushed_slot);
+        self.display_len += out.chars().count();
         (0, out)
     }
 
@@ -674,7 +731,6 @@ impl VietFlowEngine {
                         last_slot.modified = false;
                         self.temp_disabled = true;
                         self.buffer.push(Slot::new(raw_key));
-                        self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                         return Some(self.rebuild_current_word());
                     }
 
@@ -718,7 +774,6 @@ impl VietFlowEngine {
                                 slot.modified = false;
                                 self.temp_disabled = true;
                                 self.buffer.push(Slot::new(raw_key));
-                                self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                                 return Some(self.rebuild_current_word());
                             }
                             slot.lexi = if slot.is_upper { VnLexiName::DD } else { VnLexiName::dd };
@@ -744,7 +799,6 @@ impl VietFlowEngine {
                         last_slot.modified = false;
                         self.temp_disabled = true;
                         self.buffer.push(Slot::new(raw_key));
-                        self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                         return Some(self.rebuild_current_word());
                     }
 
@@ -793,7 +847,6 @@ impl VietFlowEngine {
                                         slot.modified = false;
                                         self.temp_disabled = true;
                                         self.buffer.push(Slot::new(raw_key));
-                                        self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                                         return Some(self.rebuild_current_word());
                                     }
 
@@ -854,18 +907,8 @@ impl VietFlowEngine {
                 return Some(res);
             }
 
-            // Lone 'w' becomes 'ư' in Telex, SimpleTelex, TelexVni, or UserCustom when enabled
-            let is_lone_w_method = matches!(
-                self.options.method,
-                InputMethod::Telex | InputMethod::SimpleTelex | InputMethod::TelexVni
-            ) || (self.options.method == InputMethod::UserCustom && self.options.custom_keymap.lone_w);
-
-            if is_lone_w_method
-                && self.word_form != WordForm::NonVn
-                && !self.buffer.iter().any(|s| to_lower_ascii(s.raw_char) == 'w')
-            {
-                return Some(self.process_lone_w(raw_key));
-            }
+            // Lone 'w' is handled in process_key_raw (outside try_apply_modify)
+            // so that raw_chars is pushed exactly once (no outer double-push).
         }
 
         // VNI & VIQR & TelexVni & UserCustom number/symbol modifications
@@ -898,7 +941,6 @@ impl VietFlowEngine {
                                 slot.modified = false;
                                 self.temp_disabled = true;
                                 self.buffer.push(Slot::new(raw_key));
-                                self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                                 return Some(self.rebuild_current_word());
                             }
                             slot.lexi = match c {
@@ -945,7 +987,6 @@ impl VietFlowEngine {
                                 slot.modified = false;
                                 self.temp_disabled = true;
                                 self.buffer.push(Slot::new(raw_key));
-                                self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                                 return Some(self.rebuild_current_word());
                             }
                             slot.lexi = if slot.is_upper { VnLexiName::DD } else { VnLexiName::dd };
@@ -1059,7 +1100,6 @@ impl VietFlowEngine {
                 self.temp_disabled = true;
                 self.refresh_tone_position();
                 self.buffer.push(Slot::new(raw_key));
-                self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                 return Some(self.rebuild_current_word());
             }
 
@@ -1070,7 +1110,6 @@ impl VietFlowEngine {
                 self.temp_disabled = true;
                 self.refresh_tone_position();
                 self.buffer.push(Slot::new(raw_key));
-                self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                 return Some(self.rebuild_current_word());
             }
 
@@ -1145,7 +1184,6 @@ impl VietFlowEngine {
                 self.temp_disabled = true;
                 self.refresh_tone_position();
                 self.buffer.push(Slot::new(raw_key));
-                self.raw_chars = self.buffer.iter().map(|s| s.raw_char).collect();
                 return Some(self.rebuild_current_word());
             }
         }
@@ -1206,17 +1244,20 @@ impl VietFlowEngine {
             // 1. Doubled key fix: e.g. "mixx" -> "mix"
             if self.pending_doubled_fix {
                 self.pending_doubled_fix = false;
-                if raw_word.len() >= 3 {
+                if self.raw_chars.len() >= 3 {
                     let raw_lower = raw_word.to_ascii_lowercase();
-                    let trimmed = &raw_lower[..raw_lower.len() - 1];
+                    // Char-boundary safe: raw may contain multibyte (e.g. typed đ/ơ/ư).
+                    let trimmed_chars = self.raw_chars.len() - 1;
+                    let trimmed_raw: String = self.raw_chars[..trimmed_chars].iter().collect();
+                    let trimmed_lower = trimmed_raw.to_ascii_lowercase();
                     let full_en = crate::autoswitch::lookup_en_score(&raw_lower).is_some();
-                    let trimmed_en = crate::autoswitch::lookup_en_score(trimmed).is_some();
+                    let trimmed_en = crate::autoswitch::lookup_en_score(&trimmed_lower).is_some();
                     if !full_en && trimmed_en {
                         let backspaces = self.display_len;
-                        let mut out = KeyText::from_str(&raw_word[..raw_word.len() - 1]);
+                        let mut out = KeyText::from_str(&trimmed_raw);
                         out.push_char(c);
                         self.auto_switch_requested = Some(false);
-                        self.lookback.push_word(&raw_word[..raw_word.len() - 1], &raw_word[..raw_word.len() - 1], true);
+                        self.lookback.push_word(&trimmed_raw, &trimmed_raw, true);
                         self.reset_word();
                         return (backspaces, out);
                     }

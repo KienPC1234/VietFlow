@@ -8,6 +8,8 @@
 >    - Never commit after small, iterative edits or individual file fixes. Doing so bloats the git commit graph.
 >    - All changes MUST be accumulated and squashed into **large, cohesive milestone commits** (`feat(release): ...`, `fix(core): ...`) only after the entire feature, refactor, or fix is 100% complete, tested, and verified across the workspace.
 >    - When still in progress or iterating with the user, keep all changes in the working tree uncommitted until explicitly approved or a major milestone is reached.
+>    - Commit worthiness is measured by **cohesive scope, not diff size**: a small but 100% complete, tested fix is committable, while a large diff is not committable if it is incomplete or untested.
+>    - **Anti-padding**: strictly prohibit inflating a diff to look "big enough" (gratuitous reformatting, unrelated drive-by edits, generated-file or lockfile noise bundled without need). Keep every commit's diff limited to what the milestone requires.
 > 2. **EXHAUSTIVE GITHUB RELEASE ASSETS (NO MISSING FILES)**:
 >    - When the user requests a GitHub release (`scripts/publish-release.ps1`), the published asset list MUST be 100% complete.
 >    - **Pure Native Packaging**: Native WiX v5 MSIs (`VietFlow-win-*.msi`), standalone portable executables (`VietFlow-*.exe`), and updater metadata (`latest.json`, `version.txt`, `CHANGELOG.md`). No Velopack wrappers, NuGet packages, or delta updates.
