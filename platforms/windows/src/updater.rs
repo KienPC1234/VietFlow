@@ -10,6 +10,11 @@
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use windows_sys::Win32::Security::WinTrust::{
+    WinVerifyTrust, WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0,
+    WINTRUST_FILE_INFO, WTD_CHOICE_FILE, WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT,
+    WTD_REVOKE_WHOLECHAIN, WTD_STATEACTION_IGNORE, WTD_UICONTEXT_INSTALL, WTD_UI_NONE,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     MessageBoxW, IDYES, MB_ICONINFORMATION, MB_ICONQUESTION, MB_ICONWARNING, MB_OK,
     MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
@@ -934,9 +939,75 @@ fn verify_msi_file(
     }
     Ok(())
 }
+/// Keep the downloaded path read-only while checking its digest, signature
+/// and dispatching the installer. FILE_SHARE_READ denies concurrent writes,
+/// deletes and replacement by other handles during this critical section.
+/// This is only a dispatch-time guard, not a guarantee after the updater exits.
+fn lock_msi_for_verification(path: &std::path::Path) -> Result<std::fs::File, FetchError> {
+    use std::os::windows::fs::OpenOptionsExt;
 
-/// Fail-closed MSI launcher; only official GitHub API digests and byte lengths
-/// are allowed to authorize execution, not human-readable release manifests.
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+        .map_err(|e| FetchError::new(format!("Cannot lock MSI against modifications: {e}")))
+}
+
+/// Validate the MSI's Authenticode chain with the installed Windows trust
+/// policy. SHA-256 from the official release API alone is insufficient to
+/// prove that a publisher signed the executable installer.
+///
+/// WinVerifyTrust is intentionally performed on the staged on-disk MSI before
+/// ShellExecute. Unsigned, expired, revoked, or untrusted signatures fail
+/// closed; portable/manual release browsing remains available instead.
+///
+/// This verifies the Windows trust chain, NOT a specific VietFlow publisher
+/// certificate. Publisher-identity pinning is a separate release gate.
+fn verify_msi_authenticode(path: &std::path::Path) -> Result<(), FetchError> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let wide_path: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut file = WINTRUST_FILE_INFO {
+        cbStruct: std::mem::size_of::<WINTRUST_FILE_INFO>() as u32,
+        pcwszFilePath: wide_path.as_ptr(),
+        hFile: std::ptr::null_mut(),
+        pgKnownSubject: std::ptr::null_mut(),
+    };
+    let mut trust = WINTRUST_DATA {
+        cbStruct: std::mem::size_of::<WINTRUST_DATA>() as u32,
+        dwUIChoice: WTD_UI_NONE,
+        fdwRevocationChecks: WTD_REVOKE_WHOLECHAIN,
+        dwUnionChoice: WTD_CHOICE_FILE,
+        Anonymous: WINTRUST_DATA_0 { pFile: &mut file },
+        dwStateAction: WTD_STATEACTION_IGNORE,
+        dwProvFlags: WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT,
+        dwUIContext: WTD_UICONTEXT_INSTALL,
+        ..Default::default()
+    };
+    let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    let status = unsafe {
+        WinVerifyTrust(
+            std::ptr::null_mut(),
+            &mut action,
+            (&mut trust as *mut WINTRUST_DATA).cast(),
+        )
+    };
+    if status != 0 {
+        return Err(FetchError::new(format!(
+            "MSI Authenticode signature or trust chain invalid (0x{:08X})",
+            status as u32
+        )));
+    }
+    Ok(())
+}
+
+/// Fail-closed MSI launcher; only official GitHub API digests, byte lengths
+/// and valid Windows Authenticode chains authorize unattended execution.
 fn launch_verified_msi(info: &ReleaseInfo) -> Result<(), FetchError> {
     let url = info
         .download
@@ -960,7 +1031,9 @@ fn launch_verified_msi(info: &ReleaseInfo) -> Result<(), FetchError> {
     ));
     let result = (|| {
         download_file(url, &destination)?;
+        let _verified_file_guard = lock_msi_for_verification(&destination)?;
         verify_msi_file(&destination, expected_size, &expected_hash)?;
+        verify_msi_authenticode(&destination)?;
         let path = to_wide(&destination.to_string_lossy());
         let result = unsafe {
             windows_sys::Win32::UI::Shell::ShellExecuteW(
@@ -1000,7 +1073,7 @@ fn prompt_update(info: &ReleaseInfo) {
         if show_msg(&message, "Cập nhật VietFlow", MB_YESNO | MB_ICONQUESTION) == IDYES {
             if info.download.is_some() && info.sha256.is_some() && info.size.is_some() {
                 show_msg(
-                    "Downloading MSI and verifying its SHA-256 from GitHub...",
+                    "Downloading MSI and verifying GitHub SHA-256 and Windows Authenticode signature...",
                     "VietFlow update",
                     MB_OK | MB_ICONINFORMATION,
                 );
@@ -1336,6 +1409,40 @@ mod tests {
         std::fs::write(&path, b"abd").unwrap();
         assert!(verify_msi_file(&path, 3, &expected).is_err());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn unsigned_installer_is_never_trusted_for_automatic_launch() {
+        let path = std::env::temp_dir().join(format!(
+            "VietFlow-test-unsigned-{}-{}.msi",
+            std::process::id(),
+            crate::hook::get_tick_count_64()
+        ));
+        // A valid OLE magic header alone cannot establish Authenticode trust.
+        let mut body = Vec::from(MSI_MAGIC_HEADER);
+        body.resize(1024, 0);
+        std::fs::write(&path, body).unwrap();
+        let verified = verify_msi_authenticode(&path);
+        let _ = std::fs::remove_file(path);
+        assert!(verified.is_err(), "an unsigned MSI-shaped file was trusted");
+    }
+
+    #[test]
+    fn staged_installer_verification_guard_rejects_concurrent_writes() {
+        let path = std::env::temp_dir().join(format!(
+            "VietFlow-test-file-lock-{}-{}.msi",
+            std::process::id(),
+            crate::hook::get_tick_count_64()
+        ));
+        std::fs::write(&path, b"unsigned fixture").unwrap();
+        let read_guard = lock_msi_for_verification(&path).unwrap();
+        assert!(
+            std::fs::OpenOptions::new().write(true).open(&path).is_err(),
+            "a concurrent writer should not modify a verified MSI"
+        );
+        drop(read_guard);
+        assert!(std::fs::OpenOptions::new().write(true).open(&path).is_ok());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
