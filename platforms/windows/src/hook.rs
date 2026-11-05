@@ -8,7 +8,7 @@ use vietflow_core::models::{CharsetId, EngineOptions, InputMethod};
 use vietflow_core::VietFlowEngine;
 use windows_sys::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, GetKeyState, GetKeyboardLayout, MapVirtualKeyExW, SendInput, ToUnicodeEx, INPUT, VK_BACK,
+    GetAsyncKeyState, GetKeyState, GetKeyboardLayout, MapVirtualKeyExW, ToUnicodeEx, VK_BACK,
     VK_CAPITAL, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_F1, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
     VK_OEM_1, VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_7, VK_OEM_COMMA, VK_OEM_MINUS,
     VK_OEM_PERIOD, VK_OEM_PLUS, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
@@ -1169,25 +1169,36 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
 
                 if auto_switch_allowed {
                     let word = state.english_word_buffer.clone();
+                    // Detection is speculative. Restore the lookback history
+                    // if Windows does not accept the complete transformation.
+                    let old_lookback = state.engine.lookback.clone();
                     if let Some((bs, text)) = state.engine.check_english_word_at_break(&word, break_char) {
-                        if !state.send_engine_output(bs, text.as_str()) {
-                            // No replacement was queued: preserve the native
-                            // break key rather than swallowing Enter/Space.
+                        // Never queue the rewrite and send Enter/Tab separately:
+                        // the native word break could precede a delayed macro.
+                        // A checked single SendInput batch preserves ordering.
+                        let trailing_key = match vk {
+                            VK_RETURN | VK_TAB => Some(vk),
+                            _ => None, // Space/punctuation is already in text.
+                        };
+                        if !crate::inject::send_atomic_word_break(
+                            bs,
+                            text.as_str(),
+                            trailing_key,
+                            state.injection_mode,
+                        ) {
+                            // Keep the native break and English mode unchanged.
+                            // No tentative lookback result may survive rejection.
+                            state.engine.lookback = old_lookback;
+                            let _ = state.engine.take_auto_switch_request();
                             state.engine.reset_word();
                             state.english_word_buffer.clear();
                             state.english_word_valid = true;
                             drop(lock);
                             return CallNextHookEx(null_mut(), n_code, w_param, l_param);
                         }
-                        if is_enter {
-                            let mut inputs = [
-                                crate::inject::create_vk_input(VK_RETURN, false),
-                                crate::inject::create_vk_input(VK_RETURN, true),
-                            ];
-                            unsafe {
-                                SendInput(2, inputs.as_mut_ptr(), std::mem::size_of::<INPUT>() as i32);
-                            }
-                        }
+                        // This request was already applied by the break-path
+                        // transition; do not replay it on the next typed key.
+                        let _ = state.engine.take_auto_switch_request();
                         state.toggle_language();
                         let effective = state.effective_enabled();
                         crate::tsf::sync_tsf_config(&state.config, effective);

@@ -269,8 +269,12 @@ pub fn enqueue_async_injection(backspaces: usize, text: String, mode: u8) -> boo
 
 fn execute_injection_job(backspaces: usize, text: &str, mode: u8) {
     match mode {
-        2 => send_scancode_batch(backspaces, text),
-        3 | 4 => send_safe_batch(backspaces, text),
+        2 => {
+            let _ = send_scancode_batch(backspaces, text);
+        }
+        3 | 4 => {
+            let _ = send_safe_batch(backspaces, text);
+        }
         1 => {
             let _ = send_unicode_batch_status(backspaces, text);
         }
@@ -309,21 +313,18 @@ pub fn send_atomic_batch_with_mode(backspaces: usize, text: &str, mode: u8) -> b
     match mode {
         2 => send_scancode_batch(backspaces, text),
         3 | 4 => send_safe_batch(backspaces, text),
-        1 => {
-            let _ = send_unicode_batch_status(backspaces, text);
-        }
+        1 => send_unicode_batch_status(backspaces, text).0,
         _ => {
-            // Auto: Unicode first; if Windows rejected the batch completely (0 events),
-            // fall back to paced safe batch. Never blindly retry if partial insertion occurred.
-            let (success, total_inserted) = send_unicode_batch_status(backspaces, text);
-            if !success && total_inserted == 0 {
-                send_safe_batch(backspaces, text);
+            // When zero original events were inserted, a safe fallback may
+            // still work. Never retry a destructive partially accepted batch.
+            let (success, inserted) = send_unicode_batch_status(backspaces, text);
+            if !success && inserted == 0 {
+                send_safe_batch(backspaces, text)
+            } else {
+                success
             }
         }
     }
-    // Existing immediate SendInput paths are best effort. Returning true
-    // here means dispatch was attempted, not that all events were accepted.
-    true
 }
 
 #[allow(dead_code)]
@@ -401,6 +402,74 @@ fn send_checked(inputs: &[INPUT]) -> (bool, u32) {
     })
 }
 
+/// Fill the complete replacement and optional physical word-break key into
+/// one SendInput buffer. This is the only safe ordering for Enter/Tab after an
+/// English->Vietnamese conversion; queuing the conversion first can cause the
+/// native key to arrive before the replacement.
+fn fill_atomic_unicode_inputs(
+    backspaces: usize,
+    text: &str,
+    break_vk: Option<u16>,
+    inputs: &mut [INPUT; MAX_ATOMIC_INPUTS],
+) -> Option<usize> {
+    if backspaces > ATOMIC_BACKSPACE_LIMIT || text.chars().count() > ATOMIC_CHAR_LIMIT {
+        return None;
+    }
+    if break_vk.is_some_and(|vk| vk != 0x0D && vk != 0x09) {
+        return None;
+    }
+    let mut count = 0usize;
+    let scan = unsafe { MapVirtualKeyW(VK_BACK as u32, 0) as u16 };
+    for _ in 0..backspaces {
+        inputs[count] = create_vk_input_scanned(VK_BACK, scan, false);
+        inputs[count + 1] = create_vk_input_scanned(VK_BACK, scan, true);
+        count += 2;
+    }
+    let mut utf16_buf = [0u16; 2];
+    for c in text.chars() {
+        for unit in c.encode_utf16(&mut utf16_buf).iter().copied() {
+            inputs[count] = create_utf16_input(unit, false);
+            inputs[count + 1] = create_utf16_input(unit, true);
+            count += 2;
+        }
+    }
+    if let Some(vk) = break_vk {
+        inputs[count] = create_vk_input(vk, false);
+        inputs[count + 1] = create_vk_input(vk, true);
+        count += 2;
+    }
+    Some(count)
+}
+
+/// For auto language switching, never queue a replacement behind the native
+/// break key. Scancode/safe modes deliberately pass the original key instead
+/// of silently bypassing the requested compatibility mode.
+fn can_send_atomic_break(mode: u8, backspaces: usize, text: &str) -> bool {
+    (mode == 0 || mode == 1)
+        && acceptable_queued_payload(backspaces, text.len())
+        && backspaces <= ATOMIC_BACKSPACE_LIMIT
+        && text.chars().count() <= ATOMIC_CHAR_LIMIT
+}
+
+/// Atomically insert replacement + optional Enter/Tab in the same OS input
+/// transaction, reporting exact SendInput acceptance. On rejection, the
+/// original physical key must pass through and language must not be toggled.
+pub fn send_atomic_word_break(
+    backspaces: usize,
+    text: &str,
+    break_vk: Option<u16>,
+    mode: u8,
+) -> bool {
+    if !can_send_atomic_break(mode, backspaces, text) {
+        return false;
+    }
+    let mut inputs: [INPUT; MAX_ATOMIC_INPUTS] = unsafe { std::mem::zeroed() };
+    let Some(count) = fill_atomic_unicode_inputs(backspaces, text, break_vk, &mut inputs) else {
+        return false;
+    };
+    send_checked(&inputs[..count]).0
+}
+
 /// Dispatches unicode batch returning (all_inserted, total_events_inserted)
 fn send_unicode_batch_status(backspaces: usize, text: &str) -> (bool, u32) {
     if backspaces == 0 && text.is_empty() {
@@ -410,27 +479,10 @@ fn send_unicode_batch_status(backspaces: usize, text: &str) -> (bool, u32) {
     let char_count = text.chars().count();
 
     if backspaces <= ATOMIC_BACKSPACE_LIMIT && char_count <= ATOMIC_CHAR_LIMIT {
-        // Fixed-size stack buffer: a normal keystroke must not hit the allocator.
         let mut inputs: [INPUT; MAX_ATOMIC_INPUTS] = unsafe { std::mem::zeroed() };
-        let mut count = 0usize;
-
-        let back_scan = unsafe { MapVirtualKeyW(VK_BACK as u32, 0) as u16 };
-
-        for _ in 0..backspaces {
-            inputs[count] = create_vk_input_scanned(VK_BACK, back_scan, false);
-            inputs[count + 1] = create_vk_input_scanned(VK_BACK, back_scan, true);
-            count += 2;
-        }
-
-        let mut utf16_buf = [0u16; 2];
-        for c in text.chars() {
-            for unit in c.encode_utf16(&mut utf16_buf).iter().copied() {
-                inputs[count] = create_utf16_input(unit, false);
-                inputs[count + 1] = create_utf16_input(unit, true);
-                count += 2;
-            }
-        }
-
+        // Same checked, stack-allocated input builder as word-break ordering.
+        let count = fill_atomic_unicode_inputs(backspaces, text, None, &mut inputs)
+            .expect("validated atomic injection limits");
         return send_checked(&inputs[..count]);
     }
 
@@ -468,9 +520,9 @@ fn send_unicode_batch_status(backspaces: usize, text: &str) -> (bool, u32) {
 /// Scan-code mode for DirectInput-style windows. ASCII characters use the
 /// current keyboard layout's VK; characters that cannot be mapped fall back to
 /// Unicode so Vietnamese text is never silently dropped.
-fn send_scancode_batch(backspaces: usize, text: &str) {
+fn send_scancode_batch(backspaces: usize, text: &str) -> bool {
     if backspaces == 0 && text.is_empty() {
-        return;
+        return true;
     }
 
     let mut inputs = Vec::with_capacity((backspaces + text.chars().count() * 3) * 2);
@@ -504,13 +556,14 @@ fn send_scancode_batch(backspaces: usize, text: &str) {
     }
 
     if !inputs.is_empty() {
-        let _ = send_checked(&inputs);
+        return send_checked(&inputs).0;
     }
+    true
 }
 
 /// Compatibility mode: full backspaces, then one Unicode character at a time
 /// with a tiny pause. Slower, but survives apps that drop fast batches.
-fn send_safe_batch(backspaces: usize, text: &str) {
+fn send_safe_batch(backspaces: usize, text: &str) -> bool {
     if backspaces > 0 {
         let mut inputs = Vec::with_capacity(backspaces * 2);
         for _ in 0..backspaces {
@@ -519,7 +572,7 @@ fn send_safe_batch(backspaces: usize, text: &str) {
         }
         let (complete, _) = send_checked(&inputs);
         if !complete {
-            return;
+            return false;
         }
         sleep(Duration::from_millis(4));
     }
@@ -535,10 +588,11 @@ fn send_safe_batch(backspaces: usize, text: &str) {
         }
         let (complete, _) = send_checked(&inputs[..count]);
         if !complete {
-            return;
+            return false;
         }
         sleep(Duration::from_millis(1));
     }
+    true
 }
 
 #[cfg(test)]
@@ -616,6 +670,101 @@ mod tests {
         assert!(pending_releases(&events[..2]).is_empty());
         assert_eq!(pending_releases(&events[..3]).len(), 1);
         assert!(pending_releases(&events).is_empty());
+    }
+
+    #[test]
+    fn word_break_atomic_batch_orders_backspaces_utf16_then_enter_tab() {
+        for vk in [0x0Du16, 0x09] {
+            let mut events: [INPUT; MAX_ATOMIC_INPUTS] = unsafe { std::mem::zeroed() };
+            let text = "Vi\u{1EC7}t\u{1F980}";
+            let utf16_len = text.encode_utf16().count();
+            let len = fill_atomic_unicode_inputs(2, text, Some(vk), &mut events).unwrap();
+            assert_eq!(len, 4 + 2 * utf16_len + 2);
+            for i in 0..4 {
+                let key = unsafe { events[i].Anonymous.ki };
+                assert_eq!(key.wVk, VK_BACK);
+                assert_eq!(key.dwFlags & KEYEVENTF_UNICODE, 0);
+            }
+            for event in &events[4..len - 2] {
+                let key = unsafe { event.Anonymous.ki };
+                assert_eq!(key.wVk, 0);
+                assert_ne!(key.dwFlags & KEYEVENTF_UNICODE, 0);
+            }
+            let down = unsafe { events[len - 2].Anonymous.ki };
+            let up = unsafe { events[len - 1].Anonymous.ki };
+            assert_eq!(down.wVk, vk);
+            assert_eq!(down.dwFlags & KEYEVENTF_KEYUP, 0);
+            assert_eq!(up.wVk, vk);
+            assert_ne!(up.dwFlags & KEYEVENTF_KEYUP, 0);
+            assert_eq!(up.dwFlags & KEYEVENTF_UNICODE, 0);
+        }
+    }
+
+    #[test]
+    fn word_break_space_is_emitted_exactly_once_without_virtual_break() {
+        let mut events: [INPUT; MAX_ATOMIC_INPUTS] = unsafe { std::mem::zeroed() };
+        let len = fill_atomic_unicode_inputs(0, "Vi\u{1EC7}t ", None, &mut events).unwrap();
+        assert_eq!(len, 2 * "Vi\u{1EC7}t ".encode_utf16().count());
+        let space_down = unsafe { events[len - 2].Anonymous.ki };
+        let space_up = unsafe { events[len - 1].Anonymous.ki };
+        assert_eq!(space_down.wVk, 0);
+        assert_eq!(space_down.wScan, ' ' as u16);
+        assert_eq!(space_up.wScan, ' ' as u16);
+        assert_ne!(space_up.dwFlags & KEYEVENTF_KEYUP, 0);
+    }
+
+    #[test]
+    fn break_switch_refuses_paced_scancode_oversized_or_unsupported_input() {
+        for mode in [0, 1] {
+            assert!(can_send_atomic_break(mode, 3, "Vi\u{1EC7}t"));
+        }
+        for mode in [2, 3, 4, 255] {
+            assert!(!can_send_atomic_break(mode, 3, "Vi\u{1EC7}t"));
+        }
+        assert!(!can_send_atomic_break(0, ATOMIC_BACKSPACE_LIMIT + 1, "a"));
+        assert!(!can_send_atomic_break(
+            0,
+            0,
+            &"a".repeat(ATOMIC_CHAR_LIMIT + 1)
+        ));
+        let mut events: [INPUT; MAX_ATOMIC_INPUTS] = unsafe { std::mem::zeroed() };
+        assert!(fill_atomic_unicode_inputs(0, "vi", Some(VK_BACK), &mut events).is_none());
+        assert!(
+            fill_atomic_unicode_inputs(ATOMIC_BACKSPACE_LIMIT + 1, "a", None, &mut events)
+                .is_none()
+        );
+        assert!(fill_atomic_unicode_inputs(
+            0,
+            &"a".repeat(ATOMIC_CHAR_LIMIT + 1),
+            None,
+            &mut events
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn rejected_atomic_word_break_never_delivers_enter_separately() {
+        let mut events: [INPUT; MAX_ATOMIC_INPUTS] = unsafe { std::mem::zeroed() };
+        let count = fill_atomic_unicode_inputs(1, "V\u{1EC7}", Some(0x0D), &mut events).unwrap();
+        let mut calls = 0;
+        let (ok, inserted) = send_checked_using(&events[..count], |batch| {
+            calls += 1;
+            assert_eq!(batch.len(), count);
+            0 // Windows rejected ALL events; the physical Enter must pass.
+        });
+        assert!(!ok);
+        assert_eq!(inserted, 0);
+        assert_eq!(calls, 1);
+        // A partial even-numbered prefix has no pressed keys to release,
+        // and never retries the original batch or sends trailing Enter.
+        let mut prefixes = Vec::<usize>::new();
+        let (ok, inserted) = send_checked_using(&events[..count], |batch| {
+            prefixes.push(batch.len());
+            2 // Only the backspace key pair was accepted.
+        });
+        assert!(!ok);
+        assert_eq!(inserted, 2);
+        assert_eq!(prefixes, vec![count]);
     }
 
     #[test]
