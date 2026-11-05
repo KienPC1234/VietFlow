@@ -51,6 +51,13 @@ function Verify-MsiPolicy([xml]$doc) {
     Assert-True ($null -ne $appData) 'persistent ProgramData directory is preserved'
     $shortcutComponents = @($doc.SelectNodes('//w:Component/w:Shortcut',$ns))
     Assert-True ($shortcutComponents.Count -eq 2) 'MSI owns exactly two shortcuts'
+
+    # F05: never grant explicit write/full-control permissions inside Program
+    # Files. The writable ProgramData settings folder is a separate subtree.
+    $installed = $doc.SelectSingleNode('//w:StandardDirectory[@Id="ProgramFiles6432Folder"]/w:Directory[@Id="INSTALLFOLDER"]',$ns)
+    Assert-True ($null -ne $installed) 'installed binaries must remain under Program Files'
+    $installedPermissions = $installed.SelectNodes('.//*[local-name()="Permission" or local-name()="PermissionEx"]')
+    Assert-True ($installedPermissions.Count -eq 0) 'Program Files binaries must use protected default ACLs'
 }
 
 [xml]$document = Get-Content -LiteralPath $wxs -Raw -Encoding UTF8
@@ -122,4 +129,24 @@ $blocked = $false
 try { Verify-MsiPolicy $bad } catch { $blocked = $true }
 Assert-True $blocked 'policy must reject name-based deletion of user-replaced shortcuts'
 Write-Host 'PASS MSI: regression detects extra name-based shortcut deletion'
+# Mutation: recreate the critical F05 flaw in memory, without touching any
+# installed files, to prove a world-writable Program Files ACL fails CI.
+$bad = [xml]$document.OuterXml
+$ns = [xml.XmlNamespaceManager]::new($bad.NameTable)
+$ns.AddNamespace('w','http://wixtoolset.org/schemas/v4/wxs')
+$installed = $bad.SelectSingleNode('//w:Directory[@Id="INSTALLFOLDER"]',$ns)
+Assert-True ($null -ne $installed) 'test fixture has Program Files directory'
+$insecureFolder = $bad.CreateElement('CreateFolder','http://wixtoolset.org/schemas/v4/wxs')
+$insecureAcl = $bad.CreateElement('PermissionEx','http://wixtoolset.org/schemas/v4/wxs/util')
+$insecureAcl.SetAttribute('User','Users')
+$insecureAcl.SetAttribute('GenericAll','yes')
+[void]$insecureFolder.AppendChild($insecureAcl)
+$mainBinary = $installed.SelectSingleNode('w:Component[@Id="MainExecutable"]',$ns)
+Assert-True ($null -ne $mainBinary) 'test fixture has main executable component'
+[void]$mainBinary.AppendChild($insecureFolder)
+$blocked = $false
+try { Verify-MsiPolicy $bad } catch { $blocked = $true }
+Assert-True $blocked 'Program Files Users:GenericAll regression must be rejected'
+Write-Host 'PASS MSI: regression detects overly permissive Program Files ACL'
+
 Write-Host 'PASS: isolated MSI authoring safety suite'
