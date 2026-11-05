@@ -78,10 +78,10 @@ static SOUND_DATA: OnceLock<Vec<u8>> = OnceLock::new();
 
 /// One worker per process. It serializes sounds so rapid V/E toggles cannot
 /// overlap or cancel each other, and coalesces a burst into one sound.
-static SOUND_TX: OnceLock<mpsc::Sender<()>> = OnceLock::new();
+static SOUND_TX: OnceLock<mpsc::SyncSender<()>> = OnceLock::new();
 
-fn start_sound_worker() -> mpsc::Sender<()> {
-    let (tx, rx) = mpsc::channel::<()>();
+fn start_sound_worker() -> mpsc::SyncSender<()> {
+    let (tx, rx) = mpsc::sync_channel::<()>(1);
     let _ = std::thread::Builder::new()
         .name("vf-notification-sound".to_string())
         .spawn(move || {
@@ -96,10 +96,23 @@ fn start_sound_worker() -> mpsc::Sender<()> {
     tx
 }
 
-/// Queue a notification sound without blocking the hook or UI thread.
+/// Start the worker before installing WH_KEYBOARD_LL. A hotkey must never
+/// create a thread from within the time-critical keyboard hook.
+fn prewarm_notification_sound() {
+    let _ = SOUND_TX.get_or_init(start_sound_worker);
+}
+
+fn queue_notification(sender: &mpsc::SyncSender<()>) {
+    // Bounded non-blocking request. Drop rapid duplicate sounds rather than
+    // allocating an unbounded queue or waiting for a slow audio endpoint.
+    let _ = sender.try_send(());
+}
+
+/// Request a notification without blocking or allocating in the hook.
 pub fn play_notification_sound() {
-    let sender = SOUND_TX.get_or_init(start_sound_worker);
-    let _ = sender.send(());
+    if let Some(sender) = SOUND_TX.get() {
+        queue_notification(sender);
+    }
 }
 
 fn play_notification_sound_blocking() {
@@ -134,6 +147,7 @@ fn play_notification_sound_blocking() {
 /// as the actual V/E toggle.
 #[no_mangle]
 pub extern "C" fn vf_play_notification_sound() {
+    prewarm_notification_sound(); // GUI preview may run without a keyboard hook.
     play_notification_sound();
 }
 
@@ -829,6 +843,7 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
     // Start the async worker before attaching keyboard hooks so the hook
     // callback never performs thread creation on a large macro.
     crate::inject::prewarm_async_injector();
+    prewarm_notification_sound();
 
     // Keep the low-level hooks installed in TSF mode too: they are still needed
     // for V/E hotkeys, foreground exclusion/override, and settings/converter
@@ -1929,6 +1944,19 @@ unsafe fn check_custom_hotkey(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_requests_are_bounded_and_nonblocking() {
+        // Stress many hotkey requests without spawning a worker or touching audio.
+        let (tx, rx) = mpsc::sync_channel::<()>(1);
+        for _ in 0..10_000 {
+            queue_notification(&tx);
+        }
+        assert_eq!(rx.try_recv(), Ok(()));
+        assert!(rx.try_recv().is_err());
+        queue_notification(&tx);
+        assert_eq!(rx.try_recv(), Ok(()));
+    }
 
     #[test]
     fn embedded_notification_is_clean_pcm_wav() {
