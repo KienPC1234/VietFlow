@@ -836,9 +836,11 @@ mod tests {
 
     #[test]
     fn ipc_config_normalization_clamps_invalid_fields_without_losing_valid_enums() {
-        let mut valid = TsfSharedConfig::default();
-        valid.method = 6; // custom input method
-        valid.charset = 4; // VIQR output charset
+        let valid = TsfSharedConfig {
+            method: 6,  // custom input method
+            charset: 4, // VIQR output charset
+            ..Default::default()
+        };
         assert_eq!(normalized_tsf_ipc_config(&valid).method, 6);
         assert_eq!(normalized_tsf_ipc_config(&valid).charset, 4);
 
@@ -924,9 +926,11 @@ mod tests {
             std::ptr::write(writer.focus_view, TsfFocusState::default());
             (*writer.focus_view).last_active_pid = 8527;
         }
-        let mut next = TsfSharedConfig::default();
-        next.enabled = 0;
-        next.method = 2;
+        let next = TsfSharedConfig {
+            enabled: 0,
+            method: 2,
+            ..Default::default()
+        };
         writer.update(&next);
         unsafe {
             assert_eq!((*writer.view).enabled, 0);

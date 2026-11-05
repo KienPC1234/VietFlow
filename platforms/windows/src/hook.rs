@@ -1686,6 +1686,20 @@ fn expand_macro_only(
     result
 }
 
+/// A physical key may represent a dead key or expand to multiple UTF-16 units
+/// under the active HKL. Neither is safe to feed to the single-char Telex
+/// composer. Let the OS handle those keys instead of inventing US punctuation.
+fn translated_single_char(count: i32, chars: &[u16]) -> char {
+    if count != 1 {
+        return '\0';
+    }
+    chars
+        .first()
+        .and_then(|unit| char::from_u32(*unit as u32))
+        .filter(|c| !c.is_control())
+        .unwrap_or('\0')
+}
+
 fn vk_to_char_with_layout(vk: u16, shift: bool) -> char {
     unsafe {
         let hwnd = GetForegroundWindow();
@@ -1713,13 +1727,9 @@ fn vk_to_char_with_layout(vk: u16, shift: bool) -> char {
                     4, // TM_FLAG_DONT_UPDATE_STATE
                     hkl,
                 );
-                if res > 0 {
-                    if let Some(ch) = char::from_u32(out_chars[0] as u32) {
-                        if !ch.is_control() {
-                            return ch;
-                        }
-                    }
-                }
+                // A zero/dead-key/multi-character result is NOT an invitation
+                // to fall back to a US layout: pass the native key unchanged.
+                return translated_single_char(res, &out_chars);
             }
         }
     }
@@ -2405,6 +2415,19 @@ mod tests {
         );
         // Enter/Tab/arrow are physical keys; do not turn them into extra text.
         assert_eq!(macro_output_with_delimiter(word.clone(), None), word);
+    }
+
+    #[test]
+    fn layout_translation_passes_dead_keys_and_multi_unit_results_natively() {
+        assert_eq!(translated_single_char(1, &[b'a' as u16]), 'a');
+        assert_eq!(translated_single_char(1, &[0x00E9]), '\u{e9}');
+        assert_eq!(translated_single_char(0, &[0]), '\0');
+        assert_eq!(translated_single_char(-1, &[b'^' as u16]), '\0');
+        assert_eq!(translated_single_char(2, &[b'a' as u16, b'e' as u16]), '\0');
+        assert_eq!(translated_single_char(2, &[0xD83D, 0xDE00]), '\0');
+        assert_eq!(translated_single_char(1, &[0xD83D]), '\0');
+        assert_eq!(translated_single_char(1, &[0x000A]), '\0');
+        assert_eq!(translated_single_char(1, &[]), '\0');
     }
 
     #[test]

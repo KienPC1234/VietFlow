@@ -707,8 +707,8 @@ mod tests {
             let utf16_len = text.encode_utf16().count();
             let len = fill_atomic_unicode_inputs(2, text, Some(vk), &mut events).unwrap();
             assert_eq!(len, 4 + 2 * utf16_len + 2);
-            for i in 0..4 {
-                let key = unsafe { events[i].Anonymous.ki };
+            for event in events.iter().take(4) {
+                let key = unsafe { event.Anonymous.ki };
                 assert_eq!(key.wVk, VK_BACK);
                 assert_eq!(key.dwFlags & KEYEVENTF_UNICODE, 0);
             }

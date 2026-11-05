@@ -880,10 +880,12 @@ mod tests {
         old.macros.insert("brb".into(), "be right back".into());
         atomic_write_config(&file, &serde_json::to_string(&old).unwrap()).unwrap();
 
-        let mut new = AppConfig::default();
-        new.enabled = false;
+        let new = AppConfig {
+            enabled: false,
+            ..Default::default()
+        };
         atomic_write_config(&file, &serde_json::to_string(&new).unwrap()).unwrap();
-        assert_eq!(read_config_file(&file).unwrap().enabled, false);
+        assert!(!read_config_file(&file).unwrap().enabled);
         assert_eq!(
             read_config_file(&backup_path(&file))
                 .unwrap()
@@ -914,8 +916,10 @@ mod tests {
         let cfg_path = temp_dir.join("vietflow_config.json");
         let bak_path = temp_dir.join("vietflow_config.json.bak");
 
-        let mut config = AppConfig::default();
-        config.method = 1;
+        let mut config = AppConfig {
+            method: 1,
+            ..Default::default()
+        };
         let json1 = serde_json::to_string_pretty(&config).unwrap();
         assert!(AppConfig::save_atomic(&cfg_path, &json1));
         assert!(cfg_path.is_file());

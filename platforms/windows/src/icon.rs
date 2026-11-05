@@ -587,8 +587,10 @@ mod tests {
         unsafe {
             DestroyIcon(icon.unwrap());
 
-            let mut config = AppConfig::default();
-            config.custom_icon_v = path.to_string();
+            let config = AppConfig {
+                custom_icon_v: path.to_string(),
+                ..Default::default()
+            };
             let configured = create_v_icon(&config);
             assert!(!configured.is_null(), "custom icon must replace the V glyph");
             DestroyIcon(configured);
