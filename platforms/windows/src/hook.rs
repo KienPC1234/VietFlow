@@ -1412,8 +1412,19 @@ unsafe fn handle_macro_only(
         return pass();
     }
 
-    if matches!(vk, VK_RETURN | VK_TAB | 0x25..=0x28) {
-        expand_macro_only(state);
+    if matches!(vk, VK_RETURN | VK_TAB) {
+        // Macro text and Enter/Tab are an indivisible keyboard transaction.
+        // Never queue a delayed rewrite then let the original break through.
+        if expand_macro_only(state, None, Some(vk)) {
+            return 1;
+        }
+        return pass();
+    }
+    if matches!(vk, 0x25..=0x28) {
+        // Arrow navigation keeps its original OS semantics. A bounded
+        // synchronous rewrite may complete before navigation; otherwise
+        // preserve the unmodified typed trigger and the physical arrow.
+        let _ = expand_macro_only(state, None, None);
         return pass();
     }
     if vk == VK_ESCAPE {
@@ -1437,7 +1448,11 @@ unsafe fn handle_macro_only(
 
     let is_word_break = c.is_whitespace() || (!c.is_alphanumeric() && c != '_');
     if is_word_break {
-        expand_macro_only(state);
+        // The delimiter belongs after the expansion, not before a delayed
+        // job. A failed/oversized rewrite leaves native text intact.
+        if expand_macro_only(state, Some(c), None) {
+            return 1;
+        }
     } else if state.macro_buffer.chars().count() < 64 {
         state.macro_buffer.push(c);
     } else {
@@ -1447,16 +1462,38 @@ unsafe fn handle_macro_only(
     pass()
 }
 
-fn expand_macro_only(state: &mut HookState) {
+/// Return macro replacement with the single delimiter that the hook will
+/// suppress on successful injection. Enter and Tab are VK events, not text.
+fn macro_output_with_delimiter(mut replacement: String, delimiter: Option<char>) -> String {
+    if let Some(c) = delimiter {
+        replacement.push(c);
+    }
+    replacement
+}
+
+/// Returns true only if the complete macro rewrite (including its break
+/// character/key) was accepted. No delayed worker job is ever queued here:
+/// after a native break is released there is no safe way to insert the macro
+/// before it. Safe paced mode and very long macros keep the typed trigger.
+fn expand_macro_only(
+    state: &mut HookState,
+    delimiter: Option<char>,
+    break_vk: Option<u16>,
+) -> bool {
     if state.macro_buffer.is_empty() {
-        return;
+        return false;
     }
     let trigger = state.macro_buffer.to_lowercase();
-    if let Some(replacement) = state.engine.macros.get(&trigger) {
+    let result = if let Some(replacement) = state.engine.macros.get(&trigger) {
         let backspaces = state.macro_buffer.chars().count();
-        state.send_engine_output(backspaces, &replacement);
-    }
+        let expanded = crate::clipboard::expand_clipboard(&replacement);
+        let output = macro_output_with_delimiter(expanded.into_owned(), delimiter);
+        crate::inject::send_atomic_word_break(backspaces, &output, break_vk, state.injection_mode)
+    } else {
+        false
+    };
     state.macro_buffer.clear();
+    result
 }
 
 fn vk_to_char_with_layout(vk: u16, shift: bool) -> char {
@@ -1979,6 +2016,21 @@ mod tests {
         let (bk_bs, out_bs) = engine.process_key_with_time('\x08', 0);
         assert_eq!(bk_bs, 0);
         assert_eq!(out_bs.as_str(), "");
+    }
+
+    #[test]
+    fn macro_only_break_output_never_doubles_separator() {
+        let word = String::from("Ti\u{1EBF}ng Vi\u{1EC7}t");
+        assert_eq!(
+            macro_output_with_delimiter(word.clone(), Some(' ')),
+            "Ti\u{1EBF}ng Vi\u{1EC7}t "
+        );
+        assert_eq!(
+            macro_output_with_delimiter(word.clone(), Some('!')),
+            "Ti\u{1EBF}ng Vi\u{1EC7}t!"
+        );
+        // Enter/Tab/arrow are physical keys; do not turn them into extra text.
+        assert_eq!(macro_output_with_delimiter(word.clone(), None), word);
     }
 
     #[test]

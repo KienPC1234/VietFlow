@@ -441,11 +441,11 @@ fn fill_atomic_unicode_inputs(
     Some(count)
 }
 
-/// For auto language switching, never queue a replacement behind the native
-/// break key. Scancode/safe modes deliberately pass the original key instead
-/// of silently bypassing the requested compatibility mode.
+/// For word-break replacement, never queue a rewrite behind the native
+/// key. Unicode and scan-code modes can use a single checked SendInput batch;
+/// paced Safe mode must preserve the original typed text rather than reorder.
 fn can_send_atomic_break(mode: u8, backspaces: usize, text: &str) -> bool {
-    (mode == 0 || mode == 1)
+    (mode == 0 || mode == 1 || mode == 2)
         && acceptable_queued_payload(backspaces, text.len())
         && backspaces <= ATOMIC_BACKSPACE_LIMIT
         && text.chars().count() <= ATOMIC_CHAR_LIMIT
@@ -462,6 +462,14 @@ pub fn send_atomic_word_break(
 ) -> bool {
     if !can_send_atomic_break(mode, backspaces, text) {
         return false;
+    }
+    if mode == 2 {
+        // A single scan-code transaction is required even when a macro
+        // includes Unicode fallback characters.
+        let Some(inputs) = build_scancode_inputs(backspaces, text, break_vk) else {
+            return false;
+        };
+        return send_checked(&inputs).0;
     }
     let mut inputs: [INPUT; MAX_ATOMIC_INPUTS] = unsafe { std::mem::zeroed() };
     let Some(count) = fill_atomic_unicode_inputs(backspaces, text, break_vk, &mut inputs) else {
@@ -517,14 +525,17 @@ fn send_unicode_batch_status(backspaces: usize, text: &str) -> (bool, u32) {
     (true, total_inserted)
 }
 
-/// Scan-code mode for DirectInput-style windows. ASCII characters use the
-/// current keyboard layout's VK; characters that cannot be mapped fall back to
-/// Unicode so Vietnamese text is never silently dropped.
-fn send_scancode_batch(backspaces: usize, text: &str) -> bool {
-    if backspaces == 0 && text.is_empty() {
-        return true;
+/// Construct a bounded, ordered scan-code transaction. ASCII uses the
+/// active layout's VK and non-mappable characters use UTF-16 fallback;
+/// the optional Enter/Tab always comes last.
+fn build_scancode_inputs(
+    backspaces: usize,
+    text: &str,
+    break_vk: Option<u16>,
+) -> Option<Vec<INPUT>> {
+    if break_vk.is_some_and(|vk| vk != 0x0D && vk != 0x09) {
+        return None;
     }
-
     let mut inputs = Vec::with_capacity((backspaces + text.chars().count() * 3) * 2);
     for _ in 0..backspaces {
         inputs.push(create_vk_input(VK_BACK, false));
@@ -555,6 +566,19 @@ fn send_scancode_batch(backspaces: usize, text: &str) -> bool {
         }
     }
 
+    if let Some(vk) = break_vk {
+        inputs.push(create_vk_input(vk, false));
+        inputs.push(create_vk_input(vk, true));
+    }
+    Some(inputs)
+}
+
+/// Scan-code mode for DirectInput-style windows. Unmappable characters
+/// fall back to Unicode rather than silently losing Vietnamese text.
+fn send_scancode_batch(backspaces: usize, text: &str) -> bool {
+    let Some(inputs) = build_scancode_inputs(backspaces, text, None) else {
+        return false;
+    };
     if !inputs.is_empty() {
         return send_checked(&inputs).0;
     }
@@ -714,11 +738,11 @@ mod tests {
     }
 
     #[test]
-    fn break_switch_refuses_paced_scancode_oversized_or_unsupported_input() {
-        for mode in [0, 1] {
+    fn break_switch_refuses_paced_oversized_or_unsupported_input() {
+        for mode in [0, 1, 2] {
             assert!(can_send_atomic_break(mode, 3, "Vi\u{1EC7}t"));
         }
-        for mode in [2, 3, 4, 255] {
+        for mode in [3, 4, 255] {
             assert!(!can_send_atomic_break(mode, 3, "Vi\u{1EC7}t"));
         }
         assert!(!can_send_atomic_break(0, ATOMIC_BACKSPACE_LIMIT + 1, "a"));
@@ -740,6 +764,45 @@ mod tests {
             &mut events
         )
         .is_none());
+    }
+
+    #[test]
+    fn scancode_word_break_keeps_enter_after_ascii_and_unicode_fallback() {
+        let events = build_scancode_inputs(2, "hi\u{1EC7}n", Some(0x0D)).unwrap();
+        assert!(events.len() >= 12);
+        for event in &events[..4] {
+            let ki = unsafe { event.Anonymous.ki };
+            assert_eq!(ki.wVk, VK_BACK);
+        }
+        let tail_down = unsafe { events[events.len() - 2].Anonymous.ki };
+        let tail_up = unsafe { events[events.len() - 1].Anonymous.ki };
+        assert_eq!(tail_down.wVk, 0x0D);
+        assert_eq!(tail_up.wVk, 0x0D);
+        assert_eq!(tail_down.dwFlags & KEYEVENTF_KEYUP, 0);
+        assert_ne!(tail_up.dwFlags & KEYEVENTF_KEYUP, 0);
+        assert!(events[4..events.len() - 2].iter().any(|event| {
+            let ki = unsafe { event.Anonymous.ki };
+            ki.wVk == 0 && ki.wScan == 0x1EC7 && (ki.dwFlags & KEYEVENTF_UNICODE) != 0
+        }));
+        assert!(build_scancode_inputs(2, "abc", Some(VK_BACK)).is_none());
+    }
+
+    #[test]
+    fn macro_only_atomic_delimiters_are_last_and_not_duplicated() {
+        for delimiter in [' ', '.', '!'] {
+            let output = format!("V\u{1EC7}n{delimiter}");
+            let mut events: [INPUT; MAX_ATOMIC_INPUTS] = unsafe { std::mem::zeroed() };
+            let count = fill_atomic_unicode_inputs(2, &output, None, &mut events).unwrap();
+            assert_eq!(count, 4 + 2 * output.encode_utf16().count());
+            let tail = unsafe { events[count - 2].Anonymous.ki };
+            assert_eq!(tail.wVk, 0);
+            assert_eq!(tail.wScan, delimiter as u16);
+            assert_ne!(tail.dwFlags & KEYEVENTF_UNICODE, 0);
+            assert_eq!(
+                unsafe { events[count - 1].Anonymous.ki }.wScan,
+                delimiter as u16
+            );
+        }
     }
 
     #[test]
