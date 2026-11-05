@@ -78,12 +78,20 @@ pub fn create_utf16_input(code_unit: u16, key_up: bool) -> INPUT {
     }
 }
 
-#[allow(dead_code)]
+/// A Unicode scalar is one UTF-16 unit in the BMP, or a surrogate pair.
+/// Send both units with balanced key-down/key-up events; a single INPUT can
+/// never represent a supplementary-plane scalar safely.
 #[inline]
-pub fn create_unicode_input(c: char, key_up: bool) -> INPUT {
-    let mut buf = [0u16; 2];
-    let encoded = c.encode_utf16(&mut buf);
-    create_utf16_input(encoded[0], key_up)
+fn unicode_scalar_inputs(c: char) -> ([INPUT; 4], usize) {
+    let mut events: [INPUT; 4] = unsafe { std::mem::zeroed() };
+    let mut units = [0u16; 2];
+    let mut count = 0;
+    for unit in c.encode_utf16(&mut units).iter().copied() {
+        events[count] = create_utf16_input(unit, false);
+        events[count + 1] = create_utf16_input(unit, true);
+        count += 2;
+    }
+    (events, count)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -676,16 +684,9 @@ fn send_safe_batch(backspaces: usize, text: &str) -> bool {
         }
         sleep(Duration::from_millis(4));
     }
-    let mut utf16_buf = [0u16; 2];
     for c in text.chars() {
-        // Do not split a supplementary-plane scalar over separate SendInput calls.
-        let mut inputs: [INPUT; 4] = unsafe { std::mem::zeroed() };
-        let mut count = 0;
-        for unit in c.encode_utf16(&mut utf16_buf).iter().copied() {
-            inputs[count] = create_utf16_input(unit, false);
-            inputs[count + 1] = create_utf16_input(unit, true);
-            count += 2;
-        }
+        // A non-BMP scalar stays in one SendInput call.
+        let (inputs, count) = unicode_scalar_inputs(c);
         let (complete, _) = send_checked(&inputs[..count]);
         if !complete {
             return false;
@@ -698,6 +699,30 @@ fn send_safe_batch(backspaces: usize, text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unicode_scalar_builder_keeps_surrogate_pairs_and_balanced_events() {
+        for (c, expected) in [
+            ('a', vec![0x0061]),
+            ('ệ', vec![0x1ec7]),
+            ('🦀', vec![0xD83E, 0xDD80]),
+        ] {
+            let (events, count) = unicode_scalar_inputs(c);
+            assert_eq!(count, 2 * expected.len());
+            for (i, unit) in expected.into_iter().enumerate() {
+                let down = unsafe { events[2 * i].Anonymous.ki };
+                let up = unsafe { events[2 * i + 1].Anonymous.ki };
+                assert_eq!(down.wScan, unit);
+                assert_eq!(up.wScan, unit);
+                assert_eq!(down.wVk, 0);
+                assert_eq!(up.wVk, 0);
+                assert_eq!(down.dwFlags & KEYEVENTF_KEYUP, 0);
+                assert_ne!(up.dwFlags & KEYEVENTF_KEYUP, 0);
+                assert_ne!(down.dwFlags & KEYEVENTF_UNICODE, 0);
+                assert_ne!(up.dwFlags & KEYEVENTF_UNICODE, 0);
+            }
+        }
+    }
 
     #[test]
     fn non_us_altgr_scancode_mappings_fall_back_to_unicode() {
