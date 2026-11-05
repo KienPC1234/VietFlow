@@ -53,3 +53,11 @@ target_compile_definitions(vietflow_ui PUBLIC
     VIETFLOW_VERSION="${VIETFLOW_VERSION}"
 )
 
+# Explicit QA opt-in; normal release packaging only builds vietflow_ui.
+option(VIETFLOW_BUILD_CONFIG_TESTS "Build isolated C++ config persistence regression" OFF)
+if (VIETFLOW_BUILD_CONFIG_TESTS)
+    enable_testing()
+    add_executable(vietflow_config_persistence_test tests/config_persistence_test.cpp)
+    target_link_libraries(vietflow_config_persistence_test PRIVATE vietflow_ui shell32)
+    add_test(NAME vietflow_config_persistence COMMAND vietflow_config_persistence_test)
+endif()

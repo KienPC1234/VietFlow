@@ -425,6 +425,28 @@ bool Config::Save(const std::string& custom_path) const {
                 std::filesystem::remove(backupTemp, ec);
                 return false;
             }
+        } else {
+            std::error_code ec;
+            const bool exists = std::filesystem::exists(target, ec);
+            if (ec || (exists && !std::filesystem::is_regular_file(target, ec)) || ec) {
+                std::filesystem::remove(staged, ec);
+                return false;
+            }
+            if (exists) {
+                // Keep malformed JSON verbatim for recovery, without
+                // destroying an earlier good .bak or an existing snapshot.
+                auto quarantine = target;
+                quarantine += L".corrupt." + nonce;
+                if (!CopyFileW(target.c_str(), quarantine.c_str(), TRUE)) {
+                    std::filesystem::remove(staged, ec);
+                    return false;
+                }
+                if (!FlushFileToDisk(quarantine)) {
+                    std::filesystem::remove(staged, ec);
+                    std::filesystem::remove(quarantine, ec);
+                    return false;
+                }
+            }
         }
         if (!MoveFileExW(staged.c_str(), target.c_str(),
                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {

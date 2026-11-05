@@ -531,6 +531,26 @@ fn atomic_write_config(path: &Path, json: &str) -> std::io::Result<()> {
                 let _ = fs::remove_file(&backup_temp);
             }
             backup_result?;
+        } else if path.is_file() {
+            // Preserve a malformed primary verbatim before replacing it.
+            // The last known-good .bak must not be replaced by corrupt JSON.
+            let mut quarantine_name = path.as_os_str().to_os_string();
+            quarantine_name.push(format!(".corrupt.{unique}"));
+            let quarantine = PathBuf::from(quarantine_name);
+            // create_new refuses to overwrite a prior diagnostic snapshot.
+            let mut snapshot = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&quarantine)?;
+            let copied = (|| {
+                let mut original = fs::File::open(path)?;
+                std::io::copy(&mut original, &mut snapshot)?;
+                snapshot.sync_all()
+            })();
+            if copied.is_err() {
+                let _ = fs::remove_file(&quarantine);
+            }
+            copied?;
         }
         // On Windows std::fs::rename replaces an existing file atomically.
         fs::rename(&temp, path)
@@ -905,6 +925,19 @@ mod tests {
             Some("be right back")
         );
         assert_eq!(fs::read(&file).unwrap(), b"{corrupt");
+        let backup_bytes = fs::read(backup_path(&file)).unwrap();
+        atomic_write_config(&file, &serde_json::to_string(&new).unwrap()).unwrap();
+        assert!(!read_config_file(&file).unwrap().enabled);
+        // The damaged bytes remain available for manual recovery, and the
+        // backup of the last valid settings remains completely unchanged.
+        assert_eq!(fs::read(backup_path(&file)).unwrap(), backup_bytes);
+        let snapshots: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.to_string_lossy().contains(".corrupt."))
+            .collect();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(fs::read(&snapshots[0]).unwrap(), b"{corrupt");
         let _ = fs::remove_dir_all(&dir);
     }
 
