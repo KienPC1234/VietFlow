@@ -1116,6 +1116,154 @@ mod tests {
     }
 
     #[test]
+    fn seqlock_parallel_windows_processes_publish_only_coherent_snapshots() {
+        use std::sync::atomic::fence;
+        use std::time::{Duration, Instant};
+
+        const NAME_ENV: &str = "VIETFLOW_TSF_STRESS_QA_MAP";
+        const PROFILE_ENV: &str = "VIETFLOW_TSF_STRESS_QA_PROFILE";
+        const TEST_NAME: &str =
+            "tsf::tests::seqlock_parallel_windows_processes_publish_only_coherent_snapshots";
+        const WRITERS: usize = 3;
+        const UPDATES: usize = 600;
+
+        if let Some(profile) = std::env::var_os(PROFILE_ENV) {
+            let profile: u32 = profile.to_string_lossy().parse().expect("writer profile");
+            assert!((1..=WRITERS as u32).contains(&profile));
+            let map_name = std::env::var(NAME_ENV).expect("ephemeral parent mapping");
+            let wide_name = to_wide(&map_name);
+            unsafe {
+                let handle = windows_sys::Win32::System::Memory::OpenFileMappingW(
+                    FILE_MAP_ALL_ACCESS,
+                    0,
+                    wide_name.as_ptr(),
+                );
+                assert!(!handle.is_null(), "child opened private map");
+                let view = MapViewOfFile(
+                    handle,
+                    FILE_MAP_ALL_ACCESS,
+                    0,
+                    0,
+                    std::mem::size_of::<TsfSharedConfig>(),
+                );
+                assert!(!view.Value.is_null(), "child mapped private config");
+                let cfg = view.Value.cast::<TsfSharedConfig>();
+                let seq = &*std::ptr::addr_of!((*cfg).sequence).cast::<AtomicU32>();
+                let deadline = Instant::now() + Duration::from_secs(20);
+                for i in 0..UPDATES {
+                    let old = loop {
+                        if let Some(old) = try_claim_config_write(seq) {
+                            break old;
+                        }
+                        assert!(Instant::now() < deadline, "stalled writer epoch");
+                        std::thread::yield_now();
+                    };
+                    fence(Ordering::SeqCst);
+                    std::ptr::write_volatile(std::ptr::addr_of_mut!((*cfg).method), profile);
+                    if i % 7 == 0 {
+                        std::thread::yield_now(); // Force interleaved partial publication.
+                    }
+                    std::ptr::write_volatile(std::ptr::addr_of_mut!((*cfg).charset), profile);
+                    std::ptr::write_volatile(std::ptr::addr_of_mut!((*cfg).enabled), profile & 1);
+                    fence(Ordering::SeqCst);
+                    seq.store(old.wrapping_add(2), Ordering::SeqCst);
+                }
+                UnmapViewOfFile(view);
+                CloseHandle(handle);
+            }
+            return;
+        }
+
+        let suffix = format!(
+            "{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let map_name = format!("Local\\VietFlow_TSF_Concurrent_QA_{suffix}");
+        let (mapping, view) = unsafe {
+            create_secure_mapping(
+                &map_name,
+                std::mem::size_of::<TsfSharedConfig>() as u32,
+                false,
+            )
+        }
+        .expect("isolated mapping for multiprocess writer stress");
+        let cfg = view.cast::<TsfSharedConfig>();
+        let seq = unsafe {
+            std::ptr::write(cfg, TsfSharedConfig::default());
+            &*std::ptr::addr_of!((*cfg).sequence).cast::<AtomicU32>()
+        };
+        let exe = std::env::current_exe().expect("current test executable");
+        let mut children = Vec::new();
+        for profile in 1..=WRITERS {
+            children.push(
+                std::process::Command::new(&exe)
+                    .args(["--exact", TEST_NAME, "--nocapture"])
+                    .env(NAME_ENV, &map_name)
+                    .env(PROFILE_ENV, profile.to_string())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .expect("spawn independent writer process"),
+            );
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut stable_reads = 0usize;
+        let mut exited = [false; WRITERS];
+        while exited.iter().any(|&done| !done) {
+            let before = seq.load(Ordering::SeqCst);
+            if before != 0 && before & 1 == 0 {
+                fence(Ordering::SeqCst);
+                let method = unsafe { std::ptr::read_volatile(std::ptr::addr_of!((*cfg).method)) };
+                let charset =
+                    unsafe { std::ptr::read_volatile(std::ptr::addr_of!((*cfg).charset)) };
+                let enabled =
+                    unsafe { std::ptr::read_volatile(std::ptr::addr_of!((*cfg).enabled)) };
+                fence(Ordering::SeqCst);
+                let after = seq.load(Ordering::SeqCst);
+                if before == after && after & 1 == 0 {
+                    assert!((1..=WRITERS as u32).contains(&method));
+                    assert_eq!(method, charset, "torn multi-field TSF IPC snapshot");
+                    assert_eq!(enabled, method & 1, "torn TSF enabled/profile field");
+                    stable_reads += 1;
+                }
+            }
+            for (idx, child) in children.iter_mut().enumerate() {
+                if !exited[idx] {
+                    if let Some(status) = child.try_wait().expect("poll child process") {
+                        assert!(
+                            status.success(),
+                            "independent writer process {idx} failed: {status}"
+                        );
+                        exited[idx] = true;
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                for (idx, child) in children.iter_mut().enumerate() {
+                    if !exited[idx] {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                }
+                panic!("multiprocess seqlock writers exceeded 30 seconds");
+            }
+            std::thread::yield_now();
+        }
+
+        assert!(stable_reads > 0, "parent observed no stable IPC snapshots");
+        assert_eq!(seq.load(Ordering::SeqCst), (WRITERS * UPDATES * 2) as u32);
+        unsafe {
+            UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: view });
+            CloseHandle(mapping);
+        }
+    }
+
+    #[test]
     fn test_tsf_shared_config_layout() {
         assert_eq!(std::mem::size_of::<TsfSharedConfig>(), 48);
         assert_eq!(std::mem::size_of::<TsfFocusState>(), 16);
