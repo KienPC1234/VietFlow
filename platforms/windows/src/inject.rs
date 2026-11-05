@@ -28,6 +28,10 @@ const MAX_PENDING_INJECTION_JOBS: usize = 8;
 const MAX_PENDING_TEXT_BYTES: usize = 64 * 1024;
 const MAX_PENDING_BACKSPACES: usize = 4_096;
 const MAX_PENDING_JOB_AGE: Duration = Duration::from_millis(750);
+// A hook must not swallow the physical key merely because a queue accepted a
+// job. Give a prewarmed worker a very short chance to confirm it is ready.
+// On timeout the physical key passes through and the worker cannot execute it.
+const MAX_WORKER_READY_WAIT: Duration = Duration::from_millis(5);
 const ATOMIC_BACKSPACE_LIMIT: usize = 16;
 const ATOMIC_CHAR_LIMIT: usize = 32;
 const MAX_ATOMIC_INPUTS: usize = (ATOMIC_BACKSPACE_LIMIT + 2) * 2 + (ATOMIC_CHAR_LIMIT + 4) * 4;
@@ -129,6 +133,10 @@ struct InjectionJob {
     mode: u8,
     target: InjectionTarget,
     queued_at: Instant,
+    // Two-phase handoff. Worker may inject only after the keyboard hook
+    // explicitly commits to consuming the physical key.
+    ready_sender: mpsc::SyncSender<()>,
+    commit_receiver: mpsc::Receiver<()>,
 }
 
 fn eligible_queued_job(
@@ -150,6 +158,34 @@ fn try_enqueue(
     sender.try_send(job)
 }
 
+/// The worker may announce readiness only for a fresh, same-foreground job.
+/// Until it receives a commit from the hook, it MUST NOT touch SendInput.
+/// The hook always drops its commit sender on timeout, so this recv cannot
+/// outlive the callback even if the callback exits due to an error.
+fn wait_for_queued_job_commit(
+    job: &InjectionJob,
+    foreground: Option<InjectionTarget>,
+    now: Instant,
+) -> bool {
+    eligible_queued_job(job, foreground, now)
+        && job.ready_sender.send(()).is_ok()
+        && job.commit_receiver.recv().is_ok()
+}
+
+/// The sole decision point that authorizes suppressing a native key.
+/// This wait is bounded and occurs only on the asynchronous replacement path.
+fn approve_prepared_job(
+    ready_receiver: mpsc::Receiver<()>,
+    commit_sender: mpsc::SyncSender<()>,
+) -> bool {
+    if ready_receiver.recv_timeout(MAX_WORKER_READY_WAIT).is_err() {
+        // Drop commit_sender; the worker will either see disconnection or
+        // never be able to notify readiness. In both cases it must not inject.
+        return false;
+    }
+    commit_sender.send(()).is_ok()
+}
+
 static INJECTION_TX: OnceLock<Option<mpsc::SyncSender<InjectionJob>>> = OnceLock::new();
 
 /// Initialize the bounded worker before installing WH_KEYBOARD_LL.
@@ -162,8 +198,18 @@ pub fn prewarm_async_injector() -> bool {
                 .name("vietflow-async-injector".into())
                 .spawn(move || {
                     while let Ok(job) = rx.recv() {
-                        if !eligible_queued_job(&job, InjectionTarget::foreground(), Instant::now())
-                        {
+                        // No original key may be consumed while this worker
+                        // waits behind older jobs or rejects a stale target.
+                        if !wait_for_queued_job_commit(
+                            &job,
+                            InjectionTarget::foreground(),
+                            Instant::now(),
+                        ) {
+                            continue;
+                        }
+                        // Check again immediately before any OS input. A focus
+                        // switch after consent cannot be sent to a new window.
+                        if !matches_target(job.target, InjectionTarget::foreground()) {
                             continue;
                         }
                         ASYNC_TARGET.with(|target| target.set(Some(job.target)));
@@ -185,9 +231,10 @@ fn acceptable_queued_payload(backspaces: usize, text_bytes: usize) -> bool {
     backspaces <= MAX_PENDING_BACKSPACES && text_bytes <= MAX_PENDING_TEXT_BYTES
 }
 
-/// True means the asynchronous replacement was admitted, so the hook may
-/// consume the corresponding physical key. False means it MUST pass through
-/// that original key and reset engine composition state.
+/// True means a fresh worker has confirmed readiness and received the
+/// hook's commit. Only then may the hook suppress the physical key.
+/// False means the job was rejected, the worker was not ready within 5 ms,
+/// or its handoff failed; it cannot execute and the key MUST pass through.
 pub fn enqueue_async_injection(backspaces: usize, text: String, mode: u8) -> bool {
     if !acceptable_queued_payload(backspaces, text.len()) {
         return false;
@@ -199,7 +246,9 @@ pub fn enqueue_async_injection(backspaces: usize, text: String, mode: u8) -> boo
     let Some(sender) = INJECTION_TX.get().and_then(Option::as_ref) else {
         return false;
     };
-    try_enqueue(
+    let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+    let (commit_sender, commit_receiver) = mpsc::sync_channel(1);
+    if try_enqueue(
         sender,
         InjectionJob {
             backspaces,
@@ -207,9 +256,15 @@ pub fn enqueue_async_injection(backspaces: usize, text: String, mode: u8) -> boo
             mode,
             target,
             queued_at: Instant::now(),
+            ready_sender,
+            commit_receiver,
         },
     )
-    .is_ok()
+    .is_err()
+    {
+        return false;
+    }
+    approve_prepared_job(ready_receiver, commit_sender)
 }
 
 fn execute_injection_job(backspaces: usize, text: &str, mode: u8) {
@@ -234,8 +289,8 @@ fn execute_injection_job(backspaces: usize, text: &str, mode: u8) {
 /// Large macro restorations pace backspaces with a tiny delay to prevent apps from dropping them.
 /// Large macros and safe mode are offloaded to an asynchronous worker to prevent blocking
 /// LowLevelKeyboardProc and exceeding Windows hook timeout.
-/// Returns whether replacement injection was accepted. In async modes,
-/// rejection must leave the original keyboard event available to Windows.
+/// Returns whether replacement injection was authorized. In async modes,
+/// readiness timeout/cancellation must leave the native key available.
 pub fn send_atomic_batch_with_mode(backspaces: usize, text: &str, mode: u8) -> bool {
     // Validate before traversing and allocating a potentially untrusted macro.
     if !acceptable_queued_payload(backspaces, text.len()) {
@@ -615,13 +670,38 @@ mod tests {
     }
 
     fn queued_test_job(target: InjectionTarget, queued_at: Instant) -> InjectionJob {
+        let (ready_sender, _ready_receiver) = mpsc::sync_channel(1);
+        let (_commit_sender, commit_receiver) = mpsc::sync_channel(1);
         InjectionJob {
             backspaces: 2,
             text: "?i?n".into(),
             mode: 3,
             target,
             queued_at,
+            ready_sender,
+            commit_receiver,
         }
+    }
+
+    fn test_handoff(
+        target: InjectionTarget,
+        queued_at: Instant,
+    ) -> (InjectionJob, mpsc::Receiver<()>, mpsc::SyncSender<()>) {
+        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+        let (commit_sender, commit_receiver) = mpsc::sync_channel(1);
+        (
+            InjectionJob {
+                backspaces: 1,
+                text: "?".into(),
+                mode: 4,
+                target,
+                queued_at,
+                ready_sender,
+                commit_receiver,
+            },
+            ready_receiver,
+            commit_sender,
+        )
     }
 
     #[test]
@@ -647,6 +727,88 @@ mod tests {
             try_enqueue(&sender, queued_test_job(target, Instant::now())),
             Err(mpsc::TrySendError::Disconnected(_)),
         ));
+    }
+
+    #[test]
+    fn ready_worker_requires_explicit_hook_commit_before_injecting() {
+        let target = InjectionTarget {
+            hwnd: 0x2345,
+            process_id: 45,
+            thread_id: 9,
+        };
+        let (job, ready, commit) = test_handoff(target, Instant::now());
+        let worker = std::thread::spawn(move || {
+            wait_for_queued_job_commit(&job, Some(target), Instant::now())
+        });
+        assert!(ready.recv_timeout(Duration::from_millis(100)).is_ok());
+        assert!(commit.send(()).is_ok());
+        assert!(
+            worker.join().unwrap(),
+            "only an acknowledged job may inject"
+        );
+    }
+
+    #[test]
+    fn prepared_job_authorization_signal_is_bounded_and_explicit() {
+        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+        let (commit_sender, commit_receiver) = mpsc::sync_channel(1);
+        ready_sender.send(()).unwrap();
+        assert!(approve_prepared_job(ready_receiver, commit_sender));
+        assert!(commit_receiver
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok());
+    }
+
+    #[test]
+    fn worker_does_not_inject_after_hook_cancels_ready_job() {
+        let target = InjectionTarget {
+            hwnd: 0x2346,
+            process_id: 45,
+            thread_id: 9,
+        };
+        let (job, ready, commit) = test_handoff(target, Instant::now());
+        let worker = std::thread::spawn(move || {
+            wait_for_queued_job_commit(&job, Some(target), Instant::now())
+        });
+        assert!(ready.recv_timeout(Duration::from_millis(100)).is_ok());
+        drop(commit); // Hook passed native key rather than authorizing injection.
+        assert!(!worker.join().unwrap());
+    }
+
+    #[test]
+    fn delayed_or_wrong_target_worker_never_overrides_native_key() {
+        let target = InjectionTarget {
+            hwnd: 0x2347,
+            process_id: 45,
+            thread_id: 9,
+        };
+        let (job, ready, commit) = test_handoff(target, Instant::now());
+        assert!(
+            !approve_prepared_job(ready, commit),
+            "timeout must pass native key without allowing later injection"
+        );
+        assert!(
+            !wait_for_queued_job_commit(&job, Some(target), Instant::now()),
+            "late worker cannot inject after hook dropped consent"
+        );
+
+        let (job, ready, commit) = test_handoff(target, Instant::now());
+        assert!(
+            !wait_for_queued_job_commit(&job, None, Instant::now()),
+            "worker must reject a changed foreground before readiness"
+        );
+        assert!(!approve_prepared_job(ready, commit));
+
+        let (job, ready, commit) = test_handoff(
+            target,
+            Instant::now() - MAX_PENDING_JOB_AGE - Duration::from_millis(1),
+        );
+        assert!(!wait_for_queued_job_commit(
+            &job,
+            Some(target),
+            Instant::now()
+        ));
+        assert!(!approve_prepared_job(ready, commit));
     }
 
     #[test]
