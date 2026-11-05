@@ -488,6 +488,21 @@ fn read_config_with_backup(path: &Path) -> Option<AppConfig> {
     read_config_file(path).or_else(|| read_config_file(&backup_path(path)))
 }
 
+/// Controlled fault injection for the *test binary only*. Exit skips Rust
+/// destructors just like an abrupt Windows process termination; the kernel
+/// must release the named writer mutex and preserve any synced file bytes.
+#[cfg(test)]
+fn fail_config_save_at_checkpoint(path: &Path, phase: &str) {
+    const PATH_ENV: &str = "VIETFLOW_F08_QA_CRASH_PATH";
+    const PHASE_ENV: &str = "VIETFLOW_F08_QA_CRASH_PHASE";
+    let Some(target) = std::env::var_os(PATH_ENV) else {
+        return;
+    };
+    if Path::new(&target) == path && std::env::var(PHASE_ENV).as_deref() == Ok(phase) {
+        std::process::exit(77);
+    }
+}
+
 fn atomic_write_config(path: &Path, json: &str) -> std::io::Result<()> {
     let parent = path
         .parent()
@@ -512,6 +527,8 @@ fn atomic_write_config(path: &Path, json: &str) -> std::io::Result<()> {
         f.write_all(json.as_bytes())?;
         f.sync_all()?;
         drop(f);
+        #[cfg(test)]
+        fail_config_save_at_checkpoint(path, "after_temp_synced");
 
         // Preserve the previous *valid* config with an atomic .bak replace.
         // A malformed config must not replace a previously good backup.
@@ -531,6 +548,8 @@ fn atomic_write_config(path: &Path, json: &str) -> std::io::Result<()> {
                 let _ = fs::remove_file(&backup_temp);
             }
             backup_result?;
+            #[cfg(test)]
+            fail_config_save_at_checkpoint(path, "after_backup_replaced");
         } else if path.is_file() {
             // Preserve a malformed primary verbatim before replacing it.
             // The last known-good .bak must not be replaced by corrupt JSON.
@@ -553,7 +572,10 @@ fn atomic_write_config(path: &Path, json: &str) -> std::io::Result<()> {
             copied?;
         }
         // On Windows std::fs::rename replaces an existing file atomically.
-        fs::rename(&temp, path)
+        fs::rename(&temp, path)?;
+        #[cfg(test)]
+        fail_config_save_at_checkpoint(path, "after_primary_replaced");
+        Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temp);
@@ -1146,6 +1168,133 @@ mod tests {
         let entries: Vec<_> = fs::read_dir(&dir).unwrap().collect();
         assert_eq!(entries.len(), 2, "invalid payload left staging files");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn atomic_config_save_recovers_after_abrupt_child_exit_at_each_phase() {
+        use std::process::{Command, Stdio};
+
+        const PATH_ENV: &str = "VIETFLOW_F08_QA_CRASH_PATH";
+        const PHASE_ENV: &str = "VIETFLOW_F08_QA_CRASH_PHASE";
+        const TEST_NAME: &str =
+            "config::tests::atomic_config_save_recovers_after_abrupt_child_exit_at_each_phase";
+
+        fn fixture(method: u8) -> AppConfig {
+            let mut cfg = AppConfig {
+                method,
+                ..Default::default()
+            };
+            cfg.macros
+                .insert("recovery-id".into(), format!("config-{method}"));
+            cfg
+        }
+        fn assert_config(path: &Path, method: u8) {
+            let cfg = read_config_file(path).expect("config must remain valid JSON");
+            assert_eq!(cfg.method, method, "wrong recovered config at {path:?}");
+            assert_eq!(
+                cfg.macros.get("recovery-id").map(String::as_str),
+                Some(format!("config-{method}").as_str()),
+                "torn config fields at {path:?}"
+            );
+        }
+
+        if std::env::var_os(PHASE_ENV).is_some() {
+            let path = PathBuf::from(
+                std::env::var_os(PATH_ENV).expect("child must receive isolated QA path"),
+            );
+            // This should exit with code 77 inside atomic_write_config,
+            // before unwinding any Rust guards, at the requested checkpoint.
+            let saved = AppConfig::save_atomic(&path, &serde_json::to_string(&fixture(5)).unwrap());
+            panic!("fault injection did not terminate child; saved={saved}");
+        }
+
+        let dir = std::env::temp_dir().join(format!(
+            "vietflow-f08-abrupt-save-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        struct TempDirectory(PathBuf);
+        impl Drop for TempDirectory {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = TempDirectory(dir.clone());
+        let exe = std::env::current_exe().unwrap();
+
+        for phase in [
+            "after_temp_synced",
+            "after_backup_replaced",
+            "after_primary_replaced",
+        ] {
+            let file = dir.join(format!("{phase}.json"));
+            assert!(AppConfig::save_atomic(
+                &file,
+                &serde_json::to_string(&fixture(0)).unwrap()
+            ));
+            assert!(AppConfig::save_atomic(
+                &file,
+                &serde_json::to_string(&fixture(1)).unwrap()
+            ));
+            assert_config(&file, 1);
+            assert_config(&backup_path(&file), 0);
+
+            let output = Command::new(&exe)
+                .args(["--exact", TEST_NAME, "--nocapture"])
+                .env(PATH_ENV, &file)
+                .env(PHASE_ENV, phase)
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .output()
+                .expect("spawn independently terminating Windows test writer");
+            assert_eq!(
+                output.status.code(),
+                Some(77),
+                "child did not terminate at checkpoint {phase}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+
+            let committed = if phase == "after_primary_replaced" {
+                5
+            } else {
+                1
+            };
+            let backed_up = if phase == "after_temp_synced" { 0 } else { 1 };
+            assert_config(&file, committed);
+            assert_config(&backup_path(&file), backed_up);
+            let loaded = read_config_with_backup(&file).unwrap();
+            assert_eq!(loaded.method, committed);
+
+            // A child exit skips ConfigWriteGuard::drop. The kernel reports
+            // abandoned ownership; a fresh process must still acquire it.
+            assert!(
+                AppConfig::save_atomic(&file, &serde_json::to_string(&fixture(2)).unwrap()),
+                "cannot recover config writer mutex after {phase}"
+            );
+            assert_config(&file, 2);
+            assert_config(&backup_path(&file), committed);
+
+            // A pre-commit crash can leave a synced, uniquely named staging
+            // file. It must never be read as current settings or as backup.
+            let orphans = fs::read_dir(&dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with(&format!("{phase}.json.tmp.")))
+                .count();
+            assert_eq!(
+                orphans,
+                if phase == "after_primary_replaced" {
+                    0
+                } else {
+                    1
+                },
+                "unexpected staging residue at checkpoint {phase}"
+            );
+        }
     }
 
     #[test]
