@@ -1268,7 +1268,7 @@ impl VietFlowEngine {
             let raw_lower = raw_word.to_ascii_lowercase();
             let is_slang = crate::autoswitch::is_vietnamese_abbrev_or_slang(&raw_lower);
             let prev_disp = self.lookback.prev_display();
-            let should_switch = !is_slang && crate::autoswitch::should_restore_to_english(&raw_word, &display_word, prev_disp);
+            let should_switch = !is_slang && crate::autoswitch::should_restore_to_english(&raw_word, &display_word, prev_disp, self.is_valid_vietnamese_word());
             let is_english_keyword = !is_slang && self.matches_raw_english_keyword();
             let is_english_word = !is_slang
                 && (is_english_keyword

@@ -42,6 +42,7 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 - [P1][F11/F13/F14] Ghép phím scan-code mở rộng sau `SendInput` từng phần, giới hạn bảng trạng thái phím giữ, dùng HKL thực và Unicode fallback cho AltGr/dead-key.
 - [P1][F12] Ghi TSF shared-memory bằng CAS nguyên tử, stress đa tiến trình, kiểm tra ACL Low Integrity.
 - [P0][F06] Sắp xếp prerelease theo SemVer số (`rc.10` sau `rc.2`), ghim URL cập nhật/MSI vào release chính thức, bắt buộc Authenticode trước khi tự chạy MSI (bản chưa ký sẽ mở trang release để tải tay).
+- Khắc phục lỗi gõ `oops` + dấu cách bị trả về tiếng Anh thay vì `ốp`: điểm hòa Anh–Việt (chênh đúng bằng ngưỡng) nay giữ lại chữ Việt đã gõ dấu rõ ràng, đối xứng với chiều E→V vốn đã ưu tiên Việt khi hòa. Các từ Anh chênh lệch rõ (ví dụ `loop`) vẫn tự trả về tiếng Anh.
 
 ## [0.1.3] - 2026-11-03
 

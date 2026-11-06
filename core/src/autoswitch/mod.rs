@@ -311,6 +311,7 @@ pub fn should_restore_to_english(
     raw_word: &str,
     composed_vn_word: &str,
     prev_word: Option<&str>,
+    vn_phonologically_valid: bool,
 ) -> bool {
     // Word length check: single letters don't auto-switch
     if raw_word.len() < 2 {
@@ -386,9 +387,18 @@ pub fn should_restore_to_english(
     }
 
     // Standard unigram tie formula:
-    // vn < AS_VN_FLOOR && en - vn >= AS_PREFER || en - vn >= AS_VN_EXTREME
-    (vn < AS_VN_FLOOR && (en_score as i16 - vn as i16 >= AS_PREFER as i16))
-        || (en_score as i16 - vn as i16 >= AS_VN_EXTREME as i16)
+    // vn < AS_VN_FLOOR && en - vn > AS_PREFER || en - vn >= AS_VN_EXTREME.
+    // A bare tie (margin exactly AS_PREFER) keeps Vietnamese only when the
+    // composition is phonologically valid and the corpus does not contradict
+    // it (vn >= 0), mirroring the E->V side where ties switch to Vietnamese.
+    // E.g. "oops" (en=10, vn=0 for valid "ốp") stays Vietnamese, while
+    // "loss" (invalid "los") or "sos" (vn=-10 for "só") still restore English.
+    let margin = en_score as i16 - vn as i16;
+    (vn < AS_VN_FLOOR && margin > AS_PREFER as i16)
+        || (vn < AS_VN_FLOOR
+            && margin == AS_PREFER as i16
+            && (!vn_phonologically_valid || vn < 0))
+        || (margin >= AS_VN_EXTREME as i16)
 }
 
 /// Evaluates whether a raw word typed in English mode should be converted to Vietnamese and switch mode.
@@ -498,12 +508,18 @@ mod tests {
     #[test]
     fn test_tie_decisions() {
         // "more" typed in VN mode -> "mỏe" (invalid/missing VN score) -> should restore
-        assert!(should_restore_to_english("more", "mỏe", None));
+        assert!(should_restore_to_english("more", "mỏe", None, true));
 
         // "this" typed in VN mode -> "thí"
         // en_score = 39, vn_score = 18. en - vn = 21 >= 10, but vn (18) >= AS_VN_FLOOR (10).
         // Without prev word hint, "thí" stays VN.
-        assert!(!should_restore_to_english("this", "thí", None));
+        assert!(!should_restore_to_english("this", "thí", None, true));
+
+        // Bare-tie gate: "oops" (en=10, vn=0) keeps valid "ốp"; the same tie
+        // with an engine-rejected composition still restores English.
+        assert!(!should_restore_to_english("oops", "ốp", None, true));
+        assert!(should_restore_to_english("oops", "ốp", None, false));
+        assert!(should_restore_to_english("loss", "los", None, false));
 
         // "bus" vs "bú" with prev word
         // "xe bus" -> should be English
@@ -540,7 +556,7 @@ mod tests {
             "tym", "ny", "ck", "vk", "game", "link", "web", "app", "lag", "ping", "zui", "bik"
         ] {
             assert!(
-                !should_restore_to_english(abbrev, abbrev, None),
+                !should_restore_to_english(abbrev, abbrev, None, false),
                 "Abbreviation {abbrev} must not trigger restore/switch to English"
             );
         }

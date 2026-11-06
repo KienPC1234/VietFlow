@@ -564,6 +564,29 @@ mod tests {
     }
 
     #[test]
+    fn test_vietnamese_tie_favors_marks() {
+        // A bare score tie (en - vn == AS_PREFER) keeps Vietnamese only for a
+        // phonologically valid composition the corpus does not contradict:
+        // "oops" (en=10, vn=0) -> "ốp", "boots" (en=13, vn=3) -> "bốt".
+        let mut engine = VietFlowEngine::default();
+        assert_eq!(process_string(&mut engine, "oops "), "ốp ");
+        engine.reset();
+        assert_eq!(process_string(&mut engine, "oosp "), "ốp ");
+        engine.reset();
+        assert_eq!(process_string(&mut engine, "boots "), "bốt ");
+        // Invalid compositions ("ches", "los") or contradicted ones ("só",
+        // vn=-10) still restore English; clear margins are untouched.
+        engine.reset();
+        assert_eq!(process_string(&mut engine, "chess "), "chess ");
+        engine.reset();
+        assert_eq!(process_string(&mut engine, "loss "), "loss ");
+        engine.reset();
+        assert_eq!(process_string(&mut engine, "sos "), "sos ");
+        engine.reset();
+        assert_eq!(process_string(&mut engine, "loop "), "loop ");
+    }
+
+    #[test]
     fn test_custom_english_keywords() {
         let mut engine = VietFlowEngine::new(
             EngineOptions {
