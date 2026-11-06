@@ -34,6 +34,14 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 - Sửa lỗi hiển thị sai tên file thư viện TSF (`vietflow_tip.dll` -> `vietflow_tsf.dll`) trong giao diện cài đặt bộ gõ.
 - Khắc phục triệt để các cảnh báo mã nguồn (`cargo clippy`): Bổ sung đầy đủ tài liệu an toàn (`# Safety`) cho tất cả hàm ngoại vi C-ABI của engine, tối ưu hóa vòng lặp duyệt nguyên âm, loại bỏ các biến `mut` thừa và thu gọn các câu lệnh rẽ nhánh điều kiện.
 - Đồng bộ hóa bài kiểm tra manifest cập nhật (`updater.rs`): Khử triệt để việc hardcode chuỗi phiên bản trong test `parses_real_release_manifest_file` và `live_release_manifest`, tránh lỗi gãy test khi nâng cấp phiên bản ứng dụng.
+- Khắc phục lỗi treo khi chạy MSI mới trên máy đã cài sẵn VietFlow: cho phép nâng cấp thay thế cùng phiên bản (`AllowSameVersionUpgrades="yes"`) thay vì để hai bản giẫm nhau, và gửi thông điệp đóng ứng dụng từ tiến trình elevated tới user session (`ElevatedCloseMessage="yes"`) để mở khóa file trước khi thay thế.
+- Khắc phục lỗi nhân đôi phím `w` đơn (`neww` thành `new`), lỗi dính chữ khi undo sau dấu cách, và cắt chuỗi an toàn biên ký tự đa byte trong engine.
+- Chuyển menu chuột phải khay hệ thống sang `TrackPopupMenuEx` với vùng trừ taskbar theo từng màn hình, menu không còn bị taskbar đè mất.
+- Giữ nguyên chế độ [V] cho chữ Anh gõ lướt (passthrough), chỉ chuyển V/E tại dấu cách hoặc dấu câu; thử nghiệm chuyển live giữa từ đã được gỡ bỏ để gõ tiếng Anh mượt.
+- [P1][F08] Củng cố lưu cấu hình: từ chối JSON sai kiểu trước khi khóa ghi, cách ly bản hỏng, khôi phục nguyên tử sau khi tiến trình bị kết thúc đột ngột, kiểm tra ACL Low Integrity cho mapping TSF.
+- [P1][F11/F13/F14] Ghép phím scan-code mở rộng sau `SendInput` từng phần, giới hạn bảng trạng thái phím giữ, dùng HKL thực và Unicode fallback cho AltGr/dead-key.
+- [P1][F12] Ghi TSF shared-memory bằng CAS nguyên tử, stress đa tiến trình, kiểm tra ACL Low Integrity.
+- [P0][F06] Sắp xếp prerelease theo SemVer số (`rc.10` sau `rc.2`), ghim URL cập nhật/MSI vào release chính thức, bắt buộc Authenticode trước khi tự chạy MSI (bản chưa ký sẽ mở trang release để tải tay).
 
 ## [0.1.3] - 2026-11-03
 

@@ -17,7 +17,7 @@
     <SummaryInformation Description="VietFlow - Bộ gõ tiếng Việt hiện đại" Manufacturer="VietFlow Team" />
 
     <MajorUpgrade DowngradeErrorMessage="Một phiên bản mới hơn của VietFlow đã được cài đặt."
-                  AllowSameVersionUpgrades="no"
+                  AllowSameVersionUpgrades="yes"
                   Schedule="afterInstallInitialize" />
 
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
@@ -37,7 +37,7 @@
 
     <!-- Graceful close only. Never force-kill the IME and lose in-flight text;
          offer Retry/Abort/Ignore while running, or a reboot if still locked. -->
-    <util:CloseApplication Target="VietFlow.exe" CloseMessage="yes" Timeout="15"
+    <util:CloseApplication Target="VietFlow.exe" CloseMessage="yes" ElevatedCloseMessage="yes" Timeout="15"
                            Description="Please close VietFlow before updating or uninstalling."
                            PromptToContinue="yes" RebootPrompt="yes" />
 

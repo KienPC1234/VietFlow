@@ -96,11 +96,14 @@ installer or UI automation is unavailable, report BLOCKED, never PASS.
 - Final MSI uninstall can remove machine COM/TSF registration under SYSTEM, but
   per-user TIP registrations of other Windows profiles may remain. Never claim
   multi-user cleanup until a tested user-context deactivation route exists.
-- Same-version major upgrade replacement is disabled to satisfy ICE61. MSI
-  compares only the first three version fields; repackaging a different
-  ProductCode under the same version can still result in side-by-side products.
-  Bump the first three version fields and preserve the release-tag immutability
-  gate for every production update.
+- Same-version major upgrade replacement is enabled so a rebuilt MSI cleanly
+  replaces the installed product instead of leaving side-by-side products
+  (which hung on the locked VietFlow.exe). The elevated installer also sends
+  the close message to the user-session process (ElevatedCloseMessage) to
+  unlock files before replacement. WiX builds must still report zero ICE
+  errors/warnings. MSI compares only the first three version fields; always
+  rebuild all arch MSIs from the same commit and preserve the release-tag
+  immutability gate for every production update.
 - MSI-owned shortcuts are removed by Windows Installer. Legacy user-created
   shortcuts and per-user startup entries are not forcibly deleted by SYSTEM.
 - Exact official release metadata integrity does not replace vendor code signing.

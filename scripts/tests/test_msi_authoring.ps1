@@ -16,12 +16,13 @@ function Verify-MsiPolicy([xml]$doc) {
     $pkg = $doc.SelectSingleNode('/w:Wix/w:Package', $ns)
     Assert-True ($null -ne $pkg -and $pkg.GetAttribute('Scope') -eq 'perMachine') 'per-machine package'
     $major = $doc.SelectSingleNode('//w:MajorUpgrade',$ns)
-    Assert-True ($null -ne $major -and $major.GetAttribute('AllowSameVersionUpgrades') -ne 'yes') 'same-version major replacement must be disabled'
+    Assert-True ($null -ne $major -and $major.GetAttribute('AllowSameVersionUpgrades') -eq 'yes') 'same-version rebuilds must upgrade cleanly instead of side-by-side hang'
     $close = $doc.SelectNodes('//util:CloseApplication',$ns)
     Assert-True ($close.Count -eq 1) 'exactly one close rule'
     $c = $close[0]
     Assert-True ($c.GetAttribute('Target') -eq 'VietFlow.exe') 'only VietFlow is closed'
     Assert-True ($c.GetAttribute('CloseMessage') -eq 'yes') 'graceful close message'
+    Assert-True ($c.GetAttribute('ElevatedCloseMessage') -eq 'yes') 'elevated installer can close user-session app'
     Assert-True (-not $c.HasAttribute('TerminateProcess')) 'installer may not force kill active text composition'
     Assert-True ($c.GetAttribute('PromptToContinue') -eq 'yes') 'user is able to abort/retry when app running'
     Assert-True ($c.GetAttribute('RebootPrompt') -eq 'yes') 'locked application may be handled via reboot'
@@ -106,11 +107,11 @@ Write-Host 'PASS MSI: regression detects missing upgrade protection'
 $bad = [xml]$document.OuterXml
 $ns = [xml.XmlNamespaceManager]::new($bad.NameTable)
 $ns.AddNamespace('w','http://wixtoolset.org/schemas/v4/wxs')
-$bad.SelectSingleNode('//w:MajorUpgrade',$ns).SetAttribute('AllowSameVersionUpgrades','yes')
+$bad.SelectSingleNode('//w:MajorUpgrade',$ns).SetAttribute('AllowSameVersionUpgrades','no')
 $blocked = $false
 try { Verify-MsiPolicy $bad } catch { $blocked = $true }
-Assert-True $blocked 'regression must detect unsafe same-version major upgrades'
-Write-Host 'PASS MSI: regression detects unsafe same-version major upgrades'
+Assert-True $blocked 'regression must detect same-version upgrade refusal (side-by-side hang)'
+Write-Host 'PASS MSI: regression detects same-version upgrade refusal'
 
 # An MSI-managed shortcut has its own component lifecycle. A separate
 # RemoveFile-by-name can also delete a replacement .lnk the user created.
