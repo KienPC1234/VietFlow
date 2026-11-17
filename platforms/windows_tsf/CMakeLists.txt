@@ -53,6 +53,7 @@ target_link_libraries(vietflow_tsf PRIVATE
     userenv
     bcrypt
     ntdll
+    synchronization
 )
 
 # Optional isolated native protocol test; does not load/register a TIP.
@@ -75,6 +76,6 @@ if(VIETFLOW_BUILD_IPC_SMOKE)
     target_include_directories(vietflow_tsf_ffi_smoke PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../ffi")
     target_link_libraries(vietflow_tsf_ffi_smoke PRIVATE
         "${VIETFLOW_CORE_LIB}" advapi32 ole32 user32 kernel32
-        ws2_32 userenv bcrypt ntdll
+        ws2_32 userenv bcrypt ntdll synchronization
     )
 endif()
