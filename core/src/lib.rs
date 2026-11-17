@@ -558,6 +558,24 @@ mod tests {
         let actual = process_string(&mut engine, "restart ");
         assert_eq!(actual, "restart ");
 
+        for eng_word in &[
+            "texture ", "structure ", "picture ", "future ", "nature ",
+            "culture ", "capture ", "feature ", "figure ", "gesture ",
+            "posture ", "lecture ", "venture ", "pure ", "cure ", "sure ",
+            "format ", "order ", "service ", "system ", "terminal "
+        ] {
+            engine.reset();
+            let actual_word = process_string(&mut engine, eng_word);
+            assert_eq!(actual_word.as_str(), *eng_word, "Failed auto-restore for: {eng_word}");
+        }
+
+        // Vietnamese words starting with 'qu' must not be broken
+        for vn_qu in &["quẻ ", "quét ", "quán ", "quần ", "quy ", "quên ", "quang "] {
+            engine.reset();
+            let actual_qu = process_string(&mut engine, vn_qu);
+            assert_eq!(actual_qu.as_str(), *vn_qu, "Failed Vietnamese qu-word: {vn_qu}");
+        }
+
         engine.reset();
         let actual_code = process_string(&mut engine, "custom ");
         assert_eq!(actual_code, "custom ");

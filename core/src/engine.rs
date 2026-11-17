@@ -16,7 +16,7 @@ use crate::models::{
 use crate::tables::{iso_to_vn_lexi, IS_VN_VOWEL, TOTAL_VN_CHARS};
 use crate::tone_rules::{
     can_vowel_seq_take_coda, get_tone_position, is_stop_coda, is_valid_ending_consonant,
-    is_valid_initial, is_valid_initial_with_vowel, is_valid_vowel_seq,
+    is_valid_initial, is_valid_initial_with_vowel, is_valid_vowel_seq, normalize_vowel,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -528,6 +528,48 @@ impl VietFlowEngine {
 
         if vowel_after_coda && self.options.spell_check && self.options.auto_non_vn_restore && self.has_any_vietnamese_mark() {
             return self.restore_raw_buffer_with_new_char(c);
+        }
+
+        // Phonotactic rule 1: Stop codas (c, ch, p, t) in Vietnamese can only take Acute or Dot tones.
+        // If appending this coda creates an impossible tone combination (e.g. "tẽ" + "t" in "texture"),
+        // immediately restore raw keystrokes to prevent visible composition corruption.
+        if !is_vowel && self.options.spell_check && self.options.auto_non_vn_restore && self.has_any_vietnamese_mark() {
+            let ending_start = self.vowel_start + self.vowel_count;
+            if ending_start < self.buffer.len() && self.vowel_count > 0 {
+                let ending_len = self.buffer.len() - ending_start;
+                if ending_len <= 2 {
+                    let mut ending = ['\0'; 2];
+                    for (i, slot) in self.buffer[ending_start..].iter().enumerate() {
+                        ending[i] = to_lower_ascii(slot.raw_char);
+                    }
+                    if is_stop_coda(&ending[..ending_len])
+                        && matches!(
+                            self.current_tone,
+                            VnLexiTone::Grave | VnLexiTone::Hook | VnLexiTone::Tilde
+                        )
+                    {
+                        return self.restore_raw_buffer_with_new_char(c);
+                    }
+                }
+            }
+        }
+
+        // Phonotactic rule 2: In Vietnamese, vowel 'u' followed by 'e' only exists after initial 'q'
+        // (forming 'qu' + 'e'). Any syllable where 'e' follows 'u' without initial 'q' (e.g. -ure in
+        // "pure", "cure", "sure", "texture", "picture", "future", or -ue in "blue") is English.
+        // If a Vietnamese mark is present (such as hook 'r' on 'u'), restore immediately.
+        if is_vowel && self.options.spell_check && self.options.auto_non_vn_restore && self.has_any_vietnamese_mark() {
+            let lower_c = to_lower_ascii(c);
+            if lower_c == 'e' && self.vowel_count >= 2 && self.buffer.len() >= 2 {
+                let prev_vowel_idx = self.buffer.len() - 2;
+                let prev_raw = to_lower_ascii(self.buffer[prev_vowel_idx].raw_char);
+                let starts_with_qu = self.buffer.len() >= 3
+                    && to_lower_ascii(self.buffer[0].raw_char) == 'q'
+                    && to_lower_ascii(self.buffer[1].raw_char) == 'u';
+                if prev_raw == 'u' && !starts_with_qu {
+                    return self.restore_raw_buffer_with_new_char(c);
+                }
+            }
         }
 
         // Auto fix Shift key sticking on 2nd letter (e.g. "VIệt" -> "Việt")
@@ -1788,6 +1830,17 @@ impl VietFlowEngine {
             *vowel = self.buffer[self.vowel_start + i].lexi;
         }
         if !is_valid_vowel_seq(&vowels[..vowel_count]) {
+            return false;
+        }
+
+        // In Vietnamese, 'u' followed by 'e' (e.g. -ue, -ure) is only possible
+        // when preceded by initial 'q' (making 'qu' where 'qu' is initial consonant).
+        // If vowels starts with [U, E] here, get_vowel_start() was 0 or 1 (not 'qu'),
+        // which means this is an English word like texture, picture, blue, true, etc.
+        if vowel_count >= 2
+            && normalize_vowel(vowels[0]) == VnLexiName::U
+            && normalize_vowel(vowels[1]) == VnLexiName::E
+        {
             return false;
         }
 

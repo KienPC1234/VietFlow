@@ -6,6 +6,14 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Khắc phục lỗi gõ từ tiếng Anh chứa ký tự trùng phím Telex bị biến thành dấu tiếng Việt (ví dụ: `texture` + Space thành `textuẻ`): Bổ sung ba lớp bảo vệ trong engine:
+  1. **Stop Coda Guard**: Khi âm cuối đóng (`c`, `ch`, `p`, `t`) ghép với thanh điệu không tương thích (Huyền, Hỏi, Ngã), engine khôi phục ngay chuỗi phím gốc thay vì giữ ký tự sai.
+  2. **UE Diphthong Guard**: Khi nguyên âm `e` theo sau `u` mà không có phụ âm đầu `qu-`, engine khôi phục phím gốc ngay tại thời điểm gõ `e` nếu phát hiện dấu tiếng Việt.
+  3. **Kiểm tra `is_valid_vietnamese_word()`**: Từ chối chuỗi nguyên âm `[U, E]` không có phụ âm đầu `qu-` tại word break, đảm bảo khôi phục toàn bộ từ tiếng Anh.
+- Mở rộng danh sách từ khóa tiếng Anh (`ENGLISH_KEYWORDS`) thêm 33 từ phổ biến: `capture`, `color`, `culture`, `cure`, `cursor`, `editor`, `feature`, `figure`, `folder`, `format`, `furniture`, `future`, `gesture`, `layer`, `lecture`, `member`, `mixture`, `nature`, `number`, `order`, `picture`, `player`, `posture`, `procedure`, `pure`, `render`, `structure`, `sure`, `terminal`, `texture`, `vector`, `venture`, `worker`.
+
 ## [0.1.4] - 2026-11-03
 
 ### Added

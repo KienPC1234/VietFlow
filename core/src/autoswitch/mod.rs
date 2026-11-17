@@ -481,6 +481,7 @@ mod tests {
 
     #[test]
     fn test_lookup_scores() {
+        assert!(lookup_en_score("texture").is_some());
         assert!(lookup_en_score("more").is_some());
         assert!(lookup_en_score("makes").is_some());
         assert!(lookup_en_score("sense").is_some());
