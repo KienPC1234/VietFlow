@@ -1119,8 +1119,8 @@ impl VietFlowEngine {
         let mut u_idx = None;
         let mut o_idx = None;
 
-        for i in vowel_start..self.buffer.len() {
-            let ch = to_lower_ascii(self.buffer[i].raw_char);
+        for (i, slot) in self.buffer.iter().enumerate().skip(vowel_start) {
+            let ch = to_lower_ascii(slot.raw_char);
             if ch == 'u' {
                 u_idx = Some(i);
                 o_idx = None;
@@ -1385,8 +1385,8 @@ impl VietFlowEngine {
             let backspaces = self.display_len.saturating_sub(prefix_len);
 
             let mut out = KeyText::new();
-            for i in match_len..self.raw_chars.len() {
-                out.push_char(self.raw_chars[i]);
+            for &raw in &self.raw_chars[match_len..] {
+                out.push_char(raw);
             }
             out.push_char(c);
 
@@ -1417,8 +1417,8 @@ impl VietFlowEngine {
         let backspaces = prev_display_len.saturating_sub(prefix_len);
 
         let mut out = KeyText::new();
-        for i in match_len..self.raw_chars.len() {
-            out.push_char(self.raw_chars[i]);
+        for &raw in &self.raw_chars[match_len..] {
+            out.push_char(raw);
         }
 
         self.buffer.clear();
