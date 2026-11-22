@@ -773,7 +773,7 @@ void UiManager::PageOverview() {
     static bool show_custom_hotkeys = false;
 
     if (ImGui::BeginTable("OverviewControlTable", 2, ImGuiTableFlags_None)) {
-        ImGui::TableSetupColumn("LabelCol", ImGuiTableColumnFlags_WidthFixed, Px(110.0f));
+        ImGui::TableSetupColumn("LabelCol", ImGuiTableColumnFlags_WidthFixed, Px(125.0f));
         ImGui::TableSetupColumn("InputCol", ImGuiTableColumnFlags_WidthStretch);
 
         // Row 1: Bảng mã
@@ -1153,7 +1153,7 @@ void UiManager::PageTyping() {
     // 2. Phương thức & Chốt từ
     SectionHeader("Phương thức & Chốt từ");
     if (ImGui::BeginTable("TypingMethodTable", 2, ImGuiTableFlags_None)) {
-        ImGui::TableSetupColumn("LabelCol", ImGuiTableColumnFlags_WidthFixed, Px(220.0f));
+        ImGui::TableSetupColumn("LabelCol", ImGuiTableColumnFlags_WidthFixed, Px(250.0f));
         ImGui::TableSetupColumn("InputCol", ImGuiTableColumnFlags_WidthStretch);
 
         // Row 1: Cách gửi phím
@@ -1189,7 +1189,7 @@ void UiManager::PageTyping() {
         // Row 2: Chốt từ (Timeout)
         ImGui::TableNextRow(ImGuiTableRowFlags_None, Px(28.0f));
         ImGui::TableSetColumnIndex(0);
-        LabelHelp("Thời gian chờ chốt từ:",
+        LabelHelp("Thời gian chốt từ:",
                   "Thời gian chờ giữa hai phím trước khi chốt từ. Mặc định 0 ms (Tắt / không giới hạn, giống UniKey).");
         ImGui::TableSetColumnIndex(1);
         int timeout = (int)config_.typing_timeout_ms;
@@ -1247,7 +1247,7 @@ void UiManager::PageTyping() {
     // 3. Từ điển & Ngoại lai
     SectionHeader("Từ điển & Ngoại lai");
     if (ImGui::BeginTable("TypingForeignTable", 2, ImGuiTableFlags_None)) {
-        ImGui::TableSetupColumn("LabelCol", ImGuiTableColumnFlags_WidthFixed, Px(220.0f));
+        ImGui::TableSetupColumn("LabelCol", ImGuiTableColumnFlags_WidthFixed, Px(250.0f));
         ImGui::TableSetupColumn("InputCol", ImGuiTableColumnFlags_WidthStretch);
 
         // Row 1: Phụ âm ngoại lai

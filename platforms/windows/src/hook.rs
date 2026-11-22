@@ -321,6 +321,8 @@ pub struct HookState {
     pub modifier_chord_armed: bool,
     /// True when a third non-chord key was pressed while the chord was held.
     pub modifier_chord_dirtied: bool,
+    /// True when the current chord press has already triggered a language toggle upon modifier release.
+    pub modifier_chord_triggered: bool,
 }
 
 unsafe impl Send for HookState {}
@@ -934,6 +936,7 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         game_detector: GameDetectionTracker::new(),
         modifier_chord_armed: false,
         modifier_chord_dirtied: false,
+        modifier_chord_triggered: false,
     });
     drop(lock);
 }
@@ -973,7 +976,8 @@ pub unsafe extern "system" fn low_level_mouse_proc(
                     state.english_word_buffer.clear();
                     state.english_word_valid = true;
                     state.modifier_chord_armed = false;
-                    state.modifier_chord_dirtied = false;
+                    state.modifier_chord_dirtied = true;
+                    state.modifier_chord_triggered = false;
                 }
             }
         }
@@ -1104,6 +1108,33 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     state.alt_pressed = is_vk_down(VK_MENU) || is_vk_down(VK_LMENU) || is_vk_down(VK_RMENU);
     state.win_pressed = is_vk_down(VK_LWIN) || is_vk_down(VK_RWIN);
 
+    // Complement GetAsyncKeyState with the immediate hook event's VK, as WH_KEYBOARD_LL
+    // executes before the OS asynchronously updates the GetAsyncKeyState table.
+    if is_key_down {
+        match vk {
+            VK_CONTROL | VK_LCONTROL | VK_RCONTROL => state.ctrl_pressed = true,
+            VK_SHIFT | VK_LSHIFT | VK_RSHIFT => state.shift_pressed = true,
+            VK_MENU | VK_LMENU | VK_RMENU => state.alt_pressed = true,
+            VK_LWIN | VK_RWIN => state.win_pressed = true,
+            _ => {}
+        }
+    } else if is_key_up {
+        match vk {
+            VK_CONTROL => state.ctrl_pressed = false,
+            VK_LCONTROL => state.ctrl_pressed = is_vk_down(VK_RCONTROL),
+            VK_RCONTROL => state.ctrl_pressed = is_vk_down(VK_LCONTROL),
+            VK_SHIFT => state.shift_pressed = false,
+            VK_LSHIFT => state.shift_pressed = is_vk_down(VK_RSHIFT),
+            VK_RSHIFT => state.shift_pressed = is_vk_down(VK_LSHIFT),
+            VK_MENU => state.alt_pressed = false,
+            VK_LMENU => state.alt_pressed = is_vk_down(VK_RMENU),
+            VK_RMENU => state.alt_pressed = is_vk_down(VK_LMENU),
+            VK_LWIN => state.win_pressed = is_vk_down(VK_RWIN),
+            VK_RWIN => state.win_pressed = is_vk_down(VK_LWIN),
+            _ => {}
+        }
+    }
+
     let hotkeys_locked = state.hotkeys_locked();
     let language_allowed =
         language_hotkey_allowed(hotkeys_locked, state.is_foreground_excluded, state.override_unlocked);
@@ -1117,10 +1148,14 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         // Clean release of modifier-only hotkey chord (e.g. Ctrl+Shift, Alt+Shift).
         // Triggers toggle only when NO other key was pressed while the chord was held.
         if is_modifier_only_hotkey(&state.config.hotkey_mode)
-            && state.modifier_chord_armed
             && modifier_chord_matches_vk(&state.config.hotkey_mode, vk)
         {
-            if !state.modifier_chord_dirtied && language_allowed && !state.tsf_registered {
+            if state.modifier_chord_armed
+                && !state.modifier_chord_dirtied
+                && !state.modifier_chord_triggered
+                && language_allowed
+                && !state.tsf_registered
+            {
                 if state.config.pause_auto_after_manual {
                     let now_tick = get_tick_count_64();
                     state.auto_pause_until_ms = now_tick + 5000;
@@ -1143,9 +1178,19 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                 crate::tsf::sync_tsf_config(&state.config, effective);
 
                 PostMessageW(tray_hwnd, WM_TRAYICON, 0, if effective { 1 } else { 0 });
+                state.modifier_chord_triggered = true;
             }
-            state.modifier_chord_armed = false;
-            state.modifier_chord_dirtied = false;
+
+            if is_all_chord_released(
+                &state.config.hotkey_mode,
+                state.ctrl_pressed,
+                state.alt_pressed,
+                state.shift_pressed,
+            ) {
+                state.modifier_chord_armed = false;
+                state.modifier_chord_dirtied = false;
+                state.modifier_chord_triggered = false;
+            }
         }
     }
     if is_key_down {
@@ -1155,19 +1200,31 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
 
         // Track modifier chord state for modifier-only hotkeys
         if is_modifier_only_hotkey(&state.config.hotkey_mode) {
-            if !modifier_chord_matches_vk(&state.config.hotkey_mode, vk) {
+            let is_chord_vk = modifier_chord_matches_vk(&state.config.hotkey_mode, vk);
+            if is_chord_vk {
+                if is_modifier_chord_satisfied(
+                    &state.config.hotkey_mode,
+                    state.ctrl_pressed,
+                    state.alt_pressed,
+                    state.shift_pressed,
+                    state.win_pressed,
+                ) {
+                    state.modifier_chord_armed = true;
+                    state.modifier_chord_dirtied = false;
+                    state.modifier_chord_triggered = false;
+                }
+            } else {
                 // Any third non-chord key (e.g. 'X' in Ctrl+Shift+X, 'S' in Ctrl+Shift+S)
                 // dirties the chord so releasing Ctrl/Shift later will NOT toggle language.
-                state.modifier_chord_dirtied = true;
-            } else if is_modifier_chord_satisfied(
-                &state.config.hotkey_mode,
-                state.ctrl_pressed,
-                state.alt_pressed,
-                state.shift_pressed,
-                state.win_pressed,
-            ) {
-                state.modifier_chord_armed = true;
-                state.modifier_chord_dirtied = false;
+                let chord_active = is_chord_active(
+                    &state.config.hotkey_mode,
+                    state.ctrl_pressed,
+                    state.alt_pressed,
+                    state.shift_pressed,
+                );
+                if chord_active || state.modifier_chord_armed {
+                    state.modifier_chord_dirtied = true;
+                }
             }
         }
     }
@@ -1967,6 +2024,26 @@ pub fn is_modifier_chord_satisfied(
     }
 }
 
+#[inline]
+pub fn is_chord_active(mode: &str, ctrl: bool, alt: bool, shift: bool) -> bool {
+    let s = mode.strip_prefix("Custom:").unwrap_or(mode).trim();
+    if compact_eq_ignore_ascii_case(s, "AltShift") {
+        alt || shift
+    } else {
+        ctrl || shift
+    }
+}
+
+#[inline]
+pub fn is_all_chord_released(mode: &str, ctrl: bool, alt: bool, shift: bool) -> bool {
+    let s = mode.strip_prefix("Custom:").unwrap_or(mode).trim();
+    if compact_eq_ignore_ascii_case(s, "AltShift") {
+        !alt && !shift
+    } else {
+        !ctrl && !shift
+    }
+}
+
 unsafe fn check_custom_hotkey(
     mode: &str,
     ctrl: bool,
@@ -2151,6 +2228,7 @@ mod tests {
             game_detector: GameDetectionTracker::new(),
             modifier_chord_armed: false,
             modifier_chord_dirtied: false,
+            modifier_chord_triggered: false,
         }
     }
 
@@ -2700,5 +2778,20 @@ mod tests {
         assert!(is_modifier_chord_satisfied("CtrlShift", true, false, true, false));
         assert!(!is_modifier_chord_satisfied("CtrlShift", true, true, true, false)); // Alt also pressed -> false
         assert!(!is_modifier_chord_satisfied("CtrlShift", true, false, false, false)); // Only Ctrl -> false
+
+        // Chord active & all released
+        assert!(is_chord_active("CtrlShift", true, false, false));
+        assert!(is_chord_active("CtrlShift", false, false, true));
+        assert!(!is_chord_active("CtrlShift", false, false, false));
+        assert!(is_all_chord_released("CtrlShift", false, false, false));
+        assert!(!is_all_chord_released("CtrlShift", true, false, false));
+        assert!(!is_all_chord_released("CtrlShift", false, false, true));
+
+        assert!(is_chord_active("AltShift", false, true, false));
+        assert!(is_chord_active("AltShift", false, false, true));
+        assert!(!is_chord_active("AltShift", false, false, false));
+        assert!(is_all_chord_released("AltShift", false, false, false));
+        assert!(!is_all_chord_released("AltShift", false, true, false));
+        assert!(!is_all_chord_released("AltShift", false, false, true));
     }
 }
