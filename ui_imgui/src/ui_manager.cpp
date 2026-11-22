@@ -591,10 +591,10 @@ void UiManager::Render() {
     }
 
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(NF_KEYBOARD " VietFlow");
+    ImGui::TextUnformatted(NF_KEYBOARD " VietFlow 0.1.5");
     ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.60f, 0.70f, 1.0f));
-    ImGui::TextUnformatted("- Bộ gõ tiếng Việt thế hệ mới");
+    ImGui::TextUnformatted("- Bộ gõ tiếng Việt");
     ImGui::PopStyleColor();
 
     const char* save_btn_label = NF_SAVE " Lưu & Đóng (Esc)";
@@ -711,10 +711,10 @@ static std::string FormatHotkeyLabel(const std::string& mode) {
 }
 
 void UiManager::PageOverview() {
-    SectionHeader("Bộ gõ & Bảng mã");
+    SectionHeader("Điều khiển");
 
     const bool tsf_active = TsfActive();
-    LabelHelp("Chế độ chung:",
+    LabelHelp("Trạng thái:",
               tsf_active
                   ? "TSF IME đang kích hoạt: Windows quản lý chế độ gõ qua thanh ngôn ngữ hệ thống."
                   : "Áp dụng cho app không bị loại trừ. App đang focus có thể tạm tắt V/E theo danh sách Loại trừ.");
@@ -770,17 +770,36 @@ void UiManager::PageOverview() {
 
     ImGui::Spacing();
 
-    if (ImGui::BeginTable("OverviewSelectors", 2, ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Kiểu gõ", ImGuiTableColumnFlags_WidthStretch, 0.5f);
-        ImGui::TableSetupColumn("Bảng mã", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+    static bool show_custom_hotkeys = false;
 
-        ImGui::TableNextRow();
+    if (ImGui::BeginTable("OverviewControlTable", 2, ImGuiTableFlags_None)) {
+        ImGui::TableSetupColumn("LabelCol", ImGuiTableColumnFlags_WidthFixed, Px(110.0f));
+        ImGui::TableSetupColumn("InputCol", ImGuiTableColumnFlags_WidthStretch);
+
+        // Row 1: Bảng mã
+        ImGui::TableNextRow(ImGuiTableRowFlags_None, Px(28.0f));
         ImGui::TableSetColumnIndex(0);
-        LabelHelp("Kiểu gõ chính:",
+        LabelHelp("Bảng mã:",
+                  "Unicode cho hầu hết ứng dụng hiện đại. "
+                  "TCVN3/VNI dành cho phần mềm cũ.");
+        ImGui::TableSetColumnIndex(1);
+        ImGui::SetNextItemWidth(Px(280.0f));
+        const char* charsets[] = {
+            "Unicode dựng sẵn", "Unicode tổ hợp", "TCVN3 (ABC)", "VNI Windows"
+        };
+        if (ImGui::Combo("##CharsetCombo", &config_.charset, charsets, IM_ARRAYSIZE(charsets))) {
+            SaveConfig();
+        }
+
+        // Row 2: Kiểu gõ
+        ImGui::TableNextRow(ImGuiTableRowFlags_None, Px(28.0f));
+        ImGui::TableSetColumnIndex(0);
+        LabelHelp("Kiểu gõ:",
                   "Telex dùng chữ cái (aa → â). VNI dùng số (a1 → á). "
                   "VIQR dùng dấu câu. Telex cơ bản/2 ít tính năng hơn. "
                   "Telex + VNI dùng được cả hai.");
-        ImGui::SetNextItemWidth(-Px(10.0f));
+        ImGui::TableSetColumnIndex(1);
+        ImGui::SetNextItemWidth(Px(280.0f));
         const char* methods[] = {
             "Telex", "VNI", "VIQR", "Telex cơ bản", "Telex cơ bản 2", "Telex + VNI", "Tự định nghĩa"
         };
@@ -788,215 +807,243 @@ void UiManager::PageOverview() {
             SaveConfig();
         }
         if (config_.method == 6) {
-            ImGui::Spacing();
-            ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), "Đang dùng kiểu gõ tự định nghĩa.");
-            ImGui::TextDisabled("Vào tab [Gõ] để chỉnh từng phím.");
+            ImGui::SameLine(0.0f, Px(10.0f));
+            ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), "(Tab [Gõ] để chỉnh)");
         }
 
+        // Row 3: Phím chuyển
+        ImGui::TableNextRow(ImGuiTableRowFlags_None, Px(28.0f));
+        ImGui::TableSetColumnIndex(0);
+        LabelHelp("Phím chuyển:",
+                  tsf_active
+                      ? "TSF IME đang bật: Windows quản lý phím chuyển ngôn ngữ (Win + Space / Alt + Shift)."
+                      : "Phím tắt chuyển đổi nhanh giữa tiếng Việt [V] và tiếng Anh [E].");
         ImGui::TableSetColumnIndex(1);
-        LabelHelp("Bảng mã xuất:",
-                  "Unicode cho hầu hết ứng dụng hiện đại. "
-                  "TCVN3/VNI dành cho phần mềm cũ.");
-        ImGui::SetNextItemWidth(-Px(10.0f));
-        const char* charsets[] = {
-            "Unicode", "Unicode tổ hợp", "TCVN3", "VNI Windows"
+        ImGui::BeginDisabled(tsf_active);
+        const bool is_ctrl_shift = (config_.hotkey_mode == "CtrlShift");
+        const bool is_alt_z = (config_.hotkey_mode == "AltZ");
+
+        if (ImGui::RadioButton("CTRL + SHIFT", is_ctrl_shift)) {
+            config_.hotkey_mode = "CtrlShift";
+            recording_hotkey_ = false;
+            SaveConfig();
+        }
+        ImGui::SameLine(0.0f, Px(24.0f));
+        if (ImGui::RadioButton("ALT + Z", is_alt_z)) {
+            config_.hotkey_mode = "AltZ";
+            recording_hotkey_ = false;
+            SaveConfig();
+        }
+        ImGui::SameLine(0.0f, Px(24.0f));
+        if (ImGui::SmallButton(show_custom_hotkeys ? "Khác... ▲" : "Khác... ▼")) {
+            show_custom_hotkeys = !show_custom_hotkeys;
+        }
+        if (!is_ctrl_shift && !is_alt_z) {
+            ImGui::SameLine(0.0f, Px(10.0f));
+            HotkeyBadge(FormatHotkeyLabel(config_.hotkey_mode).c_str());
+        }
+        ImGui::EndDisabled();
+
+        ImGui::EndTable();
+    }
+
+    if (show_custom_hotkeys && !tsf_active) {
+        ImGui::Spacing();
+        ImGui::Indent(Px(16.0f));
+
+        ImGui::TextDisabled("Phím tắt thông dụng:");
+        ImGui::Spacing();
+
+        struct HotkeyPreset { const char* mode; const char* label; };
+        HotkeyPreset presets[] = {
+            {"CtrlShift", "Ctrl + Shift"},
+            {"AltZ", "Alt + Z"},
+            {"CtrlSpace", "Ctrl + Space"},
+            {"ShiftSpace", "Shift + Space"},
+            {"AltShift", "Alt + Shift"},
+            {"CapsLock", "Caps Lock"},
+            {"WinSpace", "Win + Space"}
         };
-        if (ImGui::Combo("##CharsetCombo", &config_.charset, charsets, IM_ARRAYSIZE(charsets))) {
+
+        for (int i = 0; i < IM_ARRAYSIZE(presets); ++i) {
+            bool is_active = (config_.hotkey_mode == presets[i].mode || FormatHotkeyLabel(config_.hotkey_mode) == presets[i].label);
+            if (is_active) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.45f, 0.75f, 1.00f));
+                ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.40f, 0.75f, 1.00f, 1.00f));
+            }
+
+            float btn_w = ImGui::CalcTextSize(presets[i].label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(16.0f);
+            if (ImGui::Button(presets[i].label, ImVec2(btn_w, Px(26.0f)))) {
+                config_.hotkey_mode = presets[i].mode;
+                recording_hotkey_ = false;
+                SaveConfig();
+            }
+
+            if (is_active) {
+                ImGui::PopStyleColor(2);
+            }
+
+            if (i < IM_ARRAYSIZE(presets) - 1) {
+                float next_btn_w = ImGui::CalcTextSize(presets[i + 1].label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(16.0f);
+                float next_right = (ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x)
+                                 + Px(8.0f) + next_btn_w;
+                if (next_right <= ImGui::GetWindowContentRegionMax().x) {
+                    ImGui::SameLine(0.0f, Px(8.0f));
+                }
+            }
+        }
+
+        ImGui::Spacing();
+
+        // Interactive Key Recorder
+        if (recording_hotkey_) {
+            bool is_ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            bool is_alt   = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+            bool is_shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+            bool is_win   = ((GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) || ((GetAsyncKeyState(VK_RWIN) & 0x8000) != 0);
+
+            if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0) {
+                recording_hotkey_ = false;
+            }
+
+            std::string live_held;
+            if (is_ctrl) live_held += "Ctrl + ";
+            if (is_alt) live_held += "Alt + ";
+            if (is_shift) live_held += "Shift + ";
+            if (is_win) live_held += "Win + ";
+
+            struct KeyDef { int vk; const char* name; };
+            static const KeyDef s_keys[] = {
+                { VK_SPACE, "Space" }, { VK_CAPITAL, "CapsLock" }, { VK_TAB, "Tab" },
+                { 0xC0, "~" },
+                { VK_F1, "F1" }, { VK_F2, "F2" }, { VK_F3, "F3" }, { VK_F4, "F4" },
+                { VK_F5, "F5" }, { VK_F6, "F6" }, { VK_F7, "F7" }, { VK_F8, "F8" },
+                { VK_F9, "F9" }, { VK_F10, "F10" }, { VK_F11, "F11" }, { VK_F12, "F12" },
+            };
+
+            std::string triggered_key;
+            for (const auto& kd : s_keys) {
+                if ((GetAsyncKeyState(kd.vk) & 0x8000) != 0) {
+                    triggered_key = kd.name;
+                    break;
+                }
+            }
+            if (triggered_key.empty()) {
+                for (int k = 'A'; k <= 'Z'; ++k) {
+                    if ((GetAsyncKeyState(k) & 0x8000) != 0) {
+                        triggered_key = std::string(1, (char)k);
+                        break;
+                    }
+                }
+            }
+            if (triggered_key.empty()) {
+                for (int k = '0'; k <= '9'; ++k) {
+                    if ((GetAsyncKeyState(k) & 0x8000) != 0) {
+                        triggered_key = std::string(1, (char)k);
+                        break;
+                    }
+                }
+            }
+
+            if (!triggered_key.empty()) {
+                std::string final_hotkey;
+                if (is_ctrl) final_hotkey += "Ctrl + ";
+                if (is_alt) final_hotkey += "Alt + ";
+                if (is_shift) final_hotkey += "Shift + ";
+                if (is_win) final_hotkey += "Win + ";
+                final_hotkey += triggered_key;
+
+                config_.hotkey_mode = final_hotkey;
+                recording_hotkey_ = false;
+                SaveConfig();
+            }
+
+            std::string record_btn_label = std::string("[ ") + NF_BOLT + " Đang nghe: " + (live_held.empty() ? std::string("Bấm tổ hợp phím...") : live_held) + " (Esc: Hủy) ]";
+            float btn_w = ImGui::CalcTextSize(record_btn_label.c_str()).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(20.0f);
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.70f, 0.20f, 0.20f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.80f, 0.25f, 0.25f, 1.0f));
+            if (ImGui::Button(record_btn_label.c_str(), ImVec2(btn_w, Px(26.0f)))) {
+                recording_hotkey_ = false;
+            }
+            ImGui::PopStyleColor(2);
+        } else {
+            const char* start_record_label = NF_COG "  Ghi tổ hợp phím trực tiếp";
+            float btn_w = ImGui::CalcTextSize(start_record_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(20.0f);
+            if (ImGui::Button(start_record_label, ImVec2(btn_w, Px(26.0f)))) {
+                recording_hotkey_ = true;
+            }
+        }
+
+        ImGui::Unindent(Px(16.0f));
+        ImGui::Spacing();
+    }
+
+    SectionHeader("Tùy chọn gõ");
+    if (ImGui::BeginTable("OverviewTypingOptions", 2, ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Col1", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+        ImGui::TableSetupColumn("Col2", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        if (CheckboxHelp("Bật kiểm tra chính tả", &config_.spell_check,
+                         "Tự động phát hiện từ sai cấu trúc tiếng Việt.")) {
+            SaveConfig();
+        }
+        ImGui::TableSetColumnIndex(1);
+        if (CheckboxHelp("Cho phép gõ tự do", &config_.free_marking,
+                         "Bỏ dấu tự do ở bất kỳ vị trí nào trong từ.")) {
+            SaveConfig();
+        }
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        if (CheckboxHelp("Tự động khôi phục từ tiếng Anh", &config_.auto_restore,
+                         "Khôi phục nguyên dạng phím bấm khi phát hiện gõ từ tiếng Anh.")) {
+            SaveConfig();
+        }
+        ImGui::TableSetColumnIndex(1);
+        if (CheckboxHelp("Đặt dấu oà, uỳ (kiểu mới)", &config_.modern_style,
+                         "Đặt dấu thanh trên nguyên âm sau (oà, uỳ thay vì òa, ùy).")) {
             SaveConfig();
         }
 
         ImGui::EndTable();
     }
 
-    SectionHeader("Phím tắt V/E");
-    if (tsf_active) {
-        ImGui::TextColored(ImVec4(0.35f, 0.75f, 1.0f, 1.0f),
-                           "  Chế độ TSF IME đang hoạt động: Windows quản lý phím chuyển đổi ngôn ngữ (Win + Space hoặc Alt + Shift).");
-        ImGui::Spacing();
-    }
-    ImGui::BeginDisabled(tsf_active);
+    SectionHeader("Hệ thống");
+    if (ImGui::BeginTable("OverviewSystemOptions", 2, ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Col1", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+        ImGui::TableSetupColumn("Col2", ImGuiTableColumnFlags_WidthStretch, 0.5f);
 
-    // Current Hotkey status badge
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Phím tắt đang dùng:");
-    ImGui::SameLine(0.0f, Px(10.0f));
-    HotkeyBadge(FormatHotkeyLabel(config_.hotkey_mode).c_str());
-
-    ImGui::Spacing();
-    ImGui::TextDisabled("Chọn nhanh:");
-    ImGui::Spacing();
-
-    struct HotkeyPreset { const char* mode; const char* label; };
-    HotkeyPreset presets[] = {
-        {"CtrlShift", "Ctrl + Shift"},
-        {"AltZ", "Alt + Z"},
-        {"CtrlSpace", "Ctrl + Space"},
-        {"ShiftSpace", "Shift + Space"},
-        {"AltShift", "Alt + Shift"},
-        {"CapsLock", "Caps Lock"},
-        {"WinSpace", "Win + Space"}
-    };
-
-    for (int i = 0; i < IM_ARRAYSIZE(presets); ++i) {
-        bool is_active = (config_.hotkey_mode == presets[i].mode || FormatHotkeyLabel(config_.hotkey_mode) == presets[i].label);
-        if (is_active) {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.45f, 0.75f, 1.00f));
-            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.40f, 0.75f, 1.00f, 1.00f));
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        if (CheckboxHelp("Khởi động cùng Windows", &config_.start_with_windows,
+                         "Tự chạy VietFlow khi đăng nhập Windows.")) {
+            SaveConfig();
         }
-
-        float btn_w = ImGui::CalcTextSize(presets[i].label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(16.0f);
-        if (ImGui::Button(presets[i].label, ImVec2(btn_w, Px(28.0f)))) {
-            config_.hotkey_mode = presets[i].mode;
-            recording_hotkey_ = false;
+        ImGui::TableSetColumnIndex(1);
+        if (CheckboxHelp("Tự chuyển tiếng Anh khi chơi game", &config_.auto_detect_game_mode,
+                         "Tự động chuyển [E] khi phát hiện tiến trình game hoạt động.")) {
             SaveConfig();
         }
 
-        if (is_active) {
-            ImGui::PopStyleColor(2);
-        }
-
-        if (i < IM_ARRAYSIZE(presets) - 1) {
-            float next_btn_w = ImGui::CalcTextSize(presets[i + 1].label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(16.0f);
-            float next_right = (ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x)
-                             + Px(8.0f) + next_btn_w;
-            if (next_right <= ImGui::GetWindowContentRegionMax().x) {
-                ImGui::SameLine(0.0f, Px(8.0f));
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        if (CheckboxHelp("Âm thanh khi chuyển V/E", &config_.notification_sound,
+                         "Phát tiếng nhẹ khi chuyển V/E bằng phím tắt hoặc biểu tượng khay.")) {
+            SaveConfig();
+            if (config_.notification_sound) {
+                vf_play_notification_sound();
             }
         }
-    }
-
-    ImGui::Spacing();
-    ImGui::Spacing();
-    ImGui::TextDisabled("Gán tổ hợp khác:");
-    ImGui::Spacing();
-
-    // Section 2A: Interactive Key Recorder
-    if (recording_hotkey_) {
-        bool is_ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-        bool is_alt   = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-        bool is_shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-        bool is_win   = ((GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) || ((GetAsyncKeyState(VK_RWIN) & 0x8000) != 0);
-
-        if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0) {
-            recording_hotkey_ = false;
-        }
-
-        std::string live_held;
-        if (is_ctrl) live_held += "Ctrl + ";
-        if (is_alt) live_held += "Alt + ";
-        if (is_shift) live_held += "Shift + ";
-        if (is_win) live_held += "Win + ";
-
-        struct KeyDef { int vk; const char* name; };
-        static const KeyDef s_keys[] = {
-            { VK_SPACE, "Space" }, { VK_CAPITAL, "CapsLock" }, { VK_TAB, "Tab" },
-            { 0xC0, "~" },
-            { VK_F1, "F1" }, { VK_F2, "F2" }, { VK_F3, "F3" }, { VK_F4, "F4" },
-            { VK_F5, "F5" }, { VK_F6, "F6" }, { VK_F7, "F7" }, { VK_F8, "F8" },
-            { VK_F9, "F9" }, { VK_F10, "F10" }, { VK_F11, "F11" }, { VK_F12, "F12" },
-        };
-
-        std::string triggered_key;
-        for (const auto& kd : s_keys) {
-            if ((GetAsyncKeyState(kd.vk) & 0x8000) != 0) {
-                triggered_key = kd.name;
-                break;
-            }
-        }
-        if (triggered_key.empty()) {
-            for (int k = 'A'; k <= 'Z'; ++k) {
-                if ((GetAsyncKeyState(k) & 0x8000) != 0) {
-                    triggered_key = std::string(1, (char)k);
-                    break;
-                }
-            }
-        }
-        if (triggered_key.empty()) {
-            for (int k = '0'; k <= '9'; ++k) {
-                if ((GetAsyncKeyState(k) & 0x8000) != 0) {
-                    triggered_key = std::string(1, (char)k);
-                    break;
-                }
-            }
-        }
-
-        if (!triggered_key.empty()) {
-            std::string final_hotkey;
-            if (is_ctrl) final_hotkey += "Ctrl + ";
-            if (is_alt) final_hotkey += "Alt + ";
-            if (is_shift) final_hotkey += "Shift + ";
-            if (is_win) final_hotkey += "Win + ";
-            final_hotkey += triggered_key;
-
-            config_.hotkey_mode = final_hotkey;
-            recording_hotkey_ = false;
+        ImGui::TableSetColumnIndex(1);
+        if (CheckboxHelp("Tạm dừng AutoSwitch sau chuyển thủ công", &config_.pause_auto_after_manual,
+                         "Không tự chuyển lại [V] sau khi người dùng đã chủ động chuyển [E].")) {
             SaveConfig();
         }
 
-        std::string record_btn_label = std::string("[ ") + NF_BOLT + " Đang nghe: " + (live_held.empty() ? std::string("Bấm tổ hợp phím...") : live_held) + " (Esc: Hủy) ]";
-        float btn_w = ImGui::CalcTextSize(record_btn_label.c_str()).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(20.0f);
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.70f, 0.20f, 0.20f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.80f, 0.25f, 0.25f, 1.0f));
-        if (ImGui::Button(record_btn_label.c_str(), ImVec2(btn_w, Px(28.0f)))) {
-            recording_hotkey_ = false;
-        }
-        ImGui::PopStyleColor(2);
-    } else {
-        const char* start_record_label = NF_COG "  Ghi tổ hợp phím";
-        float btn_w = ImGui::CalcTextSize(start_record_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(20.0f);
-        if (ImGui::Button(start_record_label, ImVec2(btn_w, Px(28.0f)))) {
-            recording_hotkey_ = true;
-        }
+        ImGui::EndTable();
     }
-
-    ImGui::Spacing();
-
-    // Section 2B: Manual Custom Hotkey Builder
-    static bool custom_ctrl = true;
-    static bool custom_alt = false;
-    static bool custom_shift = false;
-    static bool custom_win = false;
-    static int custom_key_idx = 0;
-    const char* custom_keys[] = {
-        "Space", "Z", "CapsLock", "~", "Tab",
-        "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
-        "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y"
-    };
-
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("Hoặc chọn tổ hợp:");
-    ImGui::SameLine(0.0f, Px(8.0f));
-    ImGui::Checkbox("Ctrl", &custom_ctrl);
-    ImGui::SameLine(0.0f, Px(8.0f));
-    ImGui::Checkbox("Alt", &custom_alt);
-    ImGui::SameLine(0.0f, Px(8.0f));
-    ImGui::Checkbox("Shift", &custom_shift);
-    ImGui::SameLine(0.0f, Px(8.0f));
-    ImGui::Checkbox("Win", &custom_win);
-
-    ImGui::SameLine(0.0f, Px(12.0f));
-    ImGui::TextUnformatted("+");
-    ImGui::SameLine(0.0f, Px(12.0f));
-    ImGui::SetNextItemWidth(Px(110.0f));
-    ImGui::Combo("##CustomKeySelect", &custom_key_idx, custom_keys, IM_ARRAYSIZE(custom_keys));
-
-    ImGui::SameLine(0.0f, Px(10.0f));
-    const char* assign_label = NF_SAVE " Áp dụng";
-    float assign_w = ImGui::CalcTextSize(assign_label).x + ImGui::GetStyle().FramePadding.x * 2.0f + Px(16.0f);
-    if (ImGui::Button(assign_label, ImVec2(assign_w, Px(26.0f)))) {
-        std::string res;
-        if (custom_ctrl) res += "Ctrl";
-        if (custom_alt) { if (!res.empty()) res += " + "; res += "Alt"; }
-        if (custom_shift) { if (!res.empty()) res += " + "; res += "Shift"; }
-        if (custom_win) { if (!res.empty()) res += " + "; res += "Win"; }
-        if (!res.empty()) res += " + ";
-        res += custom_keys[custom_key_idx];
-
-        config_.hotkey_mode = res;
-        recording_hotkey_ = false;
-        SaveConfig();
-    }
-    ImGui::EndDisabled();
 
     SectionHeader("Phím tắt khác");
     ImGui::AlignTextToFramePadding();
@@ -1027,20 +1074,6 @@ void UiManager::PageOverview() {
         } else {
             ImGui::TextColored(ImVec4(0.95f, 0.55f, 0.30f, 1.0f),
                                "Đang nghe... nhấn tổ hợp phím (Esc để hủy)");
-        }
-    }
-
-    SectionHeader("Hệ thống");
-    if (CheckboxHelp("Khởi động cùng Windows", &config_.start_with_windows,
-                     "Tự chạy VietFlow khi đăng nhập Windows.")) {
-        SaveConfig();
-    }
-    ImGui::Spacing();
-    if (CheckboxHelp("Âm thanh khi chuyển V/E", &config_.notification_sound,
-                     "Phát tiếng nhẹ khi chuyển V/E bằng phím tắt hoặc biểu tượng khay.")) {
-        SaveConfig();
-        if (config_.notification_sound) {
-            vf_play_notification_sound();
         }
     }
 }

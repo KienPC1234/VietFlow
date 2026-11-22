@@ -317,6 +317,10 @@ pub struct HookState {
     pub held_vks: [bool; 256],
     pub foreground_pid: u32,
     pub game_detector: GameDetectionTracker,
+    /// True when a modifier-only hotkey (Ctrl+Shift or Alt+Shift) chord is armed.
+    pub modifier_chord_armed: bool,
+    /// True when a third non-chord key was pressed while the chord was held.
+    pub modifier_chord_dirtied: bool,
 }
 
 unsafe impl Send for HookState {}
@@ -928,6 +932,8 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         held_vks: [false; 256],
         foreground_pid: initial_pid,
         game_detector: GameDetectionTracker::new(),
+        modifier_chord_armed: false,
+        modifier_chord_dirtied: false,
     });
     drop(lock);
 }
@@ -966,6 +972,8 @@ pub unsafe extern "system" fn low_level_mouse_proc(
                     state.macro_buffer.clear();
                     state.english_word_buffer.clear();
                     state.english_word_valid = true;
+                    state.modifier_chord_armed = false;
+                    state.modifier_chord_dirtied = false;
                 }
             }
         }
@@ -1088,14 +1096,6 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
 
     let vk = kbd.vkCode as u16;
 
-    if is_key_up && vk < 256 {
-        state.held_vks[vk as usize] = false;
-        state.game_detector.key_down_time[vk as usize] = 0;
-    }
-    if is_key_down && vk < 256 && !state.held_vks[vk as usize] {
-        state.game_detector.key_down_time[vk as usize] = get_tick_count_64();
-    }
-
     // Synchronize modifiers with physical keyboard state via GetAsyncKeyState.
     // This permanently eliminates sticky modifier flags caused by missed WM_KEYUP
     // events during UAC elevation, Win+L lock screen, or rapid Alt-Tab switches.
@@ -1107,6 +1107,71 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     let hotkeys_locked = state.hotkeys_locked();
     let language_allowed =
         language_hotkey_allowed(hotkeys_locked, state.is_foreground_excluded, state.override_unlocked);
+
+    if is_key_up {
+        if vk < 256 {
+            state.held_vks[vk as usize] = false;
+            state.game_detector.key_down_time[vk as usize] = 0;
+        }
+
+        // Clean release of modifier-only hotkey chord (e.g. Ctrl+Shift, Alt+Shift).
+        // Triggers toggle only when NO other key was pressed while the chord was held.
+        if is_modifier_only_hotkey(&state.config.hotkey_mode)
+            && state.modifier_chord_armed
+            && modifier_chord_matches_vk(&state.config.hotkey_mode, vk)
+        {
+            if !state.modifier_chord_dirtied && language_allowed && !state.tsf_registered {
+                if state.config.pause_auto_after_manual {
+                    let now_tick = get_tick_count_64();
+                    state.auto_pause_until_ms = now_tick + 5000;
+                }
+
+                if state.is_foreground_excluded {
+                    state.toggle_temporary_override();
+                } else {
+                    state.toggle_language();
+                    crate::request_hotkey_mode_persist(state.tray_hwnd);
+                }
+                state.game_detector.reset();
+
+                if state.config.notification_sound {
+                    play_notification_sound();
+                }
+
+                let tray_hwnd = state.tray_hwnd;
+                let effective = state.effective_enabled();
+                crate::tsf::sync_tsf_config(&state.config, effective);
+
+                PostMessageW(tray_hwnd, WM_TRAYICON, 0, if effective { 1 } else { 0 });
+            }
+            state.modifier_chord_armed = false;
+            state.modifier_chord_dirtied = false;
+        }
+    }
+    if is_key_down {
+        if vk < 256 && !state.held_vks[vk as usize] {
+            state.game_detector.key_down_time[vk as usize] = get_tick_count_64();
+        }
+
+        // Track modifier chord state for modifier-only hotkeys
+        if is_modifier_only_hotkey(&state.config.hotkey_mode) {
+            if !modifier_chord_matches_vk(&state.config.hotkey_mode, vk) {
+                // Any third non-chord key (e.g. 'X' in Ctrl+Shift+X, 'S' in Ctrl+Shift+S)
+                // dirties the chord so releasing Ctrl/Shift later will NOT toggle language.
+                state.modifier_chord_dirtied = true;
+            } else if is_modifier_chord_satisfied(
+                &state.config.hotkey_mode,
+                state.ctrl_pressed,
+                state.alt_pressed,
+                state.shift_pressed,
+                state.win_pressed,
+            ) {
+                state.modifier_chord_armed = true;
+                state.modifier_chord_dirtied = false;
+            }
+        }
+    }
+
     if is_key_down && language_allowed {
         let ctrl = state.ctrl_pressed;
         let alt = state.alt_pressed;
@@ -1116,6 +1181,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         if !hotkeys_locked {
             // Configurable global settings hotkey (default: Ctrl+Shift+F5).
             if check_custom_hotkey(&state.config.hotkey_settings, ctrl, alt, shift, win, vk) {
+                state.modifier_chord_dirtied = true;
                 // Do not open multiple settings windows when the shortcut
                 // auto-repeats. Settings hotkeys consume their trigger key.
                 if vk < 256
@@ -1127,22 +1193,20 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             }
         }
 
-        // Language toggle check
-        let is_toggle = match state.config.hotkey_mode.as_str() {
-            "CtrlShift" => {
-                (ctrl && (vk == VK_LSHIFT || vk == VK_RSHIFT))
-                    || (shift && (vk == VK_LCONTROL || vk == VK_RCONTROL || vk == VK_CONTROL))
+        // Language toggle check for non-modifier hotkeys
+        let is_toggle = if is_modifier_only_hotkey(&state.config.hotkey_mode) {
+            // Modifier-only hotkeys (Ctrl+Shift, Alt+Shift) NEVER trigger on key-down,
+            // preventing accidental toggling when pressing 3-key shortcuts (e.g. Ctrl+Shift+X).
+            false
+        } else {
+            match state.config.hotkey_mode.as_str() {
+                "AltZ" => alt && (vk == b'Z' as u16),
+                "CtrlSpace" => ctrl && vk == VK_SPACE,
+                "ShiftSpace" => shift && vk == VK_SPACE,
+                "CapsLock" => vk == VK_CAPITAL,
+                "WinSpace" => win && vk == VK_SPACE,
+                other => check_custom_hotkey(other, ctrl, alt, shift, win, vk),
             }
-            "AltZ" => alt && (vk == b'Z' as u16),
-            "CtrlSpace" => ctrl && vk == VK_SPACE,
-            "ShiftSpace" => shift && vk == VK_SPACE,
-            "AltShift" => {
-                (alt && (vk == VK_LSHIFT || vk == VK_RSHIFT))
-                    || (shift && (vk == VK_LMENU || vk == VK_RMENU || vk == VK_MENU))
-            }
-            "CapsLock" => vk == VK_CAPITAL,
-            "WinSpace" => win && vk == VK_SPACE,
-            other => check_custom_hotkey(other, ctrl, alt, shift, win, vk),
         };
 
         if is_toggle {
@@ -1839,6 +1903,70 @@ fn compact_eq_ignore_ascii_case(input: &str, expected: &str) -> bool {
     chars.next().is_none()
 }
 
+#[inline]
+pub fn is_modifier_only_hotkey(mode: &str) -> bool {
+    let s = mode.strip_prefix("Custom:").unwrap_or(mode).trim();
+    if compact_eq_ignore_ascii_case(s, "CtrlShift") || compact_eq_ignore_ascii_case(s, "AltShift") {
+        return true;
+    }
+    let mut has_non_mod = false;
+    let mut mod_count = 0;
+    for part in s.split('+').map(|p| p.trim()) {
+        if part.is_empty() {
+            continue;
+        }
+        if part.eq_ignore_ascii_case("Ctrl")
+            || part.eq_ignore_ascii_case("Control")
+            || part.eq_ignore_ascii_case("Alt")
+            || part.eq_ignore_ascii_case("Shift")
+            || part.eq_ignore_ascii_case("Win")
+            || part.eq_ignore_ascii_case("Windows")
+        {
+            mod_count += 1;
+        } else {
+            has_non_mod = true;
+            break;
+        }
+    }
+    !has_non_mod && mod_count >= 2
+}
+
+#[inline]
+pub fn modifier_chord_matches_vk(mode: &str, vk: u16) -> bool {
+    let s = mode.strip_prefix("Custom:").unwrap_or(mode).trim();
+    if compact_eq_ignore_ascii_case(s, "CtrlShift") {
+        matches!(
+            vk,
+            VK_LCONTROL | VK_RCONTROL | VK_CONTROL | VK_LSHIFT | VK_RSHIFT | VK_SHIFT
+        )
+    } else if compact_eq_ignore_ascii_case(s, "AltShift") {
+        matches!(
+            vk,
+            VK_LMENU | VK_RMENU | VK_MENU | VK_LSHIFT | VK_RSHIFT | VK_SHIFT
+        )
+    } else {
+        false
+    }
+}
+
+#[inline]
+pub fn is_modifier_chord_satisfied(
+    mode: &str,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    win: bool,
+) -> bool {
+    let s = mode.strip_prefix("Custom:").unwrap_or(mode).trim();
+    if compact_eq_ignore_ascii_case(s, "CtrlShift") {
+        ctrl && shift && !alt && !win
+    } else if compact_eq_ignore_ascii_case(s, "AltShift") {
+        alt && shift && !ctrl && !win
+    } else {
+        false
+    }
+}
+
 unsafe fn check_custom_hotkey(
     mode: &str,
     ctrl: bool,
@@ -2021,6 +2149,8 @@ mod tests {
             held_vks: [false; 256],
             foreground_pid: 0,
             game_detector: GameDetectionTracker::new(),
+            modifier_chord_armed: false,
+            modifier_chord_dirtied: false,
         }
     }
 
@@ -2544,5 +2674,31 @@ mod tests {
         held[0x57] = true;
         tracker.key_down_time[0x57] = 6000;
         assert!(tracker.record_key(VK_SPACE, 6550, &held)); // triggers chording jump!
+    }
+
+    #[test]
+    fn test_modifier_only_hotkey_rules() {
+        assert!(is_modifier_only_hotkey("CtrlShift"));
+        assert!(is_modifier_only_hotkey("AltShift"));
+        assert!(is_modifier_only_hotkey("Ctrl + Shift"));
+        assert!(is_modifier_only_hotkey("Alt + Shift"));
+        assert!(!is_modifier_only_hotkey("AltZ"));
+        assert!(!is_modifier_only_hotkey("Alt + Z"));
+        assert!(!is_modifier_only_hotkey("CtrlSpace"));
+        assert!(!is_modifier_only_hotkey("ShiftSpace"));
+        assert!(!is_modifier_only_hotkey("CapsLock"));
+        assert!(!is_modifier_only_hotkey("WinSpace"));
+        assert!(!is_modifier_only_hotkey("Ctrl + Shift + F5"));
+
+        // Chord VK matches
+        assert!(modifier_chord_matches_vk("CtrlShift", VK_LCONTROL));
+        assert!(modifier_chord_matches_vk("CtrlShift", VK_RSHIFT));
+        assert!(!modifier_chord_matches_vk("CtrlShift", 0x58)); // 'X' is NOT in CtrlShift chord
+        assert!(!modifier_chord_matches_vk("CtrlShift", VK_LMENU)); // Alt is NOT in CtrlShift chord
+
+        // Chord satisfaction
+        assert!(is_modifier_chord_satisfied("CtrlShift", true, false, true, false));
+        assert!(!is_modifier_chord_satisfied("CtrlShift", true, true, true, false)); // Alt also pressed -> false
+        assert!(!is_modifier_chord_satisfied("CtrlShift", true, false, false, false)); // Only Ctrl -> false
     }
 }

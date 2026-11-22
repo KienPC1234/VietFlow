@@ -4,10 +4,15 @@ Mọi thay đổi đáng chú ý của VietFlow được ghi ở đây.
 Định dạng dựa trên [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/),
 phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
-## [Unreleased]
+## [0.1.5] - Unreleased
+
+### Added
+
+- Tinh chỉnh giao diện tab Tổng quan theo bố cục UniKey kinh điển: Phân tách trực quan cụm "Điều khiển" (Bảng mã, Kiểu gõ, Phím chuyển `Ctrl + Shift` / `Alt + Z`), "Tùy chọn gõ" và "Hệ thống" giúp người dùng quen thuộc và dễ dàng nhận diện ngay khi mở ứng dụng.
 
 ### Fixed
 
+- Khắc phục lỗi phím chuyển chế độ Ctrl+Shift / Alt+Shift kích hoạt ngay khi nhấn phím (KeyDown) làm gián đoạn tổ hợp 3 phím trong Photoshop và phần mềm đồ họa (ví dụ: Ctrl+Shift+X, Ctrl+Shift+S, Ctrl+Shift+Z, Ctrl+Shift+P): chuyển sang cơ chế kích hoạt trên KeyUp khi nhả phím và hủy kích hoạt nếu có phím thứ ba chen ngang.
 - Khắc phục lỗi gõ từ tiếng Anh chứa ký tự trùng phím Telex bị biến thành dấu tiếng Việt (ví dụ: `texture` + Space thành `textuẻ`): Bổ sung ba lớp bảo vệ trong engine:
   1. **Stop Coda Guard**: Khi âm cuối đóng (`c`, `ch`, `p`, `t`) ghép với thanh điệu không tương thích (Huyền, Hỏi, Ngã), engine khôi phục ngay chuỗi phím gốc thay vì giữ ký tự sai.
   2. **UE Diphthong Guard**: Khi nguyên âm `e` theo sau `u` mà không có phụ âm đầu `qu-`, engine khôi phục phím gốc ngay tại thời điểm gõ `e` nếu phát hiện dấu tiếng Việt.
