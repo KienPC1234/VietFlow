@@ -1153,7 +1153,7 @@ void UiManager::PageTyping() {
     // 2. Phương thức & Chốt từ
     SectionHeader("Phương thức & Chốt từ");
     if (ImGui::BeginTable("TypingMethodTable", 2, ImGuiTableFlags_None)) {
-        ImGui::TableSetupColumn("LabelCol", ImGuiTableColumnFlags_WidthFixed, Px(160.0f));
+        ImGui::TableSetupColumn("LabelCol", ImGuiTableColumnFlags_WidthFixed, Px(220.0f));
         ImGui::TableSetupColumn("InputCol", ImGuiTableColumnFlags_WidthStretch);
 
         // Row 1: Cách gửi phím
@@ -1247,7 +1247,7 @@ void UiManager::PageTyping() {
     // 3. Từ điển & Ngoại lai
     SectionHeader("Từ điển & Ngoại lai");
     if (ImGui::BeginTable("TypingForeignTable", 2, ImGuiTableFlags_None)) {
-        ImGui::TableSetupColumn("LabelCol", ImGuiTableColumnFlags_WidthFixed, Px(160.0f));
+        ImGui::TableSetupColumn("LabelCol", ImGuiTableColumnFlags_WidthFixed, Px(220.0f));
         ImGui::TableSetupColumn("InputCol", ImGuiTableColumnFlags_WidthStretch);
 
         // Row 1: Phụ âm ngoại lai
