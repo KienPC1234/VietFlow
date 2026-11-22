@@ -8,7 +8,10 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
 
 ### Added
 
-- Tinh chỉnh giao diện tab Tổng quan theo bố cục UniKey kinh điển: Phân tách trực quan cụm "Điều khiển" (Bảng mã, Kiểu gõ, Phím chuyển `Ctrl + Shift` / `Alt + Z`), "Tùy chọn gõ" và "Hệ thống" giúp người dùng quen thuộc và dễ dàng nhận diện ngay khi mở ứng dụng.
+- Chuẩn hóa toàn diện giao diện các tab theo phong cách UniKey kinh điển:
+  - **Tab Tổng quan**: Phân tách trực quan cụm "Điều khiển" (Bảng mã, Kiểu gõ, Phím chuyển `Ctrl + Shift` / `Alt + Z`), "Tùy chọn gõ" và "Hệ thống".
+  - **Tab Gõ tiếng Việt**: Quy hoạch bảng 2 cột cân đối cho các tùy chọn gõ (Gõ tự do, Dấu mới, Kiểm tra chính tả, Khôi phục tiếng Anh, Sửa lỗi dính Shift...), bảng điều khiển phương thức gửi phím, timeout chốt từ và quản lý từ điển.
+  - **Tab Ứng dụng**: Tái cấu trúc danh sách ứng dụng loại trừ thành khung bảng cuộn trực quan, thanh công cụ thêm nhanh ứng dụng (.exe/đang chạy/gợi ý game & terminal) và bảng cấu hình nâng cao.
 
 ### Fixed
 
