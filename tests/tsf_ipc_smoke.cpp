@@ -54,9 +54,9 @@ int main() {
         // even if the shared sequence/version look coherent.
         const TsfSharedConfig valid = *config;
         auto rejectMalformed = [&](TsfSharedConfig candidate, const char* reason) {
-            // Use method=6 as a valid changed sentinel; an incorrectly
+            // Use method=4 as a valid changed sentinel; an incorrectly
             // accepted snapshot would switch from the last trusted method=5.
-            candidate.method = 6;
+            candidate.method = 4;
             candidate.sequence = config->sequence + 2;
             *config = candidate;
             if (reader.Get().method != 5) result = Fail(reason);
@@ -65,7 +65,7 @@ int main() {
             if (reader.Get().method != 5) result = Fail("valid config recovery");
         };
         TsfSharedConfig malformed = valid;
-        malformed.method = 7;
+        malformed.method = 6;
         malformed.sequence = config->sequence + 2;
         *config = malformed;
         if (reader.Get().method != 5) result = Fail("invalid method");

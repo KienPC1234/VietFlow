@@ -19,7 +19,9 @@ pub use constants::*;
 pub use engine::{Slot, VietFlowEngine};
 pub use key_text::KeyText;
 pub use macro_table::MacroTable;
-pub use models::{CharsetId, CustomKeymap, EngineOptions, InputMethod, VnLexiName, VnLexiTone};
+pub use models::{
+    CharsetId, EngineOptions, ImeAction, InputMethod, VnLexiName, VnLexiTone,
+};
 
 #[cfg(test)]
 mod tests {
@@ -799,132 +801,6 @@ mod tests {
     }
 
     #[test]
-    fn test_user_custom_input_method() {
-        // 1. Telex preset via UserCustom
-        let mut engine = VietFlowEngine::new(
-            EngineOptions {
-                method: InputMethod::UserCustom,
-                custom_keymap: CustomKeymap::telex(),
-                ..Default::default()
-            },
-            CharsetId::Unicode,
-        );
-
-        let telex_cases = [
-            ("as", "á"),
-            ("af", "à"),
-            ("ar", "ả"),
-            ("ax", "ã"),
-            ("aj", "ạ"),
-            ("aa", "â"),
-            ("aw", "ă"),
-            ("ee", "ê"),
-            ("oo", "ô"),
-            ("ow", "ơ"),
-            ("uw", "ư"),
-            ("dd", "đ"),
-            ("w", "ư"),
-            ("tieengs", "tiếng"),
-            ("dduwowngf", "đường"),
-        ];
-        for (input, expected) in telex_cases {
-            engine.reset();
-            let actual = process_string(&mut engine, input);
-            assert_eq!(actual, expected, "Failed custom Telex preset for: {input}");
-        }
-
-        // 2. VNI preset via UserCustom
-        let mut vni_engine = VietFlowEngine::new(
-            EngineOptions {
-                method: InputMethod::UserCustom,
-                custom_keymap: CustomKeymap::vni(),
-                ..Default::default()
-            },
-            CharsetId::Unicode,
-        );
-
-        let vni_cases = [
-            ("a1", "á"),
-            ("a2", "à"),
-            ("a3", "ả"),
-            ("a4", "ã"),
-            ("a5", "ạ"),
-            ("a6", "â"),
-            ("o7", "ơ"),
-            ("u7", "ư"),
-            ("a8", "ă"),
-            ("d9", "đ"),
-            ("tie6ng1", "tiếng"),
-            ("d9u7o7ng2", "đường"),
-        ];
-        for (input, expected) in vni_cases {
-            vni_engine.reset();
-            let actual = process_string(&mut vni_engine, input);
-            assert_eq!(actual, expected, "Failed custom VNI preset for: {input}");
-        }
-
-        // 3. Fully customized keys
-        let custom_keys = CustomKeymap {
-            acute: "z".to_string(),
-            grave: "q".to_string(),
-            circumflex: "9".to_string(),
-            horn: "8".to_string(),
-            breve: "7".to_string(),
-            d_mark: "6".to_string(),
-            telex_double_keys: false,
-            lone_w: false,
-            ..Default::default()
-        };
-
-        let mut custom_engine = VietFlowEngine::new(
-            EngineOptions {
-                method: InputMethod::UserCustom,
-                custom_keymap: custom_keys,
-                ..Default::default()
-            },
-            CharsetId::Unicode,
-        );
-
-        let custom_cases = [
-            ("az", "á"),
-            ("aq", "à"),
-            ("a9", "â"),
-            ("u8", "ư"),
-            ("a7", "ă"),
-            ("d6", "đ"),
-            ("d6u8o8ngq", "đường"),
-        ];
-        for (input, expected) in custom_cases {
-            custom_engine.reset();
-            let actual = process_string(&mut custom_engine, input);
-            assert_eq!(actual, expected, "Failed custom keys for: {input}");
-        }
-
-        // 4. Individual modify keys
-        let individual_keys = CustomKeymap {
-            acute: "s".to_string(),
-            roof_a: "3".to_string(),
-            roof_e: "4".to_string(),
-            telex_double_keys: false,
-            ..Default::default()
-        };
-
-        let mut ind_engine = VietFlowEngine::new(
-            EngineOptions {
-                method: InputMethod::UserCustom,
-                custom_keymap: individual_keys,
-                ..Default::default()
-            },
-            CharsetId::Unicode,
-        );
-
-        ind_engine.reset();
-        assert_eq!(process_string(&mut ind_engine, "a3s"), "ấ");
-        ind_engine.reset();
-        assert_eq!(process_string(&mut ind_engine, "e4s"), "ế");
-    }
-
-    #[test]
     fn test_viqr_input() {
         let mut engine = VietFlowEngine::new(
             EngineOptions {
@@ -1118,5 +994,87 @@ mod tests {
             }
             assert_eq!(screen, expected, "Failed for input: {input}");
         }
+    }
+
+    #[test]
+    fn test_unified_process_ime_key_and_wayland_lookback_cap() {
+        let mut engine = VietFlowEngine::new(
+            EngineOptions {
+                method: InputMethod::Telex,
+                modern_style: true,
+                free_marking: true,
+                spell_check: true,
+                auto_non_vn_restore: true,
+                auto_switch_by_typing: true,
+                enable_macro: true,
+                can_rewrite_previous_word: false,
+                ..Default::default()
+            },
+            CharsetId::Unicode,
+        );
+        engine.macros.insert("vf", "VietFlow");
+
+        let simulate_ime = |eng: &mut VietFlowEngine, input: &str| -> String {
+            let mut committed = String::new();
+            let mut preedit = String::new();
+            for c in input.chars() {
+                let (action, text) = eng.process_ime_key(c, 0);
+                match action {
+                    ImeAction::PassThrough => {
+                        committed.push_str(&preedit);
+                        preedit.clear();
+                        committed.push(c);
+                    }
+                    ImeAction::UpdatePreedit => {
+                        preedit.clear();
+                        preedit.push_str(text.as_str());
+                    }
+                    ImeAction::CommitAndConsume => {
+                        preedit.clear();
+                        committed.push_str(text.as_str());
+                    }
+                    ImeAction::CommitAndForward => {
+                        preedit.clear();
+                        committed.push_str(text.as_str());
+                        committed.push(c);
+                    }
+                }
+            }
+            committed.push_str(&preedit);
+            committed
+        };
+
+        assert_eq!(
+            simulate_ime(&mut engine, "Tieengs Vieetj more getUserId HTML vf\n"),
+            "Tiếng Việt more getUserId HTML VietFlow\n"
+        );
+        engine.reset();
+        assert_eq!(simulate_ime(&mut engine, "[["), "[");
+        engine.reset();
+        assert_eq!(simulate_ime(&mut engine, "a[["), "a[");
+        engine.reset();
+        assert_eq!(simulate_ime(&mut engine, "{{"), "{");
+        engine.reset();
+        assert_eq!(simulate_ime(&mut engine, "123. "), "123. ");
+
+        // Verify `can_rewrite_previous_word = false` prevents multi-word backspace deletion
+        let mut no_rewrite = VietFlowEngine::new(
+            EngineOptions {
+                can_rewrite_previous_word: false,
+                ..Default::default()
+            },
+            CharsetId::Unicode,
+        );
+        assert_eq!(process_string(&mut no_rewrite, "this "), "thí ");
+        let (bk, out) = no_rewrite.process_key('m');
+        let _ = (bk, out);
+        for ch in "akes".chars() {
+            no_rewrite.process_key(ch);
+        }
+        let (bk_break, _) = no_rewrite.process_key(' ');
+        assert!(
+            bk_break <= 5,
+            "Without SurroundingText capability, engine must not backspace across committed space"
+        );
     }
 }

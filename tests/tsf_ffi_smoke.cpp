@@ -62,6 +62,19 @@ int main() {
         else if (!ValidUtf8(Take(after))) status = Fail("backspace invalid UTF-8");
     }
     if (!status) {
+        VfOwnedUtf8 imeOut = {};
+        if (vf_engine_process_ime_key_owned(engine, static_cast<uint32_t>('['), 0, &imeOut) !=
+            VF_IME_UPDATE_PREEDIT) {
+            status = Fail("IME bracket preedit");
+        } else {
+            (void)Take(imeOut);
+            if (vf_engine_process_ime_key_owned(engine, static_cast<uint32_t>('['), 0, &imeOut) !=
+                VF_IME_COMMIT_CONSUME || Take(imeOut) != "[") {
+                status = Fail("IME double-bracket undo commit");
+            }
+        }
+    }
+    if (!status) {
         const size_t needed = vf_english_keywords(nullptr, 0);
         uint8_t tiny[4] = {0xa5, 0xa5, 0xa5, 0xa5};
         if (needed <= sizeof(tiny) || vf_english_keywords(tiny, sizeof(tiny)) != needed ||

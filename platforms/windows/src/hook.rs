@@ -2,11 +2,11 @@
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::ptr::null_mut;
 use std::sync::{mpsc, Mutex, OnceLock};
 use vietflow_core::models::{CharsetId, EngineOptions, InputMethod};
-use vietflow_core::VietFlowEngine;
+use vietflow_core::{KeyText, VietFlowEngine};
 use windows_sys::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetKeyState, GetKeyboardLayout, MapVirtualKeyExW, ToUnicodeEx, VK_BACK,
@@ -316,6 +316,7 @@ pub struct HookState {
     pub tsf_registered: bool,
     pub held_vks: [bool; 256],
     pub foreground_pid: u32,
+    pub foreground_tid: u32,
     pub game_detector: GameDetectionTracker,
     /// True when a modifier-only hotkey (Ctrl+Shift or Alt+Shift) chord is armed.
     pub modifier_chord_armed: bool,
@@ -485,9 +486,26 @@ impl HookState {
             self.engine.macros.insert(trigger, replacement);
         }
     }
+
+    /// Detach `WH_MOUSE_LL` whenever TSF mode owns composition or an excluded
+    /// game/app is focused without manual override. Eliminates 1000Hz-8000Hz
+    /// mouse hook context switches during gaming.
+    pub unsafe fn sync_mouse_hook(&mut self) {
+        let need_mouse_hook =
+            !self.tsf_registered && (!self.is_foreground_excluded || self.manual_override);
+        if need_mouse_hook && self.mouse_hook_handle.is_null() && !self.hook_handle.is_null() {
+            self.mouse_hook_handle =
+                SetWindowsHookExW(WH_MOUSE_LL, Some(low_level_mouse_proc), 0 as HMODULE, 0);
+        } else if !need_mouse_hook && !self.mouse_hook_handle.is_null() {
+            UnhookWindowsHookEx(self.mouse_hook_handle);
+            self.mouse_hook_handle = null_mut();
+        }
+    }
 }
 
 pub static STATE: Mutex<Option<HookState>> = Mutex::new(None);
+/// Fast atomic guard so mouse clicks skip locking `STATE` when no typing buffer or chord is active.
+static MOUSE_RESET_NEEDED: AtomicBool = AtomicBool::new(false);
 
 // 0: idle, 1: a modifier hotkey whose physical key-up must pass, 2: a
 // consumed hotkey whose key-up must also be suppressed. Keep this independent
@@ -553,7 +571,6 @@ fn engine_options_from_config(
         3 => InputMethod::SimpleTelex,
         4 => InputMethod::TelexSimple2,
         5 => InputMethod::TelexVni,
-        6 => InputMethod::UserCustom,
         _ => InputMethod::Telex,
     };
 
@@ -574,7 +591,7 @@ fn engine_options_from_config(
         foreign_initials: config.normalized_foreign_initials(),
         custom_english_keywords: config.normalized_english_keywords(),
         removed_english_keywords: config.normalized_removed_english_keywords(),
-        custom_keymap: config.custom_keymap.to_core(),
+        can_rewrite_previous_word: true,
     }
 }
 
@@ -689,14 +706,16 @@ pub unsafe fn check_foreground_change(foreground: HWND) {
     let shell = is_shell_window(foreground);
 
     let mut current_pid = 0u32;
-    GetWindowThreadProcessId(foreground, &mut current_pid);
+    let current_tid = GetWindowThreadProcessId(foreground, &mut current_pid);
     state.foreground_pid = current_pid;
+    state.foreground_tid = current_tid;
 
     state.last_foreground = foreground;
     state.engine.reset();
     state.macro_buffer.clear();
     state.english_word_buffer.clear();
     state.english_word_valid = true;
+    MOUSE_RESET_NEEDED.store(false, Ordering::Release);
     state.update_override_for_foreground(proc_name.as_deref(), excluded, shell);
 
     state.is_foreground_excluded = excluded;
@@ -723,9 +742,14 @@ pub unsafe fn check_foreground_change(foreground: HWND) {
     )
     .cloned();
     state.apply_runtime_profile();
+    state.sync_mouse_hook();
 
     let effective = state.effective_enabled();
-    crate::tsf::sync_tsf_config(&state.config, effective);
+    crate::tsf::sync_tsf_config_with_profile(
+        &state.config,
+        state.active_profile.as_ref(),
+        effective,
+    );
     if old_excluded != state.is_foreground_excluded
         || old_non_us != state.non_us_layout
         || old_non_unicode != state.non_unicode_window
@@ -802,7 +826,12 @@ pub unsafe fn apply_config(config: AppConfig) {
     let tray_hwnd = state.tray_hwnd;
     let effective = state.effective_enabled();
     state.tsf_registered = crate::tsf::is_tsf_mode_active();
-    crate::tsf::sync_tsf_config(&state.config, effective);
+    state.sync_mouse_hook();
+    crate::tsf::sync_tsf_config_with_profile(
+        &state.config,
+        state.active_profile.as_ref(),
+        effective,
+    );
     drop(lock);
 
     // The UI only writes the JSON file; apply the registry side-effect here so
@@ -867,21 +896,27 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
     crate::inject::prewarm_async_injector();
     prewarm_notification_sound();
 
-    // Keep the low-level hooks installed in TSF mode too: they are still needed
-    // for V/E hotkeys, foreground exclusion/override, and settings/converter
-    // hotkeys. The hook callback simply yields typing to the TSF TIP.
+    let tsf_registered = crate::tsf::is_tsf_mode_active();
+
+    // Keep WH_KEYBOARD_LL installed in TSF mode for hotkeys and non-TSF fallback,
+    // but skip WH_MOUSE_LL in TSF mode or excluded games so high-polling mice
+    // incur zero kernel hook overhead.
     let hook_handle = SetWindowsHookExW(
         WH_KEYBOARD_LL,
         Some(low_level_keyboard_proc),
         0 as HMODULE,
         0,
     );
-    let mouse_hook_handle = SetWindowsHookExW(
-        WH_MOUSE_LL,
-        Some(low_level_mouse_proc),
-        0 as HMODULE,
-        0,
-    );
+    let mouse_hook_handle = if !tsf_registered && !initial_excluded {
+        SetWindowsHookExW(
+            WH_MOUSE_LL,
+            Some(low_level_mouse_proc),
+            0 as HMODULE,
+            0,
+        )
+    } else {
+        null_mut()
+    };
     let win_event_hook = SetWinEventHook(
         EVENT_SYSTEM_FOREGROUND,
         EVENT_SYSTEM_FOREGROUND,
@@ -897,9 +932,11 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
     set_start_with_windows(config.start_with_windows);
 
     let mut initial_pid = 0u32;
-    if !initial_foreground.is_null() {
-        GetWindowThreadProcessId(initial_foreground, &mut initial_pid);
-    }
+    let initial_tid = if !initial_foreground.is_null() {
+        GetWindowThreadProcessId(initial_foreground, &mut initial_pid)
+    } else {
+        0
+    };
 
     let mut lock = STATE.lock().unwrap();
     *lock = Some(HookState {
@@ -930,9 +967,10 @@ pub unsafe fn install_hook(tray_hwnd: HWND, config: AppConfig) {
         hook_handle,
         mouse_hook_handle,
         win_event_hook,
-        tsf_registered: crate::tsf::is_tsf_mode_active(),
+        tsf_registered,
         held_vks: [false; 256],
         foreground_pid: initial_pid,
+        foreground_tid: initial_tid,
         game_detector: GameDetectionTracker::new(),
         modifier_chord_armed: false,
         modifier_chord_dirtied: false,
@@ -968,7 +1006,9 @@ pub unsafe extern "system" fn low_level_mouse_proc(
 ) -> LRESULT {
     if n_code >= 0 {
         let msg = w_param as u32;
-        if msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN {
+        if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN)
+            && MOUSE_RESET_NEEDED.swap(false, Ordering::AcqRel)
+        {
             if let Ok(mut lock) = STATE.try_lock() {
                 if let Some(state) = lock.as_mut() {
                     state.engine.reset();
@@ -1099,13 +1139,14 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
     let is_key_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
 
     let vk = kbd.vkCode as u16;
+    let scan_code = kbd.scanCode;
 
     // Synchronize modifiers with physical keyboard state via GetAsyncKeyState.
-    // This permanently eliminates sticky modifier flags caused by missed WM_KEYUP
-    // events during UAC elevation, Win+L lock screen, or rapid Alt-Tab switches.
-    state.ctrl_pressed = is_vk_down(VK_CONTROL) || is_vk_down(VK_LCONTROL) || is_vk_down(VK_RCONTROL);
-    state.shift_pressed = is_vk_down(VK_SHIFT) || is_vk_down(VK_LSHIFT) || is_vk_down(VK_RSHIFT);
-    state.alt_pressed = is_vk_down(VK_MENU) || is_vk_down(VK_LMENU) || is_vk_down(VK_RMENU);
+    // Generic VK_CONTROL / VK_SHIFT / VK_MENU already reflect either left or
+    // right physical key in Win32, avoiding 6 redundant syscalls per key event.
+    state.ctrl_pressed = is_vk_down(VK_CONTROL);
+    state.shift_pressed = is_vk_down(VK_SHIFT);
+    state.alt_pressed = is_vk_down(VK_MENU);
     state.win_pressed = is_vk_down(VK_LWIN) || is_vk_down(VK_RWIN);
 
     // Complement GetAsyncKeyState with the immediate hook event's VK, as WH_KEYBOARD_LL
@@ -1163,6 +1204,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
 
                 if state.is_foreground_excluded {
                     state.toggle_temporary_override();
+                    state.sync_mouse_hook();
                 } else {
                     state.toggle_language();
                     crate::request_hotkey_mode_persist(state.tray_hwnd);
@@ -1175,7 +1217,11 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
 
                 let tray_hwnd = state.tray_hwnd;
                 let effective = state.effective_enabled();
-                crate::tsf::sync_tsf_config(&state.config, effective);
+                crate::tsf::sync_tsf_config_with_profile(
+                    &state.config,
+                    state.active_profile.as_ref(),
+                    effective,
+                );
 
                 PostMessageW(tray_hwnd, WM_TRAYICON, 0, if effective { 1 } else { 0 });
                 state.modifier_chord_triggered = true;
@@ -1194,6 +1240,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
         }
     }
     if is_key_down {
+        MOUSE_RESET_NEEDED.store(true, Ordering::Relaxed);
         if vk < 256 && !state.held_vks[vk as usize] {
             state.game_detector.key_down_time[vk as usize] = get_tick_count_64();
         }
@@ -1298,6 +1345,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
 
             if state.is_foreground_excluded {
                 state.toggle_temporary_override();
+                state.sync_mouse_hook();
             } else {
                 state.toggle_language();
                 // Never serialize JSON or touch disk from WH_KEYBOARD_LL.
@@ -1313,7 +1361,11 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
 
             let tray_hwnd = state.tray_hwnd;
             let effective = state.effective_enabled();
-            crate::tsf::sync_tsf_config(&state.config, effective);
+            crate::tsf::sync_tsf_config_with_profile(
+                &state.config,
+                state.active_profile.as_ref(),
+                effective,
+            );
             drop(lock);
 
             // Notify tray window
@@ -1348,7 +1400,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                     ),
                 );
                 if state.macro_only() {
-                    return handle_macro_only(state, vk, n_code, w_param, l_param);
+                    return handle_macro_only(state, vk, scan_code, n_code, w_param, l_param);
                 }
                 return CallNextHookEx(null_mut(), n_code, w_param, l_param);
             }
@@ -1361,7 +1413,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                 state.english_word_buffer.clear();
                 state.english_word_valid = false;
                 if state.macro_only() {
-                    return handle_macro_only(state, vk, n_code, w_param, l_param);
+                    return handle_macro_only(state, vk, scan_code, n_code, w_param, l_param);
                 }
                 return CallNextHookEx(null_mut(), n_code, w_param, l_param);
             }
@@ -1372,20 +1424,27 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                 state.english_word_valid = false;
                 state.engine.push_english_word_lookback("");
                 if state.macro_only() {
-                    return handle_macro_only(state, vk, n_code, w_param, l_param);
+                    return handle_macro_only(state, vk, scan_code, n_code, w_param, l_param);
                 }
                 return CallNextHookEx(null_mut(), n_code, w_param, l_param);
             }
 
-            let input_char = vk_to_char_with_layout(vk, state.shift_pressed);
-            let is_vni_digit = state.config.method == 1 && (0x30..=0x39).contains(&vk) && !state.shift_pressed;
+            let input_char =
+                vk_to_char_with_layout(vk, scan_code, state.shift_pressed, state.foreground_tid);
+            let active_method = state
+                .active_profile
+                .as_ref()
+                .and_then(|p| p.method)
+                .unwrap_or(state.config.method);
+            let is_vni_digit =
+                matches!(active_method, 1 | 5) && (0x30..=0x39).contains(&vk) && !state.shift_pressed;
 
             if !is_vni_digit && (0x30..=0x39).contains(&vk) && !state.shift_pressed {
                 // Digits after a space begin a new word (e.g. 5trawm -> 5trăm, D33); glued to letters, an identifier
                 state.english_word_valid = state.english_word_buffer.is_empty() && state.english_word_valid;
                 state.english_word_buffer.clear();
                 if state.macro_only() {
-                    return handle_macro_only(state, vk, n_code, w_param, l_param);
+                    return handle_macro_only(state, vk, scan_code, n_code, w_param, l_param);
                 }
                 return CallNextHookEx(null_mut(), n_code, w_param, l_param);
             }
@@ -1416,11 +1475,13 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                     && state.english_word_buffer.len() >= 2;
 
                 if auto_switch_allowed {
-                    let word = state.english_word_buffer.clone();
+                    let word = KeyText::from_str(&state.english_word_buffer);
                     // Detection is speculative. Restore the lookback history
                     // if Windows does not accept the complete transformation.
                     let old_lookback = state.engine.lookback.clone();
-                    if let Some((bs, text)) = state.engine.check_english_word_at_break(&word, break_char) {
+                    if let Some((bs, text)) =
+                        state.engine.check_english_word_at_break(word.as_str(), break_char)
+                    {
                         // Never queue the rewrite and send Enter/Tab separately:
                         // the native word break could precede a delayed macro.
                         // A checked single SendInput batch preserves ordering.
@@ -1449,7 +1510,11 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                         let _ = state.engine.take_auto_switch_request();
                         state.toggle_language();
                         let effective = state.effective_enabled();
-                        crate::tsf::sync_tsf_config(&state.config, effective);
+                        crate::tsf::sync_tsf_config_with_profile(
+                            &state.config,
+                            state.active_profile.as_ref(),
+                            effective,
+                        );
                         let tray_hwnd = state.tray_hwnd;
                         let play_sound = state.config.notification_sound;
                         state.english_word_buffer.clear();
@@ -1464,8 +1529,8 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
                 }
 
                 if vk == VK_SPACE && state.english_word_valid && !state.english_word_buffer.is_empty() {
-                    let word = state.english_word_buffer.clone();
-                    state.engine.push_english_word_lookback(&word);
+                    let word = KeyText::from_str(&state.english_word_buffer);
+                    state.engine.push_english_word_lookback(word.as_str());
                 } else {
                     state.engine.push_english_word_lookback("");
                 }
@@ -1477,7 +1542,7 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             }
 
             if state.macro_only() {
-                return handle_macro_only(state, vk, n_code, w_param, l_param);
+                return handle_macro_only(state, vk, scan_code, n_code, w_param, l_param);
             }
         }
         return CallNextHookEx(null_mut(), n_code, w_param, l_param);
@@ -1514,7 +1579,11 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             state.english_word_buffer.clear();
 
             let effective = state.effective_enabled();
-            crate::tsf::sync_tsf_config(&state.config, effective);
+            crate::tsf::sync_tsf_config_with_profile(
+                &state.config,
+                state.active_profile.as_ref(),
+                effective,
+            );
 
             let tray_hwnd = state.tray_hwnd;
             if !tray_hwnd.is_null() {
@@ -1601,7 +1670,8 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
 
     // Process alphanumeric/symbol key
     if is_key_down {
-        let input_char = vk_to_char_with_layout(vk, state.shift_pressed);
+        let input_char =
+            vk_to_char_with_layout(vk, scan_code, state.shift_pressed, state.foreground_tid);
         if input_char != '\0' {
             let now_ms = unsafe { GetTickCount64() };
             let (backspaces, text) = state.engine.process_key_with_time(input_char, now_ms);
@@ -1650,7 +1720,11 @@ pub unsafe extern "system" fn low_level_keyboard_proc(
             ) {
                 state.toggle_language();
                 let effective = state.effective_enabled();
-                crate::tsf::sync_tsf_config(&state.config, effective);
+                crate::tsf::sync_tsf_config_with_profile(
+                    &state.config,
+                    state.active_profile.as_ref(),
+                    effective,
+                );
                 let tray_hwnd = state.tray_hwnd;
                 let play_sound = state.config.notification_sound;
                 PostMessageW(tray_hwnd, WM_TRAYICON, 0, if effective { 1 } else { 0 });
@@ -1729,6 +1803,7 @@ fn reconcile_english_backspace(
 unsafe fn handle_macro_only(
     state: &mut HookState,
     vk: u16,
+    scan_code: u32,
     n_code: i32,
     w_param: WPARAM,
     l_param: LPARAM,
@@ -1768,7 +1843,7 @@ unsafe fn handle_macro_only(
         MacroOnlyRoute::Printable => {}
     }
 
-    let c = vk_to_char_with_layout(vk, state.shift_pressed);
+    let c = vk_to_char_with_layout(vk, scan_code, state.shift_pressed, state.foreground_tid);
     if c == '\0' {
         state.macro_buffer.clear();
         return pass();
@@ -1847,13 +1922,27 @@ fn translated_single_char(count: i32, chars: &[u16]) -> char {
         .unwrap_or('\0')
 }
 
-fn vk_to_char_with_layout(vk: u16, shift: bool) -> char {
+fn vk_to_char_with_layout(vk: u16, scan_code: u32, shift: bool, foreground_tid: u32) -> char {
     unsafe {
-        let hwnd = GetForegroundWindow();
-        if !hwnd.is_null() {
-            let thread_id = GetWindowThreadProcessId(hwnd, null_mut());
-            let hkl = GetKeyboardLayout(thread_id);
+        let tid = if foreground_tid != 0 {
+            foreground_tid
+        } else {
+            let hwnd = GetForegroundWindow();
+            if hwnd.is_null() {
+                0
+            } else {
+                GetWindowThreadProcessId(hwnd, null_mut())
+            }
+        };
+        if tid != 0 {
+            let hkl = GetKeyboardLayout(tid);
             if !hkl.is_null() {
+                // Fast path for standard US QWERTY (0x04090409): avoids
+                // MapVirtualKeyExW + ToUnicodeEx kernel transitions per keystroke.
+                if (hkl as usize) == 0x0409_0409 {
+                    return vk_to_char(vk, shift);
+                }
+
                 let mut key_state = [0u8; 256];
                 if shift {
                     key_state[VK_SHIFT as usize] = 0x80;
@@ -1863,7 +1952,11 @@ fn vk_to_char_with_layout(vk: u16, shift: bool) -> char {
                     key_state[VK_CAPITAL as usize] = 0x01;
                 }
 
-                let scancode = MapVirtualKeyExW(vk as u32, 0, hkl);
+                let scancode = if scan_code != 0 {
+                    scan_code
+                } else {
+                    MapVirtualKeyExW(vk as u32, 0, hkl)
+                };
                 let mut out_chars = [0u16; 4];
                 let res = ToUnicodeEx(
                     vk as u32,
@@ -2225,6 +2318,7 @@ mod tests {
             tsf_registered: false,
             held_vks: [false; 256],
             foreground_pid: 0,
+            foreground_tid: 0,
             game_detector: GameDetectionTracker::new(),
             modifier_chord_armed: false,
             modifier_chord_dirtied: false,

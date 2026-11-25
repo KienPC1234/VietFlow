@@ -111,6 +111,47 @@ fn flush_hotkey_mode_persist() {
     }
 }
 
+#[derive(Clone, Copy)]
+enum BgIoTask {
+    FlushModeSave,
+    RefreshClipboard,
+}
+
+static BG_IO_TX: std::sync::OnceLock<std::sync::mpsc::SyncSender<BgIoTask>> =
+    std::sync::OnceLock::new();
+
+fn start_bg_io_worker() -> std::sync::mpsc::SyncSender<BgIoTask> {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<BgIoTask>(8);
+    let _ = std::thread::Builder::new()
+        .name("vf-daemon-bg-io".to_string())
+        .spawn(move || {
+            while let Ok(task) = rx.recv() {
+                let mut do_save = matches!(task, BgIoTask::FlushModeSave);
+                let mut do_clip = matches!(task, BgIoTask::RefreshClipboard);
+                while let Ok(next) = rx.try_recv() {
+                    match next {
+                        BgIoTask::FlushModeSave => do_save = true,
+                        BgIoTask::RefreshClipboard => do_clip = true,
+                    }
+                }
+                if do_save {
+                    flush_hotkey_mode_persist();
+                }
+                if do_clip {
+                    crate::clipboard::refresh();
+                }
+            }
+        });
+    tx
+}
+
+/// Offloads blocking disk sync (`FlushFileBuffers`) and `OpenClipboard` calls
+/// away from the message-pump thread that services `WH_KEYBOARD_LL`.
+fn queue_bg_io(task: BgIoTask) {
+    let sender = BG_IO_TX.get_or_init(start_bg_io_worker);
+    let _ = sender.try_send(task);
+}
+
 fn config_mtime() -> Option<SystemTime> {
     std::fs::metadata(AppConfig::config_path_ref())
         .ok()
@@ -520,6 +561,7 @@ fn main() {
         TRAY_PTR = &mut tray;
 
         AddClipboardFormatListener(hwnd);
+        let _ = BG_IO_TX.get_or_init(start_bg_io_worker);
         crate::clipboard::refresh();
         install_hook(hwnd, config);
 
@@ -589,7 +631,7 @@ unsafe extern "system" fn wnd_proc(
             0
         }
         WM_PERSIST_HOTKEY_MODE => {
-            flush_hotkey_mode_persist();
+            queue_bg_io(BgIoTask::FlushModeSave);
             0
         }
         WM_TIMER => {
@@ -608,8 +650,10 @@ unsafe extern "system" fn wnd_proc(
             }
             if w_param == TIMER_ID_CONFIG {
                 // Retry when hotkey's PostMessage was lost, while avoiding
-                // disk writes inside the global keyboard hook callback.
-                flush_hotkey_mode_persist();
+                // disk writes on the thread servicing WH_KEYBOARD_LL.
+                if HOTKEY_MODE_SAVE_PENDING.load(Ordering::Acquire) {
+                    queue_bg_io(BgIoTask::FlushModeSave);
+                }
                 let current = config_mtime();
                 let changed = {
                     let mut last = match CONFIG_MTIME.lock() {
@@ -635,7 +679,7 @@ unsafe extern "system" fn wnd_proc(
             0
         }
         WM_CLIPBOARDUPDATE => {
-            crate::clipboard::refresh();
+            queue_bg_io(BgIoTask::RefreshClipboard);
             0
         }
         WM_COMMAND => {
@@ -649,8 +693,7 @@ unsafe extern "system" fn wnd_proc(
                 | IDM_METHOD_VIQR
                 | IDM_METHOD_SIMPLE_TELEX
                 | IDM_METHOD_SIMPLE_TELEX2
-                | IDM_METHOD_TELEX_VNI
-                | IDM_METHOD_CUSTOM => {
+                | IDM_METHOD_TELEX_VNI => {
                     let m = match id {
                         IDM_METHOD_TELEX => 0,
                         IDM_METHOD_VNI => 1,
@@ -658,7 +701,6 @@ unsafe extern "system" fn wnd_proc(
                         IDM_METHOD_SIMPLE_TELEX => 3,
                         IDM_METHOD_SIMPLE_TELEX2 => 4,
                         IDM_METHOD_TELEX_VNI => 5,
-                        IDM_METHOD_CUSTOM => 6,
                         _ => 0,
                     };
                     if let Ok(mut lock) = STATE.lock() {
@@ -671,7 +713,6 @@ unsafe extern "system" fn wnd_proc(
                                 3 => InputMethod::SimpleTelex,
                                 4 => InputMethod::TelexSimple2,
                                 5 => InputMethod::TelexVni,
-                                6 => InputMethod::UserCustom,
                                 _ => InputMethod::Telex,
                             };
                             state.engine.reset();

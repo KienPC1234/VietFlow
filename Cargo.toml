@@ -4,6 +4,7 @@ members = [
     "core",
     "platforms/windows",
 ]
+default-members = ["core"]
 
 [workspace.package]
 version = "0.1.5"

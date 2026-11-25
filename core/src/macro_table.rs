@@ -84,20 +84,26 @@ impl MacroTable {
         }
 
         let mut result = String::with_capacity(template.len() + 16);
-        let chars: Vec<char> = template.chars().collect();
+        let bytes = template.as_bytes();
         let mut i = 0;
 
-        while i < chars.len() {
-            if chars[i] != '@' {
-                result.push(chars[i]);
-                i += 1;
+        while i < bytes.len() {
+            if bytes[i] != b'@' {
+                let ch = template[i..].chars().next().unwrap();
+                result.push(ch);
+                i += ch.len_utf8();
                 continue;
             }
 
             let token_start = i + 1;
             let mut token_end = token_start;
-            while token_end < chars.len() && (chars[token_end].is_alphanumeric() || chars[token_end] == '_') {
-                token_end += 1;
+            while token_end < bytes.len() {
+                let ch = template[token_end..].chars().next().unwrap();
+                if ch.is_alphanumeric() || ch == '_' {
+                    token_end += ch.len_utf8();
+                } else {
+                    break;
+                }
             }
 
             if token_end == token_start {
@@ -106,12 +112,10 @@ impl MacroTable {
                 continue;
             }
 
-            let token: String = chars[token_start..token_end].iter().collect();
-            if let Some(val) = self.resolve_variable(&token) {
-                result.push_str(&val);
-            } else {
+            let token = &template[token_start..token_end];
+            if !self.append_resolved_variable(token, &mut result) {
                 result.push('@');
-                result.push_str(&token);
+                result.push_str(token);
             }
 
             i = token_end;
@@ -120,15 +124,27 @@ impl MacroTable {
         result
     }
 
-    fn resolve_variable(&self, token: &str) -> Option<String> {
-        match token.to_lowercase().as_str() {
-            "newline" => Some("\n".to_string()),
-            "tab" => Some("\t".to_string()),
-            "date" => Some(format_date(&self.date_format)),
-            "time" => Some(format_date(&self.time_format)),
-            "datetime" | "now" => Some(format_date(&self.datetime_format)),
-            "clipboard" => Some(CLIPBOARD_PLACEHOLDER.to_string()),
-            _ => None,
+    fn append_resolved_variable(&self, token: &str, out: &mut String) -> bool {
+        if token.eq_ignore_ascii_case("newline") {
+            out.push('\n');
+            true
+        } else if token.eq_ignore_ascii_case("tab") {
+            out.push('\t');
+            true
+        } else if token.eq_ignore_ascii_case("date") {
+            format_date_into(&self.date_format, out);
+            true
+        } else if token.eq_ignore_ascii_case("time") {
+            format_date_into(&self.time_format, out);
+            true
+        } else if token.eq_ignore_ascii_case("datetime") || token.eq_ignore_ascii_case("now") {
+            format_date_into(&self.datetime_format, out);
+            true
+        } else if token.eq_ignore_ascii_case("clipboard") {
+            out.push(CLIPBOARD_PLACEHOLDER);
+            true
+        } else {
+            false
         }
     }
 }
@@ -175,27 +191,35 @@ fn get_local_date_time() -> (i32, u32, u32, u32, u32, u32) {
 
 #[cfg(not(windows))]
 fn get_local_date_time() -> (i32, u32, u32, u32, u32, u32) {
+    use std::ffi::{c_char, c_int, c_long, c_void};
+
+    // Full BSD/glibc/musl `struct tm` layout including `tm_gmtoff` and `tm_zone`
+    // plus trailing slack so `localtime_r` never writes past the stack frame.
     #[repr(C)]
     struct Tm {
-        tm_sec: i32,
-        tm_min: i32,
-        tm_hour: i32,
-        tm_mday: i32,
-        tm_mon: i32,
-        tm_year: i32,
-        tm_wday: i32,
-        tm_yday: i32,
-        tm_isdst: i32,
+        tm_sec: c_int,
+        tm_min: c_int,
+        tm_hour: c_int,
+        tm_mday: c_int,
+        tm_mon: c_int,
+        tm_year: c_int,
+        tm_wday: c_int,
+        tm_yday: c_int,
+        tm_isdst: c_int,
+        tm_gmtoff: c_long,
+        tm_zone: *const c_char,
+        _reserved: [usize; 4],
     }
     extern "C" {
-        fn time(t: *mut i64) -> i64;
-        fn localtime_r(timep: *const i64, result: *mut Tm) -> *mut Tm;
+        fn time(t: *mut c_void) -> i64;
+        fn localtime_r(timep: *const c_void, result: *mut Tm) -> *mut Tm;
     }
-    let mut t: i64 = 0;
+    // 16-byte aligned storage accommodates both 32-bit and 64-bit `time_t` ABIs.
+    let mut raw_time = [0i64; 2];
     unsafe {
-        time(&mut t);
+        time(raw_time.as_mut_ptr().cast());
         let mut tm: Tm = std::mem::zeroed();
-        if !localtime_r(&t, &mut tm).is_null() {
+        if !localtime_r(raw_time.as_ptr().cast(), &mut tm).is_null() {
             (
                 tm.tm_year + 1900,
                 (tm.tm_mon + 1) as u32,
@@ -210,17 +234,51 @@ fn get_local_date_time() -> (i32, u32, u32, u32, u32, u32) {
     }
 }
 
-fn format_date(fmt: &str) -> String {
-    let (year, month, day, hour, minute, second) = get_local_date_time();
+#[inline]
+fn push_two_digits(out: &mut String, val: u32) {
+    let v = val % 100;
+    out.push((b'0' + (v / 10) as u8) as char);
+    out.push((b'0' + (v % 10) as u8) as char);
+}
 
-    let mut res = fmt.to_string();
-    res = res.replace("dd", &format!("{:02}", day));
-    res = res.replace("MM", &format!("{:02}", month));
-    res = res.replace("yyyy", &format!("{:04}", year));
-    res = res.replace("HH", &format!("{:02}", hour));
-    res = res.replace("mm", &format!("{:02}", minute));
-    res = res.replace("ss", &format!("{:02}", second));
-    res
+#[inline]
+fn push_four_digits(out: &mut String, val: i32) {
+    let v = val.unsigned_abs() % 10_000;
+    out.push((b'0' + ((v / 1000) % 10) as u8) as char);
+    out.push((b'0' + ((v / 100) % 10) as u8) as char);
+    out.push((b'0' + ((v / 10) % 10) as u8) as char);
+    out.push((b'0' + (v % 10) as u8) as char);
+}
+
+fn format_date_into(fmt: &str, out: &mut String) {
+    let (year, month, day, hour, minute, second) = get_local_date_time();
+    let bytes = fmt.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"yyyy") {
+            push_four_digits(out, year);
+            i += 4;
+        } else if bytes[i..].starts_with(b"dd") {
+            push_two_digits(out, day);
+            i += 2;
+        } else if bytes[i..].starts_with(b"MM") {
+            push_two_digits(out, month);
+            i += 2;
+        } else if bytes[i..].starts_with(b"HH") {
+            push_two_digits(out, hour);
+            i += 2;
+        } else if bytes[i..].starts_with(b"mm") {
+            push_two_digits(out, minute);
+            i += 2;
+        } else if bytes[i..].starts_with(b"ss") {
+            push_two_digits(out, second);
+            i += 2;
+        } else {
+            let ch = fmt[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
 }
 
 #[cfg(test)]

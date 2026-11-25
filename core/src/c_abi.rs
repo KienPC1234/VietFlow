@@ -3,8 +3,11 @@
 
 use crate::engine::VietFlowEngine;
 use crate::english::default_english_keywords;
-use crate::models::{CharsetId, InputMethod};
+use crate::models::{CharsetId, ImeAction, InputMethod};
 use std::ffi::c_void;
+use std::sync::OnceLock;
+
+static DEFAULT_KEYWORDS_TEXT: OnceLock<String> = OnceLock::new();
 
 /// Newline-separated default English keyword list (UTF-8). The settings UI
 /// can fetch it for the keyword editor without duplicating the list in C++.
@@ -13,8 +16,11 @@ use std::ffi::c_void;
 /// Caller must ensure `out` (if non-null) points to at least `out_cap` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn vf_english_keywords(out: *mut u8, out_cap: usize) -> usize {
-    let mut text = default_english_keywords().join("\n");
-    text.push('\n');
+    let text = DEFAULT_KEYWORDS_TEXT.get_or_init(|| {
+        let mut s = default_english_keywords().join("\n");
+        s.push('\n');
+        s
+    });
     let bytes = text.as_bytes();
 
     if !out.is_null() && out_cap >= bytes.len() {
@@ -52,7 +58,7 @@ pub unsafe extern "C" fn vf_engine_reset(engine: *mut c_void) {
     }
 }
 
-/// Configure the input method (0: Telex, 1: VNI, 2: VIQR, 3: Simple, 4: Simple 2, 5: Hybrid, 6: Custom).
+/// Configure the input method (0: Telex, 1: VNI, 2: VIQR, 3: Simple, 4: Simple 2, 5: Hybrid).
 ///
 /// # Safety
 /// `engine` must be a valid engine pointer or null.
@@ -66,7 +72,6 @@ pub unsafe extern "C" fn vf_engine_set_method(engine: *mut c_void, method: u8) {
             3 => InputMethod::SimpleTelex,
             4 => InputMethod::TelexSimple2,
             5 => InputMethod::TelexVni,
-            6 => InputMethod::UserCustom,
             _ => InputMethod::Telex,
         };
         if engine.options.method != new_method {
@@ -450,6 +455,231 @@ pub unsafe extern "C" fn vf_engine_set_auto_switch_by_typing(engine: *mut c_void
     }
 }
 
+/// Returns true when the engine has no active syllable composition.
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_is_empty(engine: *const c_void) -> bool {
+    match (engine as *const VietFlowEngine).as_ref() {
+        Some(engine) => engine.is_empty(),
+        None => true,
+    }
+}
+
+/// Pops any pending AutoSwitch mode transition (-1: none, 0: English, 1: Vietnamese).
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_take_auto_switch_request(engine: *mut c_void) -> i8 {
+    let Some(engine) = (engine as *mut VietFlowEngine).as_mut() else {
+        return -1;
+    };
+    match engine.take_auto_switch_request() {
+        Some(true) => 1,
+        Some(false) => 0,
+        None => -1,
+    }
+}
+
+/// Unified single-pass IME key handler for preedit hosts (Linux Fcitx5, Windows TSF).
+/// Returns a `VfImeAction` code (`0..=3`) and writes any preedit/commit UTF-8 into `result`.
+///
+/// # Safety
+/// `engine` must refer to a live VietFlow engine with exclusive mutable access.
+/// `result` must point to a writable `VfOwnedUtf8` slot disjoint from `engine`.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_process_ime_key_owned(
+    engine: *mut c_void,
+    ch: u32,
+    now_ms: u64,
+    result: *mut VfOwnedUtf8,
+) -> u8 {
+    if !result.is_null() {
+        *result = VfOwnedUtf8 {
+            data: std::ptr::null_mut(),
+            len: 0,
+        };
+    } else {
+        return ImeAction::PassThrough as u8;
+    }
+    let Some(engine) = (engine as *mut VietFlowEngine).as_mut() else {
+        return ImeAction::PassThrough as u8;
+    };
+    let Some(c) = char::from_u32(ch) else {
+        return ImeAction::PassThrough as u8;
+    };
+    let (action, text) = engine.process_ime_key(c, now_ms);
+    if !text.is_empty() {
+        let _ = write_owned_utf8(text.as_str().to_owned(), result);
+    }
+    action as u8
+}
+
+/// Sets whether second-letter Shift-sticking correction (`VIệt` -> `Việt`) is enabled.
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_set_fix_shift_lag(engine: *mut c_void, enabled: bool) {
+    if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
+        engine.options.fix_shift_lag = enabled;
+    }
+}
+
+/// Sets the idle composition auto-reset timeout in milliseconds (`0` disables timeout).
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_set_typing_timeout_ms(engine: *mut c_void, timeout_ms: u64) {
+    if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
+        engine.options.typing_timeout_ms = timeout_ms;
+    }
+}
+
+/// Sets whether the host supports deleting previously committed words (e.g. Wayland SurroundingText).
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_set_can_rewrite_previous_word(
+    engine: *mut c_void,
+    enabled: bool,
+) {
+    if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
+        engine.options.can_rewrite_previous_word = enabled;
+    }
+}
+
+/// Clears all entries in the engine's macro table.
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_clear_macros(engine: *mut c_void) {
+    if let Some(engine) = (engine as *mut VietFlowEngine).as_mut() {
+        engine.macros.clear();
+    }
+}
+
+/// Inserts or updates one UTF-8 macro trigger -> replacement entry.
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null. UTF-8 pointers must be valid for their lengths.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_add_macro(
+    engine: *mut c_void,
+    trigger_utf8: *const u8,
+    trigger_len: usize,
+    replacement_utf8: *const u8,
+    replacement_len: usize,
+) {
+    let Some(engine) = (engine as *mut VietFlowEngine).as_mut() else {
+        return;
+    };
+    if trigger_utf8.is_null() || trigger_len == 0 || (replacement_utf8.is_null() && replacement_len > 0) {
+        return;
+    }
+    let Ok(trigger) = std::str::from_utf8(std::slice::from_raw_parts(trigger_utf8, trigger_len)) else {
+        return;
+    };
+    let replacement = if replacement_len == 0 {
+        ""
+    } else {
+        match std::str::from_utf8(std::slice::from_raw_parts(replacement_utf8, replacement_len)) {
+            Ok(s) => s,
+            Err(_) => return,
+        }
+    };
+    engine.macros.insert(trigger, replacement);
+}
+
+/// Sets foreign initial consonant letters (e.g. `"fjwz"`).
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null. `chars_utf8` must be valid for `len` bytes if `len > 0`.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_set_foreign_initials(
+    engine: *mut c_void,
+    chars_utf8: *const u8,
+    len: usize,
+) {
+    let Some(engine) = (engine as *mut VietFlowEngine).as_mut() else {
+        return;
+    };
+    if len == 0 {
+        engine.options.foreign_initials.clear();
+        return;
+    }
+    if chars_utf8.is_null() {
+        return;
+    }
+    if let Ok(s) = std::str::from_utf8(std::slice::from_raw_parts(chars_utf8, len)) {
+        engine.options.foreign_initials = s
+            .chars()
+            .filter(|c| c.is_ascii_alphabetic())
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+    }
+}
+
+unsafe fn parse_newline_keywords(data: *const u8, len: usize) -> Option<Vec<String>> {
+    if len == 0 {
+        return Some(Vec::new());
+    }
+    if data.is_null() {
+        return None;
+    }
+    let s = std::str::from_utf8(std::slice::from_raw_parts(data, len)).ok()?;
+    let mut words: Vec<String> = s
+        .lines()
+        .map(str::trim)
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_ascii_lowercase())
+        .collect();
+    words.sort();
+    words.dedup();
+    Some(words)
+}
+
+/// Replaces custom English keywords from a newline-separated UTF-8 list.
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null. `newline_sep_utf8` must be valid for `len` bytes if `len > 0`.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_set_custom_english_keywords(
+    engine: *mut c_void,
+    newline_sep_utf8: *const u8,
+    len: usize,
+) {
+    let Some(engine) = (engine as *mut VietFlowEngine).as_mut() else {
+        return;
+    };
+    if let Some(words) = parse_newline_keywords(newline_sep_utf8, len) {
+        engine.options.custom_english_keywords = words;
+    }
+}
+
+/// Replaces removed default English keywords from a newline-separated UTF-8 list.
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null. `newline_sep_utf8` must be valid for `len` bytes if `len > 0`.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_set_removed_english_keywords(
+    engine: *mut c_void,
+    newline_sep_utf8: *const u8,
+    len: usize,
+) {
+    let Some(engine) = (engine as *mut VietFlowEngine).as_mut() else {
+        return;
+    };
+    if let Some(words) = parse_newline_keywords(newline_sep_utf8, len) {
+        engine.options.removed_english_keywords = words;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -778,5 +1008,66 @@ mod tests {
             required
         );
         assert!(std::str::from_utf8(&buffer).is_ok());
+    }
+
+    #[test]
+    fn test_fcitx5_ime_action_and_extended_config_abi() {
+        unsafe {
+            let engine = vf_engine_create();
+            assert!(!engine.is_null());
+            assert!(vf_engine_is_empty(engine));
+            vf_engine_set_can_rewrite_previous_word(engine, false);
+            vf_engine_set_fix_shift_lag(engine, true);
+            vf_engine_set_typing_timeout_ms(engine, 0);
+            vf_engine_set_enable_macro(engine, true);
+            vf_engine_clear_macros(engine);
+            vf_engine_add_macro(engine, b"lx".as_ptr(), 2, "Linux Fcitx5".as_ptr(), 12);
+            vf_engine_set_foreign_initials(engine, b"fjwz".as_ptr(), 4);
+            vf_engine_set_custom_english_keywords(engine, b"wayland\nfcitx\n".as_ptr(), 14);
+
+            let mut out = VfOwnedUtf8 {
+                data: std::ptr::null_mut(),
+                len: 0,
+            };
+            assert_eq!(
+                vf_engine_process_ime_key_owned(engine, '1' as u32, 0, &mut out),
+                ImeAction::PassThrough as u8
+            );
+            assert!(out.data.is_null());
+
+            assert_eq!(
+                vf_engine_process_ime_key_owned(engine, 'l' as u32, 0, &mut out),
+                ImeAction::UpdatePreedit as u8
+            );
+            vf_owned_utf8_free(out);
+            assert!(!vf_engine_is_empty(engine));
+
+            let mut out2 = VfOwnedUtf8 {
+                data: std::ptr::null_mut(),
+                len: 0,
+            };
+            assert_eq!(
+                vf_engine_process_ime_key_owned(engine, 'x' as u32, 0, &mut out2),
+                ImeAction::UpdatePreedit as u8
+            );
+            vf_owned_utf8_free(out2);
+
+            let mut commit = VfOwnedUtf8 {
+                data: std::ptr::null_mut(),
+                len: 0,
+            };
+            assert_eq!(
+                vf_engine_process_ime_key_owned(engine, '\n' as u32, 0, &mut commit),
+                ImeAction::CommitAndForward as u8
+            );
+            let committed =
+                std::str::from_utf8(std::slice::from_raw_parts(commit.data, commit.len)).unwrap();
+            assert_eq!(committed, "Linux Fcitx5");
+            vf_owned_utf8_free(commit);
+            assert!(vf_engine_is_empty(engine));
+            assert_eq!(vf_engine_take_auto_switch_request(engine), -1);
+
+            vf_engine_destroy(engine);
+        }
     }
 }

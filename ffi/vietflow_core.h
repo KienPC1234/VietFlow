@@ -25,8 +25,7 @@ enum VfInputMethod {
     VF_METHOD_VIQR = 2,
     VF_METHOD_SIMPLE_TELEX = 3,
     VF_METHOD_TELEX_SIMPLE2 = 4,
-    VF_METHOD_TELEX_VNI = 5,
-    VF_METHOD_USER_CUSTOM = 6
+    VF_METHOD_TELEX_VNI = 5
 };
 
 /* Charsets (matches vietflow_core::CharsetId). */
@@ -36,6 +35,14 @@ enum VfCharset {
     VF_CHARSET_TCVN3 = 2,
     VF_CHARSET_VNI_WINDOWS = 3,
     VF_CHARSET_VIQR = 4
+};
+
+/* Unified IME actions (matches vietflow_core::ImeAction) for Fcitx5 / TSF / IMK. */
+enum VfImeAction {
+    VF_IME_PASSTHROUGH = 0,
+    VF_IME_UPDATE_PREEDIT = 1,
+    VF_IME_COMMIT_CONSUME = 2,
+    VF_IME_COMMIT_FORWARD = 3
 };
 
 typedef struct VfEngine VfEngine;
@@ -60,10 +67,14 @@ bool vf_engine_get_preedit_owned(VfEngine *engine, VfOwnedUtf8 *result);
 bool vf_engine_finish_on_break_owned(VfEngine *engine, uint32_t break_char,
                                      VfOwnedUtf8 *result);
 bool vf_engine_process_backspace_owned(VfEngine *engine, VfOwnedUtf8 *result);
+uint8_t vf_engine_process_ime_key_owned(VfEngine *engine, uint32_t ch,
+                                        uint64_t now_ms, VfOwnedUtf8 *result);
 
 VfEngine *vf_engine_create(void);
 void vf_engine_destroy(VfEngine *engine);
 void vf_engine_reset(VfEngine *engine);
+bool vf_engine_is_empty(const VfEngine *engine);
+int8_t vf_engine_take_auto_switch_request(VfEngine *engine);
 
 void vf_engine_set_method(VfEngine *engine, uint8_t method);
 void vf_engine_set_charset(VfEngine *engine, uint8_t charset);
@@ -73,6 +84,21 @@ void vf_engine_set_auto_restore(VfEngine *engine, bool enabled);
 void vf_engine_set_free_marking(VfEngine *engine, bool enabled);
 void vf_engine_set_enable_macro(VfEngine *engine, bool enabled);
 void vf_engine_set_auto_switch_by_typing(VfEngine *engine, bool enabled);
+void vf_engine_set_fix_shift_lag(VfEngine *engine, bool enabled);
+void vf_engine_set_typing_timeout_ms(VfEngine *engine, uint64_t timeout_ms);
+void vf_engine_set_can_rewrite_previous_word(VfEngine *engine, bool enabled);
+void vf_engine_clear_macros(VfEngine *engine);
+void vf_engine_add_macro(VfEngine *engine, const uint8_t *trigger_utf8,
+                         size_t trigger_len, const uint8_t *replacement_utf8,
+                         size_t replacement_len);
+void vf_engine_set_foreign_initials(VfEngine *engine, const uint8_t *chars_utf8,
+                                    size_t len);
+void vf_engine_set_custom_english_keywords(VfEngine *engine,
+                                           const uint8_t *newline_sep_utf8,
+                                           size_t len);
+void vf_engine_set_removed_english_keywords(VfEngine *engine,
+                                            const uint8_t *newline_sep_utf8,
+                                            size_t len);
 
 /*
  * Legacy borrowed UTF-8 ABI: out_len is the FULL required byte count on

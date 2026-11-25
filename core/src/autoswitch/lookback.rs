@@ -1,12 +1,16 @@
 // VietFlow Core - Look-back Buffer for Multi-Word Disambiguation
 // Licensed under GNU General Public License v3.0 (GPLv3)
 
-use crate::autoswitch::{lookup_en_score, lookup_vn_score, to_telex_normalized_key, AS_LOOKBACK_MARGIN};
+use crate::autoswitch::{
+    ascii_lowercase_inline, lookup_en_score, lookup_vn_score, to_telex_normalized_key_inline,
+    AS_LOOKBACK_MARGIN,
+};
+use crate::key_text::KeyText;
 
 #[derive(Debug, Clone, Default)]
 pub struct FinishedWord {
-    pub raw: String,
-    pub display: String,
+    pub raw: KeyText,
+    pub display: KeyText,
     pub is_ambiguous: bool,
     pub en_score: Option<i8>,
     pub vn_score: Option<i8>,
@@ -38,15 +42,16 @@ impl LookbackBuffer {
             return;
         }
 
-        let en_score = lookup_en_score(&raw.to_ascii_lowercase());
-        let vn_key = to_telex_normalized_key(display);
+        let raw_lower = ascii_lowercase_inline(raw);
+        let en_score = lookup_en_score(raw_lower.as_str());
+        let vn_key = to_telex_normalized_key_inline(display);
         let vn_score = vn_key.as_deref().and_then(lookup_vn_score);
 
         let is_ambiguous = en_score.is_some() && vn_score.is_some();
 
         let fw = FinishedWord {
-            raw: raw.to_string(),
-            display: display.to_string(),
+            raw: KeyText::from_str(raw),
+            display: KeyText::from_str(display),
             is_ambiguous,
             en_score,
             vn_score,
@@ -68,9 +73,10 @@ impl LookbackBuffer {
     /// Checks if a confident English word can flip ambiguous words preceding it.
     /// E.g. "thí makes" -> "makes" is pure English, preceding is "thí" (raw "this").
     /// Returns Some((words_to_delete_count, restored_text_prefix)) if look-back should fire.
-    pub fn check_lookback_restore_for_english(&self, curr_raw: &str) -> Option<(usize, String)> {
+    pub fn check_lookback_restore_for_english(&self, curr_raw: &str) -> Option<(usize, KeyText)> {
         // Current word must be a known English word
-        let _curr_en = lookup_en_score(&curr_raw.to_ascii_lowercase())?;
+        let curr_lower = ascii_lowercase_inline(curr_raw);
+        let _curr_en = lookup_en_score(curr_lower.as_str())?;
 
         // Check the immediate previous word
         let prev = self.words[0].as_ref()?;
@@ -93,9 +99,8 @@ impl LookbackBuffer {
         if pen as i16 - pvn as i16 >= AS_LOOKBACK_MARGIN as i16 {
             // How many chars to backspace: previous display length + 1 (the space)
             let backspace_count = prev.display.chars().count() + 1;
-            let mut replacement = String::with_capacity(prev.raw.len() + 1);
-            replacement.push_str(&prev.raw);
-            replacement.push(' ');
+            let mut replacement = KeyText::from_str(prev.raw.as_str());
+            replacement.push_char(' ');
             return Some((backspace_count, replacement));
         }
 

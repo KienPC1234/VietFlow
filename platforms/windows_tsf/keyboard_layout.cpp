@@ -36,12 +36,12 @@ bool VfTsfIsCompositionChar(wchar_t ch, uint32_t method) {
     if ((ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z'))
         return true;
     if (ch >= L'0' && ch <= L'9')
-        return method == 1 || method == 5 || method == 6; // VNI
-    if (ch == L'[' || ch == L']')
-        return method == 0 || method == 6; // Telex
-    if (method == 2 || method == 6) { // VIQR marks by CHAR, not physical VK
+        return method == 1 || method == 5; // VNI or Telex + VNI
+    if (ch == L'[' || ch == L']' || ch == L'{' || ch == L'}')
+        return method == 0 || method == 5; // Telex bracket shortcuts ([ ] { })
+    if (method == 2) { // VIQR marks by CHAR, not physical VK
         switch (ch) {
-            case L'\'': case L'`': case L'?': case L'.': case L'+':
+            case L'\'': case L'`': case L'?': case L'.': case L'+': case L'*':
             case L'^': case L'(': case L'~': case L'=': case L'/':
                 return true;
         }

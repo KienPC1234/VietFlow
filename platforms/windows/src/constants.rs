@@ -19,7 +19,6 @@ pub const IDM_METHOD_VIQR: usize = 1012;
 pub const IDM_METHOD_SIMPLE_TELEX: usize = 1013;
 pub const IDM_METHOD_SIMPLE_TELEX2: usize = 1014;
 pub const IDM_METHOD_TELEX_VNI: usize = 1015;
-pub const IDM_METHOD_CUSTOM: usize = 1016;
 
 pub const IDM_CHARSET_UNICODE: usize = 1020;
 pub const IDM_CHARSET_COMPOSITE: usize = 1021;

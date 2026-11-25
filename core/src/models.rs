@@ -11,7 +11,6 @@ pub enum InputMethod {
     SimpleTelex = 3,
     TelexSimple2 = 4,
     TelexVni = 5,
-    UserCustom = 6,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +21,21 @@ pub enum CharsetId {
     Tcvn3 = 2,
     VniWindows = 3,
     Viqr = 4,
+}
+
+/// Unified action returned by `VietFlowEngine::process_ime_key` for preedit-based
+/// hosts (Linux Fcitx5 / Wayland, Windows TSF, macOS InputMethodKit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ImeAction {
+    /// No active composition and the key does not start one: forward key natively (0ms passthrough).
+    PassThrough = 0,
+    /// Composition started or updated: display returned preedit (or end composition if empty) and consume key.
+    UpdatePreedit = 1,
+    /// Composition finalized with delimiter (e.g. Space, punctuation, double-bracket undo): commit text and consume key.
+    CommitAndConsume = 2,
+    /// Composition finalized by control key (e.g. Enter, Tab): commit text and forward the native key.
+    CommitAndForward = 3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,13 +70,6 @@ pub enum ModifyKeyType {
     Horn,       // Ơ, Ư
     DMark,      // Đ
     HookAll,    // W key: ă, ơ, ư
-    RoofA,      // Â only
-    RoofE,      // Ê only
-    RoofO,      // Ô only
-    HornO,      // Ơ only
-    HornU,      // Ư only
-    BreveA,     // Ă only
-    DLower,     // Đ only
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,139 +203,6 @@ impl VnLexiName {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CustomKeymap {
-    pub acute: String,
-    pub grave: String,
-    pub hook: String,
-    pub tilde: String,
-    pub dot: String,
-    pub remove_tone: String,
-
-    pub circumflex: String,
-    pub horn: String,
-    pub breve: String,
-    pub d_mark: String,
-    pub hook_all: String,
-
-    pub roof_a: String,
-    pub roof_e: String,
-    pub roof_o: String,
-    pub horn_o: String,
-    pub horn_u: String,
-    pub breve_a: String,
-    pub d_lower: String,
-
-    pub telex_double_keys: bool,
-    pub lone_w: bool,
-}
-
-impl CustomKeymap {
-    pub fn telex() -> Self {
-        Self {
-            acute: "s".to_string(),
-            grave: "f".to_string(),
-            hook: "r".to_string(),
-            tilde: "x".to_string(),
-            dot: "j".to_string(),
-            remove_tone: "z".to_string(),
-            circumflex: String::new(),
-            horn: String::new(),
-            breve: String::new(),
-            d_mark: String::new(),
-            hook_all: "w".to_string(),
-            roof_a: String::new(),
-            roof_e: String::new(),
-            roof_o: String::new(),
-            horn_o: String::new(),
-            horn_u: String::new(),
-            breve_a: String::new(),
-            d_lower: String::new(),
-            telex_double_keys: true,
-            lone_w: true,
-        }
-    }
-
-    pub fn vni() -> Self {
-        Self {
-            acute: "1".to_string(),
-            grave: "2".to_string(),
-            hook: "3".to_string(),
-            tilde: "4".to_string(),
-            dot: "5".to_string(),
-            remove_tone: "0".to_string(),
-            circumflex: "6".to_string(),
-            horn: "7".to_string(),
-            breve: "8".to_string(),
-            d_mark: "9".to_string(),
-            hook_all: String::new(),
-            roof_a: String::new(),
-            roof_e: String::new(),
-            roof_o: String::new(),
-            horn_o: String::new(),
-            horn_u: String::new(),
-            breve_a: String::new(),
-            d_lower: String::new(),
-            telex_double_keys: false,
-            lone_w: false,
-        }
-    }
-
-    pub fn viqr() -> Self {
-        Self {
-            acute: "'".to_string(),
-            grave: "`".to_string(),
-            hook: "?".to_string(),
-            tilde: "~".to_string(),
-            dot: ".".to_string(),
-            remove_tone: "0".to_string(),
-            circumflex: "^".to_string(),
-            horn: "+*".to_string(),
-            breve: "(".to_string(),
-            d_mark: "d".to_string(),
-            hook_all: String::new(),
-            roof_a: String::new(),
-            roof_e: String::new(),
-            roof_o: String::new(),
-            horn_o: String::new(),
-            horn_u: String::new(),
-            breve_a: String::new(),
-            d_lower: String::new(),
-            telex_double_keys: false,
-            lone_w: false,
-        }
-    }
-
-    pub fn is_action_key(&self, c: char) -> bool {
-        let lower = crate::input_proc::to_lower_ascii(c);
-        let matches = |s: &str| s.chars().any(|ch| crate::input_proc::to_lower_ascii(ch) == lower);
-        matches(&self.acute)
-            || matches(&self.grave)
-            || matches(&self.hook)
-            || matches(&self.tilde)
-            || matches(&self.dot)
-            || matches(&self.remove_tone)
-            || matches(&self.circumflex)
-            || matches(&self.horn)
-            || matches(&self.breve)
-            || matches(&self.d_mark)
-            || matches(&self.hook_all)
-            || matches(&self.roof_a)
-            || matches(&self.roof_e)
-            || matches(&self.roof_o)
-            || matches(&self.horn_o)
-            || matches(&self.horn_u)
-            || matches(&self.breve_a)
-            || matches(&self.d_lower)
-    }
-}
-
-impl Default for CustomKeymap {
-    fn default() -> Self {
-        Self::telex()
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct EngineOptions {
     pub method: InputMethod,
@@ -345,7 +219,10 @@ pub struct EngineOptions {
     pub custom_english_keywords: Vec<String>,
     pub removed_english_keywords: Vec<String>,
     pub typing_timeout_ms: u64,
-    pub custom_keymap: CustomKeymap,
+    /// Whether the host can delete previously committed words across a space
+    /// (true for Hook mode or Fcitx5 clients with SurroundingText; false when
+    /// Wayland/TSF preedit clients cannot rewrite already committed text).
+    pub can_rewrite_previous_word: bool,
 }
 
 impl EngineOptions {
@@ -374,7 +251,7 @@ impl Default for EngineOptions {
             custom_english_keywords: Vec::new(),
             removed_english_keywords: Vec::new(),
             typing_timeout_ms: crate::constants::DEFAULT_TYPING_TIMEOUT_MS,
-            custom_keymap: CustomKeymap::default(),
+            can_rewrite_previous_word: true,
         }
     }
 }

@@ -301,58 +301,8 @@ UiManager::UiManager(const std::string& config_path, bool convert_mode, void* hw
     config_.Load(config_path_);
     SyncTextBuffersFromConfig();
     english_defaults_ = LoadDefaultEnglishKeywords();
-    SyncCustomKeymapBuffersFromConfig();
     last_config_mtime_ = ConfigMtime(config_path_);
     RefreshTsfState();
-}
-
-void UiManager::SyncCustomKeymapBuffersFromConfig() {
-    auto copy_str = [](char* dst, size_t dst_size, const std::string& src) {
-        strncpy_s(dst, dst_size, src.c_str(), dst_size - 1);
-    };
-    copy_str(custom_acute_, sizeof(custom_acute_), config_.custom_keymap.acute);
-    copy_str(custom_grave_, sizeof(custom_grave_), config_.custom_keymap.grave);
-    copy_str(custom_hook_, sizeof(custom_hook_), config_.custom_keymap.hook);
-    copy_str(custom_tilde_, sizeof(custom_tilde_), config_.custom_keymap.tilde);
-    copy_str(custom_dot_, sizeof(custom_dot_), config_.custom_keymap.dot);
-    copy_str(custom_remove_tone_, sizeof(custom_remove_tone_), config_.custom_keymap.remove_tone);
-
-    copy_str(custom_circumflex_, sizeof(custom_circumflex_), config_.custom_keymap.circumflex);
-    copy_str(custom_horn_, sizeof(custom_horn_), config_.custom_keymap.horn);
-    copy_str(custom_breve_, sizeof(custom_breve_), config_.custom_keymap.breve);
-    copy_str(custom_d_mark_, sizeof(custom_d_mark_), config_.custom_keymap.d_mark);
-    copy_str(custom_hook_all_, sizeof(custom_hook_all_), config_.custom_keymap.hook_all);
-
-    copy_str(custom_roof_a_, sizeof(custom_roof_a_), config_.custom_keymap.roof_a);
-    copy_str(custom_roof_e_, sizeof(custom_roof_e_), config_.custom_keymap.roof_e);
-    copy_str(custom_roof_o_, sizeof(custom_roof_o_), config_.custom_keymap.roof_o);
-    copy_str(custom_horn_o_, sizeof(custom_horn_o_), config_.custom_keymap.horn_o);
-    copy_str(custom_horn_u_, sizeof(custom_horn_u_), config_.custom_keymap.horn_u);
-    copy_str(custom_breve_a_, sizeof(custom_breve_a_), config_.custom_keymap.breve_a);
-    copy_str(custom_d_lower_, sizeof(custom_d_lower_), config_.custom_keymap.d_lower);
-}
-
-void UiManager::SyncCustomKeymapBuffersToConfig() {
-    config_.custom_keymap.acute = custom_acute_;
-    config_.custom_keymap.grave = custom_grave_;
-    config_.custom_keymap.hook = custom_hook_;
-    config_.custom_keymap.tilde = custom_tilde_;
-    config_.custom_keymap.dot = custom_dot_;
-    config_.custom_keymap.remove_tone = custom_remove_tone_;
-
-    config_.custom_keymap.circumflex = custom_circumflex_;
-    config_.custom_keymap.horn = custom_horn_;
-    config_.custom_keymap.breve = custom_breve_;
-    config_.custom_keymap.d_mark = custom_d_mark_;
-    config_.custom_keymap.hook_all = custom_hook_all_;
-
-    config_.custom_keymap.roof_a = custom_roof_a_;
-    config_.custom_keymap.roof_e = custom_roof_e_;
-    config_.custom_keymap.roof_o = custom_roof_o_;
-    config_.custom_keymap.horn_o = custom_horn_o_;
-    config_.custom_keymap.horn_u = custom_horn_u_;
-    config_.custom_keymap.breve_a = custom_breve_a_;
-    config_.custom_keymap.d_lower = custom_d_lower_;
 }
 
 void UiManager::SyncTextBuffersFromConfig() {
@@ -360,97 +310,7 @@ void UiManager::SyncTextBuffersFromConfig() {
     strncpy_s(hotkey_settings_buf_, sizeof(hotkey_settings_buf_), config_.hotkey_settings.c_str(), sizeof(hotkey_settings_buf_) - 1);
 }
 
-void UiManager::LoadCustomKeymapPreset(int preset_id) {
-    if (preset_id == 0) { // Telex
-        config_.custom_keymap.acute = "s";
-        config_.custom_keymap.grave = "f";
-        config_.custom_keymap.hook = "r";
-        config_.custom_keymap.tilde = "x";
-        config_.custom_keymap.dot = "j";
-        config_.custom_keymap.remove_tone = "z";
-        config_.custom_keymap.circumflex = "";
-        config_.custom_keymap.horn = "";
-        config_.custom_keymap.breve = "";
-        config_.custom_keymap.d_mark = "";
-        config_.custom_keymap.hook_all = "w";
-        config_.custom_keymap.roof_a = "";
-        config_.custom_keymap.roof_e = "";
-        config_.custom_keymap.roof_o = "";
-        config_.custom_keymap.horn_o = "";
-        config_.custom_keymap.horn_u = "";
-        config_.custom_keymap.breve_a = "";
-        config_.custom_keymap.d_lower = "";
-        config_.custom_keymap.telex_double_keys = true;
-        config_.custom_keymap.lone_w = true;
-    } else if (preset_id == 1) { // VNI
-        config_.custom_keymap.acute = "1";
-        config_.custom_keymap.grave = "2";
-        config_.custom_keymap.hook = "3";
-        config_.custom_keymap.tilde = "4";
-        config_.custom_keymap.dot = "5";
-        config_.custom_keymap.remove_tone = "0";
-        config_.custom_keymap.circumflex = "6";
-        config_.custom_keymap.horn = "7";
-        config_.custom_keymap.breve = "8";
-        config_.custom_keymap.d_mark = "9";
-        config_.custom_keymap.hook_all = "";
-        config_.custom_keymap.roof_a = "";
-        config_.custom_keymap.roof_e = "";
-        config_.custom_keymap.roof_o = "";
-        config_.custom_keymap.horn_o = "";
-        config_.custom_keymap.horn_u = "";
-        config_.custom_keymap.breve_a = "";
-        config_.custom_keymap.d_lower = "";
-        config_.custom_keymap.telex_double_keys = false;
-        config_.custom_keymap.lone_w = false;
-    } else if (preset_id == 2) { // VIQR
-        config_.custom_keymap.acute = "'";
-        config_.custom_keymap.grave = "`";
-        config_.custom_keymap.hook = "?";
-        config_.custom_keymap.tilde = "~";
-        config_.custom_keymap.dot = ".";
-        config_.custom_keymap.remove_tone = "0";
-        config_.custom_keymap.circumflex = "^";
-        config_.custom_keymap.horn = "+*";
-        config_.custom_keymap.breve = "(";
-        config_.custom_keymap.d_mark = "d";
-        config_.custom_keymap.hook_all = "";
-        config_.custom_keymap.roof_a = "";
-        config_.custom_keymap.roof_e = "";
-        config_.custom_keymap.roof_o = "";
-        config_.custom_keymap.horn_o = "";
-        config_.custom_keymap.horn_u = "";
-        config_.custom_keymap.breve_a = "";
-        config_.custom_keymap.d_lower = "";
-        config_.custom_keymap.telex_double_keys = false;
-        config_.custom_keymap.lone_w = false;
-    } else { // Clear all
-        config_.custom_keymap.acute = "";
-        config_.custom_keymap.grave = "";
-        config_.custom_keymap.hook = "";
-        config_.custom_keymap.tilde = "";
-        config_.custom_keymap.dot = "";
-        config_.custom_keymap.remove_tone = "";
-        config_.custom_keymap.circumflex = "";
-        config_.custom_keymap.horn = "";
-        config_.custom_keymap.breve = "";
-        config_.custom_keymap.d_mark = "";
-        config_.custom_keymap.hook_all = "";
-        config_.custom_keymap.roof_a = "";
-        config_.custom_keymap.roof_e = "";
-        config_.custom_keymap.roof_o = "";
-        config_.custom_keymap.horn_o = "";
-        config_.custom_keymap.horn_u = "";
-        config_.custom_keymap.breve_a = "";
-        config_.custom_keymap.d_lower = "";
-        config_.custom_keymap.telex_double_keys = false;
-        config_.custom_keymap.lone_w = false;
-    }
-    SyncCustomKeymapBuffersFromConfig();
-}
-
 void UiManager::SaveConfig() {
-    SyncCustomKeymapBuffersToConfig();
     config_.foreign_initials = foreign_initials_buf_;
     config_.hotkey_settings = hotkey_settings_buf_;
     config_.Save(config_path_);
@@ -470,7 +330,6 @@ void UiManager::ResetToDefaults() {
     config_ = Config();
     strncpy_s(foreign_initials_buf_, config_.foreign_initials.c_str(), sizeof(foreign_initials_buf_) - 1);
     strncpy_s(hotkey_settings_buf_, config_.hotkey_settings.c_str(), sizeof(hotkey_settings_buf_) - 1);
-    SyncCustomKeymapBuffersFromConfig();
     SaveConfig();
 }
 
@@ -563,7 +422,6 @@ void UiManager::Render() {
             if (fresh.Load(config_path_)) {
                 config_ = std::move(fresh);
                 SyncTextBuffersFromConfig();
-                SyncCustomKeymapBuffersFromConfig();
                 last_config_mtime_ = mtime;
             }
         }
@@ -661,16 +519,16 @@ void UiManager::Render() {
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem(NF_BOLT " Gõ tắt")) {
+        if (ImGui::BeginTabItem(NF_GAMEPAD "  Ứng dụng")) {
             BeginPageScroll();
-            PageMacros();
+            PageApps();
             EndPageScroll();
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem(NF_GAMEPAD "  Ứng dụng")) {
+        if (ImGui::BeginTabItem(NF_BOLT " Gõ tắt")) {
             BeginPageScroll();
-            PageApps();
+            PageMacros();
             EndPageScroll();
             ImGui::EndTabItem();
         }
@@ -808,14 +666,10 @@ void UiManager::PageOverview() {
         ImGui::TableSetColumnIndex(1);
         ImGui::SetNextItemWidth(Px(280.0f));
         const char* methods[] = {
-            "Telex", "VNI", "VIQR", "Telex cơ bản", "Telex cơ bản 2", "Telex + VNI", "Tự định nghĩa"
+            "Telex", "VNI", "VIQR", "Telex cơ bản", "Telex cơ bản 2", "Telex + VNI"
         };
         if (ImGui::Combo("##MethodCombo", &config_.method, methods, IM_ARRAYSIZE(methods))) {
             SaveConfig();
-        }
-        if (config_.method == 6) {
-            ImGui::SameLine(0.0f, Px(10.0f));
-            ImGui::TextColored(ImVec4(0.35f, 0.70f, 1.0f, 1.0f), "(Tab [Gõ] để chỉnh)");
         }
 
         // Row 3: Phím chuyển
@@ -1096,6 +950,8 @@ void UiManager::PageTyping() {
     const bool tsf_active = TsfActive();
     bool open_english_dict_popup = false;
 
+    const float panel_h = (std::max)(Px(380.0f), ImGui::GetContentRegionAvail().y);
+
     // Bố cục chia 2 bên kiểu UniKey: Trái = Tùy chọn gõ, Phải = Phương thức & Từ điển
     if (ImGui::BeginTable("TypingSplitLayout", 2, ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("LeftCol", ImGuiTableColumnFlags_WidthStretch, 0.48f);
@@ -1105,7 +961,7 @@ void UiManager::PageTyping() {
 
         // ----------------- CỘT TRÁI: Tùy chọn gõ -----------------
         ImGui::TableSetColumnIndex(0);
-        if (ImGui::BeginChild("TypingLeftPanel", ImVec2(0.0f, Px(380.0f)), true)) {
+        if (ImGui::BeginChild("TypingLeftPanel", ImVec2(0.0f, panel_h), true)) {
             ImGui::TextUnformatted("Tùy chọn gõ");
             ImGui::Separator();
             ImGui::Spacing();
@@ -1160,7 +1016,7 @@ void UiManager::PageTyping() {
 
         // ----------------- CỘT PHẢI: Phương thức & Từ điển -----------------
         ImGui::TableSetColumnIndex(1);
-        if (ImGui::BeginChild("TypingRightPanel", ImVec2(0.0f, Px(380.0f)), true)) {
+        if (ImGui::BeginChild("TypingRightPanel", ImVec2(0.0f, panel_h), true)) {
             ImGui::TextUnformatted("Phương thức & Từ điển");
             ImGui::Separator();
             ImGui::Spacing();
@@ -1513,194 +1369,6 @@ void UiManager::PageTyping() {
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
-    }
-
-    bool is_custom_active = (config_.method == 6);
-    std::string header_title = std::string(NF_KEYBOARD "  Kiểu gõ tự định nghĩa") +
-        (is_custom_active ? "  [Đang dùng]" : "");
-
-    ImGui::Spacing();
-    ImGui::AlignTextToFramePadding();
-    ImGuiTreeNodeFlags custom_header_flags =
-        ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_SpanAvailWidth;
-    if (is_custom_active) custom_header_flags |= ImGuiTreeNodeFlags_DefaultOpen;
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                        ImVec2(Px(8.0f), ImGui::GetStyle().FramePadding.y));
-    const bool custom_header_open =
-        ImGui::CollapsingHeader(header_title.c_str(), custom_header_flags);
-    ImGui::PopStyleVar();
-    if (custom_header_open) {
-        ImGui::TextDisabled("Gán phím dấu theo thói quen. Có thể nhập nhiều phím, ví dụ s1.");
-        ImGui::Spacing();
-
-        // Determine current matching preset for visual feedback
-        bool is_telex_match = (strcmp(custom_acute_, "s") == 0 && strcmp(custom_hook_all_, "w") == 0 && config_.custom_keymap.telex_double_keys);
-        bool is_vni_match = (strcmp(custom_acute_, "1") == 0 && strcmp(custom_circumflex_, "6") == 0);
-        bool is_viqr_match = (strcmp(custom_acute_, "'") == 0 && strcmp(custom_circumflex_, "^") == 0);
-
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Nạp nhanh mẫu chuẩn:");
-        ImGui::SameLine();
-
-        auto PresetButton = [this](const char* label, int preset_id, bool is_active) {
-            if (is_active) {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.45f, 0.75f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.52f, 0.85f, 1.0f));
-            }
-            if (ImGui::Button(label, ImVec2(Px(95.0f), Px(24.0f)))) {
-                LoadCustomKeymapPreset(preset_id);
-                SaveConfig();
-            }
-            if (is_active) {
-                ImGui::PopStyleColor(2);
-            }
-        };
-
-        PresetButton("Mẫu Telex", 0, is_telex_match);
-        ImGui::SameLine();
-        PresetButton("Mẫu VNI", 1, is_vni_match);
-        ImGui::SameLine();
-        PresetButton("Mẫu VIQR", 2, is_viqr_match);
-        ImGui::SameLine();
-        if (ImGui::Button("Xóa trắng", ImVec2(Px(80.0f), Px(24.0f)))) {
-            LoadCustomKeymapPreset(3);
-            SaveConfig();
-        }
-
-        ImGui::Spacing();
-        auto RenderKeyInputCell = [this](const char* label, const char* example, char* buf, size_t buf_size, const char* hint) {
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(label);
-            if (example && example[0]) {
-                ImGui::SameLine(0.0f, Px(4.0f));
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.50f, 0.55f, 0.65f, 1.0f));
-                ImGui::TextUnformatted(example);
-                ImGui::PopStyleColor();
-            }
-            ImGui::TableNextColumn();
-            ImGui::SetNextItemWidth(-FLT_MIN);
-            std::string id = std::string("##CustomKey_") + label;
-            if (ImGui::InputTextWithHint(id.c_str(), hint, buf, buf_size)) {
-                SaveConfig();
-            }
-        };
-
-        if (ImGui::BeginTable("CustomKeymapTable", 4, ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("L1", ImGuiTableColumnFlags_WidthStretch, 0.34f);
-            ImGui::TableSetupColumn("I1", ImGuiTableColumnFlags_WidthFixed, Px(80.0f));
-            ImGui::TableSetupColumn("L2", ImGuiTableColumnFlags_WidthStretch, 0.34f);
-            ImGui::TableSetupColumn("I2", ImGuiTableColumnFlags_WidthFixed, Px(80.0f));
-
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            ImGui::TextDisabled("Phím gán dấu thanh:");
-            ImGui::TableSetColumnIndex(2);
-            ImGui::TextDisabled("Phím gán dấu mũ & móc:");
-
-            struct CustomRowPair {
-                const char* l_label; const char* l_ex; char* l_buf; size_t l_sz; const char* l_hint;
-                const char* r_label; const char* r_ex; char* r_buf; size_t r_sz; const char* r_hint;
-            };
-            CustomRowPair rows[] = {
-                { "Dấu sắc", "(á, é, ó)", custom_acute_, sizeof(custom_acute_), "s, 1...",
-                  "Mũ chung", "(â, ê, ô)", custom_circumflex_, sizeof(custom_circumflex_), "6, ^..." },
-                { "Dấu huyền", "(à, è, ò)", custom_grave_, sizeof(custom_grave_), "f, 2...",
-                  "Móc chung", "(ơ, ư)", custom_horn_, sizeof(custom_horn_), "7, +..." },
-                { "Dấu hỏi", "(ả, ẻ, ỏ)", custom_hook_, sizeof(custom_hook_), "r, 3...",
-                  "Trăng", "(ă)", custom_breve_, sizeof(custom_breve_), "8, (..." },
-                { "Dấu ngã", "(ã, ẽ, õ)", custom_tilde_, sizeof(custom_tilde_), "x, 4...",
-                  "Chữ Đ", "(đ, Đ)", custom_d_mark_, sizeof(custom_d_mark_), "9, d..." },
-                { "Dấu nặng", "(ạ, ẹ, ọ)", custom_dot_, sizeof(custom_dot_), "j, 5...",
-                  "Móc & trăng", "(w)", custom_hook_all_, sizeof(custom_hook_all_), "w..." },
-                { "Xóa dấu thanh", "", custom_remove_tone_, sizeof(custom_remove_tone_), "z, 0...",
-                  nullptr, nullptr, nullptr, 0, nullptr },
-            };
-            for (const auto& r : rows) {
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                RenderKeyInputCell(r.l_label, r.l_ex, r.l_buf, r.l_sz, r.l_hint);
-                if (r.r_label) {
-                    ImGui::TableSetColumnIndex(2);
-                    RenderKeyInputCell(r.r_label, r.r_ex, r.r_buf, r.r_sz, r.r_hint);
-                }
-            }
-
-            ImGui::EndTable();
-        }
-
-        ImGui::Spacing();
-        if (ImGui::TreeNode("Gán phím riêng cho từng chữ cái (Tùy chọn nâng cao)")) {
-            ImGui::TextDisabled("Chỉ dùng khi muốn phím riêng cho từng chữ cái:");
-            if (ImGui::BeginTable("CustomIndividualTable", 4, ImGuiTableFlags_SizingStretchProp)) {
-                ImGui::TableSetupColumn("L1", ImGuiTableColumnFlags_WidthStretch, 0.34f);
-                ImGui::TableSetupColumn("I1", ImGuiTableColumnFlags_WidthFixed, Px(80.0f));
-                ImGui::TableSetupColumn("L2", ImGuiTableColumnFlags_WidthStretch, 0.34f);
-                ImGui::TableSetupColumn("I2", ImGuiTableColumnFlags_WidthFixed, Px(80.0f));
-
-                struct IndRowPair {
-                    const char* l_label; const char* l_ex; char* l_buf; size_t l_sz; const char* l_hint;
-                    const char* r_label; const char* r_ex; char* r_buf; size_t r_sz; const char* r_hint;
-                };
-                IndRowPair ind_rows[] = {
-                    { "Chữ Â riêng", "(â)", custom_roof_a_, sizeof(custom_roof_a_), "",
-                      "Chữ Ơ riêng", "(ơ)", custom_horn_o_, sizeof(custom_horn_o_), "[..." },
-                    { "Chữ Ê riêng", "(ê)", custom_roof_e_, sizeof(custom_roof_e_), "",
-                      "Chữ Ư riêng", "(ư)", custom_horn_u_, sizeof(custom_horn_u_), "]..." },
-                    { "Chữ Ô riêng", "(ô)", custom_roof_o_, sizeof(custom_roof_o_), "",
-                      "Chữ Ă riêng", "(ă)", custom_breve_a_, sizeof(custom_breve_a_), "" },
-                    { nullptr, nullptr, nullptr, 0, nullptr,
-                      "Chữ Đ riêng", "(đ)", custom_d_lower_, sizeof(custom_d_lower_), "" },
-                };
-                for (const auto& r : ind_rows) {
-                    ImGui::TableNextRow();
-                    if (r.l_label) {
-                        ImGui::TableSetColumnIndex(0);
-                        RenderKeyInputCell(r.l_label, r.l_ex, r.l_buf, r.l_sz, r.l_hint);
-                    }
-                    if (r.r_label) {
-                        ImGui::TableSetColumnIndex(2);
-                        RenderKeyInputCell(r.r_label, r.r_ex, r.r_buf, r.r_sz, r.r_hint);
-                    }
-                }
-
-                ImGui::EndTable();
-            }
-            ImGui::TreePop();
-        }
-
-        ImGui::Spacing();
-        if (CheckboxHelp("Gõ lặp để tạo dấu (aa → â, dd → đ)",
-                         &config_.custom_keymap.telex_double_keys,
-                         "Áp dụng cho Telex: aa, ee, oo, dd.")) {
-            SaveConfig();
-        }
-        if (CheckboxHelp("Phím móc đứng thành 'ư'", &config_.custom_keymap.lone_w,
-                         "Ví dụ gõ w một mình để ra ư.")) {
-            SaveConfig();
-        }
-
-        ImGui::Spacing();
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Gõ thử:");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(Px(280.0f));
-        ImGui::InputTextWithHint("##TestCustomTyping", "Gõ thử tiếng Việt tại đây...", custom_test_buf_, sizeof(custom_test_buf_));
-        ImGui::SameLine();
-        if (ImGui::Button("Xóa chữ", ImVec2(Px(70.0f), Px(24.0f)))) {
-            custom_test_buf_[0] = '\0';
-        }
-
-        ImGui::Spacing();
-        if (config_.method != 6) {
-            if (ImGui::Button(NF_BOLT "  Dùng kiểu gõ này", ImVec2(0.0f, Px(28.0f)))) {
-                config_.method = 6;
-                SaveConfig();
-            }
-            ImGui::SameLine();
-            HelpMarker("Đặt kiểu gõ tự định nghĩa làm kiểu gõ chính.");
-        } else {
-            ImGui::TextColored(ImVec4(0.25f, 0.85f, 0.40f, 1.0f), "Đang dùng kiểu gõ này.");
-        }
     }
 }
 
@@ -2204,7 +1872,7 @@ void UiManager::PageApps() {
         new_profile_app_[0] = '\0';
     }
     static const char* profile_methods[] = {
-        "Theo mặc định", "Telex", "VNI", "VIQR", "Telex cơ bản", "Telex cơ bản 2", "Telex + VNI", "Tự định nghĩa"
+        "Theo mặc định", "Telex", "VNI", "VIQR", "Telex cơ bản", "Telex cơ bản 2", "Telex + VNI"
     };
     static const char* profile_charsets[] = {
         "Theo mặc định", "Unicode", "Unicode tổ hợp", "TCVN3", "VNI Windows"
@@ -2238,7 +1906,7 @@ void UiManager::PageApps() {
                 ImGui::AlignTextToFramePadding();
                 ImGui::TextUnformatted(name.c_str());
 
-                int method = std::clamp(profile.method, -1, 6) + 1;
+                int method = std::clamp(profile.method, -1, 5) + 1;
                 ImGui::TableSetColumnIndex(1);
                 ImGui::SetNextItemWidth(-FLT_MIN);
                 if (ImGui::Combo("##PMethod", &method, profile_methods, IM_ARRAYSIZE(profile_methods))) {

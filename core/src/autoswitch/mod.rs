@@ -5,9 +5,19 @@ pub mod bigrams;
 pub mod data;
 pub mod lookback;
 
+use crate::key_text::KeyText;
 pub use bigrams::*;
 pub use data::*;
 pub use lookback::*;
+
+#[inline]
+pub(crate) fn ascii_lowercase_inline(word: &str) -> KeyText {
+    let mut out = KeyText::new();
+    for c in word.chars() {
+        out.push_char(c.to_ascii_lowercase());
+    }
+    out
+}
 
 pub const AS_MISSING: i8 = -128;
 pub const AS_VN_FLOOR: i8 = 10;
@@ -136,28 +146,27 @@ pub fn bigram_vote(prev_surface: &str, vn_surface: &str, en_surface: &str) -> i8
     vote.clamp(-30.0, 30.0).round() as i8
 }
 
-/// Convert a composed Vietnamese syllable or string into normalized ASCII Telex key.
+/// Convert a composed Vietnamese syllable into an inline allocation-free ASCII Telex key.
 /// E.g.: "trường" -> "truwowngf", "tiếng" -> "tieengs", "hoà" -> "hoaf", "hòa" -> "hoaf", "được" -> "dduowcj".
-pub fn to_telex_normalized_key(word: &str) -> Option<String> {
+pub fn to_telex_normalized_key_inline(word: &str) -> Option<KeyText> {
     if word.is_empty() || word.len() > 32 {
         return None;
     }
-    let mut out = String::with_capacity(word.len() + 2);
+    let mut out = KeyText::new();
     let mut tone_char: Option<char> = None;
 
     for c in word.chars() {
         let lower = c.to_ascii_lowercase();
-        // Check precomposed accents
         match lower {
             'a' | 'b' | 'c' | 'e' | 'g' | 'h' | 'i' | 'k' | 'l' | 'm' |
             'n' | 'o' | 'p' | 'q' | 'r' | 's' | 't' | 'u' | 'v' | 'x' | 'y' => {
-                out.push(lower);
+                out.push_char(lower);
             }
-            'á' => { out.push('a'); set_tone(&mut tone_char, 's')?; }
-            'à' => { out.push('a'); set_tone(&mut tone_char, 'f')?; }
-            'ả' => { out.push('a'); set_tone(&mut tone_char, 'r')?; }
-            'ã' => { out.push('a'); set_tone(&mut tone_char, 'x')?; }
-            'ạ' => { out.push('a'); set_tone(&mut tone_char, 'j')?; }
+            'á' => { out.push_char('a'); set_tone(&mut tone_char, 's')?; }
+            'à' => { out.push_char('a'); set_tone(&mut tone_char, 'f')?; }
+            'ả' => { out.push_char('a'); set_tone(&mut tone_char, 'r')?; }
+            'ã' => { out.push_char('a'); set_tone(&mut tone_char, 'x')?; }
+            'ạ' => { out.push_char('a'); set_tone(&mut tone_char, 'j')?; }
 
             'â' => { out.push_str("aa"); }
             'ấ' => { out.push_str("aa"); set_tone(&mut tone_char, 's')?; }
@@ -173,11 +182,11 @@ pub fn to_telex_normalized_key(word: &str) -> Option<String> {
             'ẵ' => { out.push_str("aw"); set_tone(&mut tone_char, 'x')?; }
             'ặ' => { out.push_str("aw"); set_tone(&mut tone_char, 'j')?; }
 
-            'é' => { out.push('e'); set_tone(&mut tone_char, 's')?; }
-            'è' => { out.push('e'); set_tone(&mut tone_char, 'f')?; }
-            'ẻ' => { out.push('e'); set_tone(&mut tone_char, 'r')?; }
-            'ẽ' => { out.push('e'); set_tone(&mut tone_char, 'x')?; }
-            'ẹ' => { out.push('e'); set_tone(&mut tone_char, 'j')?; }
+            'é' => { out.push_char('e'); set_tone(&mut tone_char, 's')?; }
+            'è' => { out.push_char('e'); set_tone(&mut tone_char, 'f')?; }
+            'ẻ' => { out.push_char('e'); set_tone(&mut tone_char, 'r')?; }
+            'ẽ' => { out.push_char('e'); set_tone(&mut tone_char, 'x')?; }
+            'ẹ' => { out.push_char('e'); set_tone(&mut tone_char, 'j')?; }
 
             'ê' => { out.push_str("ee"); }
             'ế' => { out.push_str("ee"); set_tone(&mut tone_char, 's')?; }
@@ -186,17 +195,17 @@ pub fn to_telex_normalized_key(word: &str) -> Option<String> {
             'ễ' => { out.push_str("ee"); set_tone(&mut tone_char, 'x')?; }
             'ệ' => { out.push_str("ee"); set_tone(&mut tone_char, 'j')?; }
 
-            'í' => { out.push('i'); set_tone(&mut tone_char, 's')?; }
-            'ì' => { out.push('i'); set_tone(&mut tone_char, 'f')?; }
-            'ỉ' => { out.push('i'); set_tone(&mut tone_char, 'r')?; }
-            'ĩ' => { out.push('i'); set_tone(&mut tone_char, 'x')?; }
-            'ị' => { out.push('i'); set_tone(&mut tone_char, 'j')?; }
+            'í' => { out.push_char('i'); set_tone(&mut tone_char, 's')?; }
+            'ì' => { out.push_char('i'); set_tone(&mut tone_char, 'f')?; }
+            'ỉ' => { out.push_char('i'); set_tone(&mut tone_char, 'r')?; }
+            'ĩ' => { out.push_char('i'); set_tone(&mut tone_char, 'x')?; }
+            'ị' => { out.push_char('i'); set_tone(&mut tone_char, 'j')?; }
 
-            'ó' => { out.push('o'); set_tone(&mut tone_char, 's')?; }
-            'ò' => { out.push('o'); set_tone(&mut tone_char, 'f')?; }
-            'ỏ' => { out.push('o'); set_tone(&mut tone_char, 'r')?; }
-            'õ' => { out.push('o'); set_tone(&mut tone_char, 'x')?; }
-            'ọ' => { out.push('o'); set_tone(&mut tone_char, 'j')?; }
+            'ó' => { out.push_char('o'); set_tone(&mut tone_char, 's')?; }
+            'ò' => { out.push_char('o'); set_tone(&mut tone_char, 'f')?; }
+            'ỏ' => { out.push_char('o'); set_tone(&mut tone_char, 'r')?; }
+            'õ' => { out.push_char('o'); set_tone(&mut tone_char, 'x')?; }
+            'ọ' => { out.push_char('o'); set_tone(&mut tone_char, 'j')?; }
 
             'ô' => { out.push_str("oo"); }
             'ố' => { out.push_str("oo"); set_tone(&mut tone_char, 's')?; }
@@ -212,11 +221,11 @@ pub fn to_telex_normalized_key(word: &str) -> Option<String> {
             'ỡ' => { out.push_str("ow"); set_tone(&mut tone_char, 'x')?; }
             'ợ' => { out.push_str("ow"); set_tone(&mut tone_char, 'j')?; }
 
-            'ú' => { out.push('u'); set_tone(&mut tone_char, 's')?; }
-            'ù' => { out.push('u'); set_tone(&mut tone_char, 'f')?; }
-            'ủ' => { out.push('u'); set_tone(&mut tone_char, 'r')?; }
-            'ũ' => { out.push('u'); set_tone(&mut tone_char, 'x')?; }
-            'ụ' => { out.push('u'); set_tone(&mut tone_char, 'j')?; }
+            'ú' => { out.push_char('u'); set_tone(&mut tone_char, 's')?; }
+            'ù' => { out.push_char('u'); set_tone(&mut tone_char, 'f')?; }
+            'ủ' => { out.push_char('u'); set_tone(&mut tone_char, 'r')?; }
+            'ũ' => { out.push_char('u'); set_tone(&mut tone_char, 'x')?; }
+            'ụ' => { out.push_char('u'); set_tone(&mut tone_char, 'j')?; }
 
             'ư' => { out.push_str("uw"); }
             'ứ' => { out.push_str("uw"); set_tone(&mut tone_char, 's')?; }
@@ -225,22 +234,27 @@ pub fn to_telex_normalized_key(word: &str) -> Option<String> {
             'ữ' => { out.push_str("uw"); set_tone(&mut tone_char, 'x')?; }
             'ự' => { out.push_str("uw"); set_tone(&mut tone_char, 'j')?; }
 
-            'ý' => { out.push('y'); set_tone(&mut tone_char, 's')?; }
-            'ỳ' => { out.push('y'); set_tone(&mut tone_char, 'f')?; }
-            'ỷ' => { out.push('y'); set_tone(&mut tone_char, 'r')?; }
-            'ỹ' => { out.push('y'); set_tone(&mut tone_char, 'x')?; }
-            'ỵ' => { out.push('y'); set_tone(&mut tone_char, 'j')?; }
+            'ý' => { out.push_char('y'); set_tone(&mut tone_char, 's')?; }
+            'ỳ' => { out.push_char('y'); set_tone(&mut tone_char, 'f')?; }
+            'ỷ' => { out.push_char('y'); set_tone(&mut tone_char, 'r')?; }
+            'ỹ' => { out.push_char('y'); set_tone(&mut tone_char, 'x')?; }
+            'ỵ' => { out.push_char('y'); set_tone(&mut tone_char, 'j')?; }
 
-            'd' => { out.push('d'); }
+            'd' => { out.push_char('d'); }
             'đ' => { out.push_str("dd"); }
             _ => return None,
         }
     }
 
     if let Some(t) = tone_char {
-        out.push(t);
+        out.push_char(t);
     }
     Some(out)
+}
+
+/// Convert a composed Vietnamese syllable or string into normalized ASCII Telex key.
+pub fn to_telex_normalized_key(word: &str) -> Option<String> {
+    to_telex_normalized_key_inline(word).map(|k| k.as_str().to_owned())
 }
 
 #[inline]
@@ -318,10 +332,10 @@ pub fn should_restore_to_english(
         return false;
     }
 
-    let raw_lower = raw_word.to_ascii_lowercase();
+    let raw_lower = ascii_lowercase_inline(raw_word);
 
     // Guard against Vietnamese abbreviations and youth chat slang (e.g. ok, ht, nn, dc, vs, ae)
-    if is_vietnamese_abbrev_or_slang(&raw_lower) {
+    if is_vietnamese_abbrev_or_slang(raw_lower.as_str()) {
         return false;
     }
 
@@ -340,8 +354,7 @@ pub fn should_restore_to_english(
         }
         // If all caps, check if it has explicit Telex markings (e.g. TOOI, VIEETJ, THUOWNGF)
         let is_telex_marked = raw_word.len() >= 4 && {
-            let lower = raw_word.to_ascii_lowercase();
-            let b = lower.as_bytes();
+            let b = raw_lower.as_bytes();
             b.windows(2).any(|w| {
                 let (c1, c2) = (w[0] as char, w[1] as char);
                 (c1 == c2 && matches!(c1, 'a' | 'e' | 'o' | 'd'))
@@ -353,12 +366,12 @@ pub fn should_restore_to_english(
         }
     }
 
-    let en_score = match lookup_en_score(&raw_lower) {
+    let en_score = match lookup_en_score(raw_lower.as_str()) {
         Some(s) => s,
         None => return false, // Not a known English word
     };
 
-    let vn_key = to_telex_normalized_key(composed_vn_word);
+    let vn_key = to_telex_normalized_key_inline(composed_vn_word);
     let vn_score = vn_key.as_deref().and_then(lookup_vn_score);
 
     // If it's not a valid Vietnamese word at all, it's definitely English
@@ -423,13 +436,14 @@ pub fn should_switch_to_vietnamese(
         return false;
     }
 
-    let vn_key = match to_telex_normalized_key(composed_vn_word) {
+    let vn_key = match to_telex_normalized_key_inline(composed_vn_word) {
         Some(k) => k,
         None => return false,
     };
 
-    let vn_score = lookup_vn_score(&vn_key);
-    let en_score = lookup_en_score(&raw_word.to_ascii_lowercase());
+    let raw_lower = ascii_lowercase_inline(raw_word);
+    let vn_score = lookup_vn_score(vn_key.as_str());
+    let en_score = lookup_en_score(raw_lower.as_str());
 
     // All-caps word (e.g. THUOWNGF, VIEETJ): converts only to common Vietnamese syllable and not an English acronym
     if all_caps && (en_score.is_some() || vn_score.unwrap_or(AS_VN_FLOOR) < 15) {
@@ -453,8 +467,9 @@ pub fn should_switch_to_vietnamese(
             // Decision 22: A clearly English neighbor guards against accidental conversion
             // (e.g. "video call cos", "the theme of rust" stay English).
             let prev_is_clearly_english = if let Some(prev) = prev_word {
-                let pen = lookup_en_score(&prev.to_ascii_lowercase());
-                let pvn_key = to_telex_normalized_key(prev);
+                let prev_lower = ascii_lowercase_inline(prev);
+                let pen = lookup_en_score(prev_lower.as_str());
+                let pvn_key = to_telex_normalized_key_inline(prev);
                 let pvn = pvn_key.as_deref().and_then(lookup_vn_score);
                 match (pen, pvn) {
                     (Some(pe), Some(pv)) => pe as i16 - pv as i16 >= AS_PREFER as i16,

@@ -6,34 +6,8 @@
 
 namespace vietflow {
 
-struct CustomKeymap {
-    std::string acute = "s";
-    std::string grave = "f";
-    std::string hook = "r";
-    std::string tilde = "x";
-    std::string dot = "j";
-    std::string remove_tone = "z";
-
-    std::string circumflex = "";
-    std::string horn = "";
-    std::string breve = "";
-    std::string d_mark = "";
-    std::string hook_all = "w";
-
-    std::string roof_a = "";
-    std::string roof_e = "";
-    std::string roof_o = "";
-    std::string horn_o = "";
-    std::string horn_u = "";
-    std::string breve_a = "";
-    std::string d_lower = "";
-
-    bool telex_double_keys = true;
-    bool lone_w = true;
-};
-
 struct AppProfile {
-    int method = -1;          // -1 = inherit, 0..6
+    int method = -1;          // -1 = inherit, 0..5
     int charset = -1;         // -1 = inherit, 0..3
     int injection_mode = -1;  // -1 = inherit, 0..4
     int allow_macro = -1;     // -1 = inherit, 0 = off, 1 = on
@@ -41,7 +15,7 @@ struct AppProfile {
 
 struct Config {
     bool enabled = true;
-    int method = 0;       // 0: Telex, 1: VNI, 2: VIQR, 3: Simple Telex, 4: Simple Telex 2, 5: Telex + VNI, 6: User Custom
+    int method = 0;       // 0: Telex, 1: VNI, 2: VIQR, 3: Simple Telex, 4: Simple Telex 2, 5: Telex + VNI
     int charset = 0;      // 0: Unicode, 1: Composite, 2: TCVN3, 3: VNI Windows
     bool modern_style = true;
     bool free_marking = true;
@@ -96,7 +70,6 @@ struct Config {
         {"vn", "Việt Nam"},
         {"chxhcnvn", "Cộng hòa Xã hội Chủ nghĩa Việt Nam"}
     };
-    CustomKeymap custom_keymap;
 
     static std::string GetDefaultConfigPath();
     // Optional primary-only validation avoids promoting semantically corrupt

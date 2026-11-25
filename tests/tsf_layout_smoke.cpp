@@ -16,15 +16,18 @@ int main() {
     ok &= Check(VfTsfIsCompositionChar(L'a', 0), "Telex lowercase letter");
     ok &= Check(VfTsfIsCompositionChar(L'Z', 0), "Telex uppercase letter");
     ok &= Check(VfTsfIsCompositionChar(L'[', 0), "Telex bracket");
+    ok &= Check(VfTsfIsCompositionChar(L'{', 0), "Telex uppercase brace");
+    ok &= Check(VfTsfIsCompositionChar(L'}', 0), "Telex uppercase close brace");
     ok &= Check(!VfTsfIsCompositionChar(L'&', 1), "VNI punctuation not a digit");
     ok &= Check(VfTsfIsCompositionChar(L'7', 1), "VNI translated digit");
     ok &= Check(!VfTsfIsCompositionChar(L'7', 0), "Telex digit pass-through");
     ok &= Check(VfTsfIsCompositionChar(L'?', 2), "VIQR question mark");
     ok &= Check(VfTsfIsCompositionChar(L'^', 2), "VIQR circumflex");
+    ok &= Check(VfTsfIsCompositionChar(L'*', 2), "VIQR horn asterisk");
     ok &= Check(!VfTsfIsCompositionChar(L'[', 2), "VIQR bracket pass-through");
-    ok &= Check(!VfTsfIsCompositionChar(0, 6), "dead-key rejected");
-    ok &= Check(!VfTsfIsCompositionChar(L'\u00e9', 6), "non-ASCII native");
-    ok &= Check(!VfTsfIsCompositionChar(L' ', 6), "space separate");
+    ok &= Check(!VfTsfIsCompositionChar(0, 5), "dead-key rejected");
+    ok &= Check(!VfTsfIsCompositionChar(L'\u00e9', 5), "non-ASCII native");
+    ok &= Check(!VfTsfIsCompositionChar(L' ', 5), "space separate");
 
     std::vector<HKL> layouts;
     const int count = GetKeyboardLayoutList(0, nullptr);

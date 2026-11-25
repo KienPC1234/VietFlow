@@ -141,7 +141,7 @@ impl Default for TsfSharedConfig {
 /// Keep this deliberately aligned with the InputMethod and CharsetId enums.
 fn normalized_tsf_ipc_config(source: &TsfSharedConfig) -> TsfSharedConfig {
     let mut cfg = *source;
-    cfg.method = if cfg.method <= 6 { cfg.method } else { 0 };
+    cfg.method = if cfg.method <= 5 { cfg.method } else { 0 };
     cfg.charset = if cfg.charset <= 4 { cfg.charset } else { 0 };
     fn flag(value: u32) -> u32 {
         if value <= 1 {
@@ -432,6 +432,16 @@ pub fn is_tsf_mode_active() -> bool {
 /// is currently enabled. When the user switches to English or an excluded app is
 /// focused, `enabled` is 0 so the TIP passes all keystrokes untouched.
 pub fn sync_tsf_config(config: &AppConfig, enabled: bool) {
+    sync_tsf_config_with_profile(config, None, enabled);
+}
+
+/// Publishes engine options (with optional foreground per-app profile overrides)
+/// to the in-process TIP instances.
+pub fn sync_tsf_config_with_profile(
+    config: &AppConfig,
+    profile: Option<&crate::config::AppProfile>,
+    enabled: bool,
+) {
     let tip_enabled = is_tsf_mode_active() && enabled;
     let mut lock = match SHARED_WRITER.lock() {
         Ok(l) => l,
@@ -443,16 +453,20 @@ pub fn sync_tsf_config(config: &AppConfig, enabled: bool) {
     }
 
     if let Some(writer) = lock.as_mut() {
+        let method = profile.and_then(|p| p.method).unwrap_or(config.method) as u32;
+        let charset = profile.and_then(|p| p.charset).unwrap_or(config.charset) as u32;
+        let macro_ok =
+            config.enable_macro && profile.and_then(|p| p.allow_macro).unwrap_or(true);
         let tsf_cfg = TsfSharedConfig {
             enabled: if tip_enabled { 1 } else { 0 },
-            method: config.method as u32,
-            charset: config.charset as u32,
+            method,
+            charset,
             modern_style: if config.modern_style { 1 } else { 0 },
             spell_check: if config.spell_check { 1 } else { 0 },
             free_marking: if config.free_marking { 1 } else { 0 },
             auto_restore: if config.auto_restore { 1 } else { 0 },
             auto_switch_by_typing: if config.auto_switch_by_typing { 1 } else { 0 },
-            enable_macro: if config.enable_macro { 1 } else { 0 },
+            enable_macro: if macro_ok { 1 } else { 0 },
             version: 2,
             sequence: 0,
             reserved: 0,
@@ -886,12 +900,16 @@ mod tests {
     #[test]
     fn ipc_config_normalization_clamps_invalid_fields_without_losing_valid_enums() {
         let valid = TsfSharedConfig {
-            method: 6,  // custom input method
+            method: 5,  // Telex + VNI hybrid
             charset: 4, // VIQR output charset
             ..Default::default()
         };
-        assert_eq!(normalized_tsf_ipc_config(&valid).method, 6);
+        assert_eq!(normalized_tsf_ipc_config(&valid).method, 5);
         assert_eq!(normalized_tsf_ipc_config(&valid).charset, 4);
+        assert_eq!(
+            normalized_tsf_ipc_config(&TsfSharedConfig { method: 6, ..valid }).method,
+            0
+        );
 
         let mut invalid = valid;
         invalid.enabled = u32::MAX;

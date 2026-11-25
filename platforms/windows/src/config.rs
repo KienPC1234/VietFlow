@@ -145,8 +145,6 @@ pub struct AppConfig {
     pub app_profiles: HashMap<String, AppProfile>,
     #[serde(default = "default_macros")]
     pub macros: HashMap<String, String>,
-    #[serde(default)]
-    pub custom_keymap: CustomKeymapConfig,
 }
 
 fn default_true() -> bool {
@@ -172,132 +170,6 @@ fn default_pink() -> String {
 }
 fn default_blue() -> String {
     "#0078D7".to_string()
-}
-
-fn default_acute() -> String {
-    "s".to_string()
-}
-fn default_grave() -> String {
-    "f".to_string()
-}
-fn default_hook() -> String {
-    "r".to_string()
-}
-fn default_tilde() -> String {
-    "x".to_string()
-}
-fn default_dot() -> String {
-    "j".to_string()
-}
-fn default_remove_tone() -> String {
-    "z".to_string()
-}
-fn default_hook_all() -> String {
-    "w".to_string()
-}
-fn default_empty() -> String {
-    String::new()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CustomKeymapConfig {
-    #[serde(default = "default_acute")]
-    pub acute: String,
-    #[serde(default = "default_grave")]
-    pub grave: String,
-    #[serde(default = "default_hook")]
-    pub hook: String,
-    #[serde(default = "default_tilde")]
-    pub tilde: String,
-    #[serde(default = "default_dot")]
-    pub dot: String,
-    #[serde(default = "default_remove_tone")]
-    pub remove_tone: String,
-
-    #[serde(default = "default_empty")]
-    pub circumflex: String,
-    #[serde(default = "default_empty")]
-    pub horn: String,
-    #[serde(default = "default_empty")]
-    pub breve: String,
-    #[serde(default = "default_empty")]
-    pub d_mark: String,
-    #[serde(default = "default_hook_all")]
-    pub hook_all: String,
-
-    #[serde(default)]
-    pub roof_a: String,
-    #[serde(default)]
-    pub roof_e: String,
-    #[serde(default)]
-    pub roof_o: String,
-    #[serde(default)]
-    pub horn_o: String,
-    #[serde(default)]
-    pub horn_u: String,
-    #[serde(default)]
-    pub breve_a: String,
-    #[serde(default)]
-    pub d_lower: String,
-
-    #[serde(default = "default_true")]
-    pub telex_double_keys: bool,
-    #[serde(default = "default_true")]
-    pub lone_w: bool,
-}
-
-impl Default for CustomKeymapConfig {
-    fn default() -> Self {
-        Self {
-            acute: default_acute(),
-            grave: default_grave(),
-            hook: default_hook(),
-            tilde: default_tilde(),
-            dot: default_dot(),
-            remove_tone: default_remove_tone(),
-            circumflex: String::new(),
-            horn: String::new(),
-            breve: String::new(),
-            d_mark: String::new(),
-            hook_all: default_hook_all(),
-            roof_a: String::new(),
-            roof_e: String::new(),
-            roof_o: String::new(),
-            horn_o: String::new(),
-            horn_u: String::new(),
-            breve_a: String::new(),
-            d_lower: String::new(),
-            telex_double_keys: true,
-            lone_w: true,
-        }
-    }
-}
-
-impl CustomKeymapConfig {
-    pub fn to_core(&self) -> vietflow_core::CustomKeymap {
-        vietflow_core::CustomKeymap {
-            acute: self.acute.clone(),
-            grave: self.grave.clone(),
-            hook: self.hook.clone(),
-            tilde: self.tilde.clone(),
-            dot: self.dot.clone(),
-            remove_tone: self.remove_tone.clone(),
-            circumflex: self.circumflex.clone(),
-            horn: self.horn.clone(),
-            breve: self.breve.clone(),
-            d_mark: self.d_mark.clone(),
-            hook_all: self.hook_all.clone(),
-            roof_a: self.roof_a.clone(),
-            roof_e: self.roof_e.clone(),
-            roof_o: self.roof_o.clone(),
-            horn_o: self.horn_o.clone(),
-            horn_u: self.horn_u.clone(),
-            breve_a: self.breve_a.clone(),
-            d_lower: self.d_lower.clone(),
-            telex_double_keys: self.telex_double_keys,
-            lone_w: self.lone_w,
-        }
-    }
 }
 
 fn default_excluded_apps() -> Vec<String> {
@@ -367,7 +239,6 @@ impl Default for AppConfig {
             per_app_modes: HashMap::new(),
             app_profiles: HashMap::new(),
             macros: default_macros(),
-            custom_keymap: CustomKeymapConfig::default(),
         }
     }
 }
@@ -597,8 +468,16 @@ fn atomic_write_config(path: &Path, json: &str) -> std::io::Result<()> {
 
 impl AppConfig {
     pub fn normalize(&mut self) {
+        if self.method > 5 {
+            self.method = 0;
+        }
         self.injection_mode = normalize_injection_mode(self.injection_mode);
         for profile in self.app_profiles.values_mut() {
+            if let Some(m) = profile.method {
+                if m > 5 {
+                    profile.method = Some(0);
+                }
+            }
             if let Some(mode) = profile.injection_mode {
                 profile.injection_mode = Some(normalize_injection_mode(mode));
             }

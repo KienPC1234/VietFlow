@@ -12,6 +12,22 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
   - **Tab Tổng quan**: Phân tách trực quan cụm "Điều khiển" (Bảng mã, Kiểu gõ, Phím chuyển `Ctrl + Shift` / `Alt + Z`), "Tùy chọn gõ" và "Hệ thống".
   - **Tab Gõ tiếng Việt**: Quy hoạch bảng 2 cột cân đối cho các tùy chọn gõ (Gõ tự do, Dấu mới, Kiểm tra chính tả, Khôi phục tiếng Anh, Sửa lỗi dính Shift...), bảng điều khiển phương thức gửi phím, timeout chốt từ và quản lý từ điển.
   - **Tab Ứng dụng**: Tái cấu trúc danh sách ứng dụng loại trừ thành khung bảng cuộn trực quan, thanh công cụ thêm nhanh ứng dụng (.exe/đang chạy/gợi ý game & terminal) và bảng cấu hình nâng cao.
+- Bổ sung API IME thống nhất (`process_ime_key`, `ImeAction` và C ABI `vf_engine_process_ime_key_owned`, `VfImeAction`, `can_rewrite_previous_word`) cùng các hàm cấu hình C ABI mở rộng, giúp TSF và các frontend tương lai như Fcitx5 dùng chung một luồng xử lý phím không cấp phát dư thừa.
+
+### Changed
+
+- **Tối ưu hiệu năng gõ phím và giảm độ trễ hook**:
+  - Loại bỏ cấp phát `String`/`Vec<char>` trên hot path bằng `KeyText` inline stack buffer trong `check_english_word_at_break`, `finish_composition_on_break_key_text`, `autoswitch`, và `macro_table`.
+  - Chuyển thao tác đồng bộ cấu hình ra đĩa và làm mới clipboard sang luồng nền `vf-daemon-bg-io`, không chặn luồng `WH_KEYBOARD_LL`.
+  - Gỡ `WH_MOUSE_LL` khi ở chế độ TSF hoặc trong ứng dụng loại trừ, kết hợp cờ nguyên tử `MOUSE_RESET_NEEDED`.
+  - Thêm fast-path cho bàn phím US QWERTY (`0x0409_0409`) và cache `foreground_tid` để giảm gọi Win32 API mỗi phím.
+- **Tối ưu cấu trúc workspace & giao diện**:
+  - Cấu hình `default-members = ["core"]` trong `Cargo.toml` để `cargo build`/`cargo test` mặc định chạy sạch trên Linux/Fcitx5.
+  - Đưa tab **Ứng dụng** lên trước tab **Gõ tắt** và mở rộng chiều cao hai bảng trong tab **Gõ tiếng Việt** lấp đầy vùng trống khả dụng.
+
+### Removed
+
+- Loại bỏ kiểu gõ tự định nghĩa (`UserCustom` / `CustomKeymap`, mã `6`) khỏi Core, C ABI, Windows host, TSF và giao diện; cấu hình cũ có `method = 6` (hoặc `> 5`) được tự động chuyển về `Telex` (`0`).
 
 ### Fixed
 
@@ -21,6 +37,9 @@ phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/).
   2. **UE Diphthong Guard**: Khi nguyên âm `e` theo sau `u` mà không có phụ âm đầu `qu-`, engine khôi phục phím gốc ngay tại thời điểm gõ `e` nếu phát hiện dấu tiếng Việt.
   3. **Kiểm tra `is_valid_vietnamese_word()`**: Từ chối chuỗi nguyên âm `[U, E]` không có phụ âm đầu `qu-` tại word break, đảm bảo khôi phục toàn bộ từ tiếng Anh.
 - Mở rộng danh sách từ khóa tiếng Anh (`ENGLISH_KEYWORDS`) thêm 33 từ phổ biến: `capture`, `color`, `culture`, `cure`, `cursor`, `editor`, `feature`, `figure`, `folder`, `format`, `furniture`, `future`, `gesture`, `layer`, `lecture`, `member`, `mixture`, `nature`, `number`, `order`, `picture`, `player`, `posture`, `procedure`, `pure`, `render`, `structure`, `sure`, `terminal`, `texture`, `vector`, `venture`, `worker`.
+- Sửa lỗi tràn stack `struct Tm` trên Linux/POSIX trong `macro_table.rs` (bổ sung `tm_gmtoff`, `tm_zone`, `_reserved` và buffer `time_t` 16 byte).
+- Đồng bộ đầy đủ TSF `OnKeyDown` qua `vf_engine_process_ime_key_owned`, hỗ trợ phím `{`, `}`, `*`, mở rộng `@clipboard` ngay trong tiến trình TSF và đồng bộ cấu hình theo từng ứng dụng.
+- Khắc phục lỗi `ShowConverterGui` không bật chế độ chuyển đổi (`convert_mode = true`) và lỗi `TelexVni` AutoSwitch xử lý chữ số khi đang ở chế độ `[E]`.
 
 ## [0.1.4] - 2026-11-03
 

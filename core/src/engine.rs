@@ -10,8 +10,8 @@ use crate::input_proc::{
 use crate::key_text::KeyText;
 use crate::macro_table::MacroTable;
 use crate::models::{
-    CharType, CharsetId, EngineOptions, InputMethod, ModifyKeyType, ToneKeyType, VnLexiName,
-    VnLexiTone, WordForm,
+    CharType, CharsetId, EngineOptions, ImeAction, InputMethod, ModifyKeyType, ToneKeyType,
+    VnLexiName, VnLexiTone, WordForm,
 };
 use crate::tables::{iso_to_vn_lexi, IS_VN_VOWEL, TOTAL_VN_CHARS};
 use crate::tone_rules::{
@@ -120,21 +120,32 @@ impl VietFlowEngine {
         self.display_shadow.iter().collect()
     }
 
+    /// Returns the exact preedit text of the current word being composed without heap allocation.
+    pub fn current_preedit_key_text(&self) -> KeyText {
+        if !self.buffer.is_empty() {
+            self.encode_range(0, self.buffer.len())
+        } else {
+            let mut out = KeyText::new();
+            for &c in &self.display_shadow {
+                out.push_char(c);
+            }
+            out
+        }
+    }
+
     /// Returns the exact preedit text of the current word being composed.
     /// If the syllable buffer has valid slots, it encodes them to the configured charset.
     /// Falls back to display_shadow if the syllable buffer is empty.
     pub fn current_preedit_text(&self) -> String {
-        if !self.buffer.is_empty() {
-            self.encode_range(0, self.buffer.len()).as_str().to_string()
-        } else {
-            self.display_shadow.iter().collect()
-        }
+        self.current_preedit_key_text().as_str().to_owned()
     }
 
-    /// Evaluates word-break actions (macro expansion, English auto-restore) for IME preedit.
-    /// Returns the finalized string (expanded macro, restored raw word, or formatted composed word).
+    /// Evaluates word-break actions (macro expansion, AutoSwitch, English auto-restore) for IME preedit.
+    /// Returns the finalized `KeyText` without heap allocation for normal words.
     /// Resets the engine word buffer in all cases.
-    pub fn finish_composition_on_break(&mut self, _break_char: char) -> String {
+    pub fn finish_composition_on_break_key_text(&mut self, _break_char: char) -> KeyText {
+        self.auto_switch_requested = None;
+
         // 1. Check macro expansion
         if self.options.enable_macro
             && !self.macros.is_empty()
@@ -142,28 +153,184 @@ impl VietFlowEngine {
         {
             if let Some(replacement) = self.lookup_raw_macro() {
                 self.reset_word();
-                return replacement;
+                return KeyText::from_str(&replacement);
             }
         }
 
-        // 2. Check English auto-restore on invalid Vietnamese syllable
+        let mut raw_word = KeyText::new();
+        let mut raw_lower = KeyText::new();
+        for &rc in &self.raw_chars {
+            raw_word.push_char(rc);
+            raw_lower.push_char(to_lower_ascii(rc));
+        }
+        let display_word = self.current_preedit_key_text();
+
+        // 2. Unified AutoSwitch disambiguation (unigram, bigram, doubled-key undo, camelCase/acronyms)
+        if self.options.auto_switch_by_typing && !self.raw_chars.is_empty() {
+            if self.pending_doubled_fix {
+                self.pending_doubled_fix = false;
+                if self.raw_chars.len() >= 3 {
+                    let trimmed_chars = self.raw_chars.len() - 1;
+                    let mut trimmed_raw = KeyText::new();
+                    let mut trimmed_lower = KeyText::new();
+                    for &rc in &self.raw_chars[..trimmed_chars] {
+                        trimmed_raw.push_char(rc);
+                        trimmed_lower.push_char(to_lower_ascii(rc));
+                    }
+                    let full_en = crate::autoswitch::lookup_en_score(raw_lower.as_str()).is_some();
+                    let trimmed_en =
+                        crate::autoswitch::lookup_en_score(trimmed_lower.as_str()).is_some();
+                    if !full_en && trimmed_en {
+                        self.auto_switch_requested = Some(false);
+                        self.lookback
+                            .push_word(trimmed_raw.as_str(), trimmed_raw.as_str(), true);
+                        self.reset_word();
+                        return trimmed_raw;
+                    }
+                }
+            }
+
+            let is_slang = crate::autoswitch::is_vietnamese_abbrev_or_slang(raw_lower.as_str());
+            let prev_disp = self.lookback.prev_display();
+            let should_switch = !is_slang
+                && crate::autoswitch::should_restore_to_english(
+                    raw_word.as_str(),
+                    display_word.as_str(),
+                    prev_disp,
+                    self.is_valid_vietnamese_word(),
+                );
+            let is_english_keyword = !is_slang && self.matches_english_keyword(raw_lower.as_str());
+
+            if should_switch || is_english_keyword {
+                let is_already_raw = display_word.as_str() == raw_word.as_str();
+                self.auto_switch_requested = if is_already_raw { None } else { Some(false) };
+                self.lookback
+                    .push_word(raw_word.as_str(), raw_word.as_str(), true);
+                self.reset_word();
+                return raw_word;
+            }
+
+            let is_english_word =
+                !is_slang && crate::autoswitch::lookup_en_score(raw_lower.as_str()).is_some();
+            self.lookback.push_word(
+                raw_word.as_str(),
+                display_word.as_str(),
+                is_english_word && display_word.as_str() == raw_word.as_str(),
+            );
+        }
+
+        // 3. Spell-check & English auto-restore on invalid Vietnamese syllable
+        let is_slang = crate::autoswitch::is_vietnamese_abbrev_or_slang(raw_lower.as_str());
         let should_restore = self.options.spell_check
             && self.options.auto_non_vn_restore
             && !self.buffer.is_empty()
-            && (
-                self.matches_raw_english_keyword()
-                || (!self.temp_disabled && self.has_any_vietnamese_mark() && !self.is_valid_vietnamese_word())
-            );
+            && (self.matches_english_keyword(raw_lower.as_str())
+                || (is_slang && display_word.as_str() != raw_word.as_str())
+                || (!self.temp_disabled
+                    && self.has_any_vietnamese_mark()
+                    && !self.is_valid_vietnamese_word()));
 
         if should_restore {
-            let raw: String = self.raw_chars.iter().collect();
             self.reset_word();
-            return raw;
+            return raw_word;
         }
 
-        let current = self.current_preedit_text();
         self.reset_word();
-        current
+        display_word
+    }
+
+    /// Evaluates word-break actions (macro expansion, English auto-restore) for IME preedit.
+    /// Returns the finalized string (expanded macro, restored raw word, or formatted composed word).
+    /// Resets the engine word buffer in all cases.
+    pub fn finish_composition_on_break(&mut self, break_char: char) -> String {
+        self.finish_composition_on_break_key_text(break_char)
+            .as_str()
+            .to_owned()
+    }
+
+    /// Unified single-pass IME handler for preedit hosts (Linux Fcitx5, Windows TSF).
+    /// Determines inside the core whether a key starts/updates composition, commits, or passes through,
+    /// so platform hosts never need to duplicate method/VIQR key classification.
+    pub fn process_ime_key(&mut self, c: char, now_ms: u64) -> (ImeAction, KeyText) {
+        self.auto_switch_requested = None;
+        if now_ms > 0 && self.options.typing_timeout_ms > 0 {
+            if self.last_key_time_ms > 0
+                && now_ms.saturating_sub(self.last_key_time_ms) > self.options.typing_timeout_ms
+            {
+                self.reset();
+            }
+            self.last_key_time_ms = now_ms;
+        }
+
+        if c == '\x08' {
+            if self.buffer.is_empty() && self.raw_chars.is_empty() {
+                return (ImeAction::PassThrough, KeyText::new());
+            }
+            let _ = self.process_backspace();
+            self.display_shadow.clear();
+            return (ImeAction::UpdatePreedit, self.current_preedit_key_text());
+        }
+
+        if matches!(c, '\r' | '\n' | '\t') {
+            if self.buffer.is_empty() && self.raw_chars.is_empty() {
+                return (ImeAction::PassThrough, KeyText::new());
+            }
+            let finalized = self.finish_composition_on_break_key_text(c);
+            return (ImeAction::CommitAndForward, finalized);
+        }
+
+        if c == '\x1b' {
+            if self.buffer.is_empty() && self.raw_chars.is_empty() {
+                return (ImeAction::PassThrough, KeyText::new());
+            }
+            let current = self.current_preedit_key_text();
+            self.reset_word();
+            return (ImeAction::CommitAndConsume, current);
+        }
+
+        if self.buffer.is_empty() {
+            self.temp_disabled = false;
+            if self.options.method == InputMethod::Telex && matches!(c, '[' | ']' | '{' | '}') {
+                let _ = self.try_bracket_shortcut(c);
+                return (ImeAction::UpdatePreedit, self.current_preedit_key_text());
+            }
+            if self.starts_lone_w(c) {
+                let _ = self.process_lone_w(c);
+                return (ImeAction::UpdatePreedit, self.current_preedit_key_text());
+            }
+            if is_letter_fast(c) {
+                let _ = self.process_first_letter(c);
+                return (ImeAction::UpdatePreedit, self.current_preedit_key_text());
+            }
+            return (ImeAction::PassThrough, KeyText::new());
+        }
+
+        // Double-bracket undo in Telex (e.g. "[[" -> "[", "a[[" -> "a[")
+        if self.options.method == InputMethod::Telex
+            && !self.temp_disabled
+            && matches!(c, '[' | ']' | '{' | '}')
+        {
+            let last_raw = self.raw_chars.last().copied();
+            let last_is_bracket = self
+                .buffer
+                .last()
+                .map(|slot| slot.raw_char == c && slot.modified)
+                .unwrap_or(false);
+            if last_raw == Some(c) && last_is_bracket {
+                let mut out = self.encode_range(0, self.buffer.len() - 1);
+                out.push_char(c);
+                self.reset_word();
+                return (ImeAction::CommitAndConsume, out);
+            }
+        }
+
+        if self.try_process_in_word_key(c).is_some() {
+            return (ImeAction::UpdatePreedit, self.current_preedit_key_text());
+        }
+
+        let mut finalized = self.finish_composition_on_break_key_text(c);
+        finalized.push_char(c);
+        (ImeAction::CommitAndConsume, finalized)
     }
 
     pub fn reset_word(&mut self) {
@@ -254,6 +421,14 @@ impl VietFlowEngine {
         (diff_bk, KeyText::from_str(suffix))
     }
 
+    #[inline]
+    fn starts_lone_w(&self, c: char) -> bool {
+        matches!(
+            self.options.method,
+            InputMethod::Telex | InputMethod::TelexVni
+        ) && matches!(c, 'w' | 'W')
+    }
+
     fn process_key_raw(&mut self, c: char) -> (usize, KeyText) {
         if c == '\x08' {
             return self.process_backspace();
@@ -269,16 +444,7 @@ impl VietFlowEngine {
         if self.buffer.is_empty() {
             self.temp_disabled = false;
 
-            let is_lone_w = matches!(
-                self.options.method,
-                InputMethod::Telex | InputMethod::TelexVni
-            ) && matches!(c, 'w' | 'W');
-            let is_custom_lone_w = self.options.method == InputMethod::UserCustom
-                && self.options.custom_keymap.lone_w
-                && !self.options.custom_keymap.hook_all.is_empty()
-                && self.options.custom_keymap.hook_all.chars().any(|m| to_lower_ascii(m) == to_lower_ascii(c));
-
-            if is_lone_w || is_custom_lone_w {
+            if self.starts_lone_w(c) {
                 return self.process_lone_w(c);
             }
 
@@ -289,34 +455,52 @@ impl VietFlowEngine {
             return (0, KeyText::from_char(c));
         }
 
+        if let Some(res) = self.try_process_in_word_key(c) {
+            return res;
+        }
+
+        let char_type = get_char_type(c, self.options.method);
+        if matches!(char_type, CharType::WordBreak | CharType::Reset) || is_word_break_fast(c) {
+            return self.process_word_break(c);
+        }
+
+        self.process_word_break(c)
+    }
+
+    /// Attempts to apply `c` to the current non-empty syllable (bracket shortcut,
+    /// tone mark, vowel/consonant modifier, lone-w, or subsequent letter).
+    /// Returns `None` when `c` breaks the syllable.
+    fn try_process_in_word_key(&mut self, c: char) -> Option<(usize, KeyText)> {
+        if self.options.method == InputMethod::Telex && !self.temp_disabled {
+            if let Some(res) = self.try_bracket_shortcut(c) {
+                return Some(res);
+            }
+        }
+
         // When temporary key disable is active (e.g. after tone/accent undo or foreign word restoration),
         // let all subsequent alphabetic letters pass through without forming Vietnamese marks.
         if self.temp_disabled {
             if is_letter_fast(c) {
-                return self.append_non_vn_letter(c);
+                return Some(self.append_non_vn_letter(c));
             }
-            let char_type = get_char_type(c, self.options.method, &self.options.custom_keymap);
-            if matches!(char_type, CharType::WordBreak | CharType::Reset) || is_word_break_fast(c) {
-                return self.process_word_break(c);
-            }
-            return self.process_word_break(c);
+            return None;
         }
 
         // Try tone key
-        let tone_key = get_tone_key(c, self.options.method, &self.options.custom_keymap);
+        let tone_key = get_tone_key(c, self.options.method);
         if tone_key != ToneKeyType::None {
             if let Some(res) = self.try_apply_tone(tone_key, c) {
                 self.raw_chars.push(c);
-                return res;
+                return Some(res);
             }
         }
 
         // Try modify key
-        let modify_key = get_modify_key(c, self.options.method, &self.options.custom_keymap);
+        let modify_key = get_modify_key(c, self.options.method);
         if modify_key != ModifyKeyType::None || self.is_double_key_modify(c) {
             if let Some(res) = self.try_apply_modify(modify_key, c) {
                 self.raw_chars.push(c);
-                return res;
+                return Some(res);
             }
         }
 
@@ -331,42 +515,29 @@ impl VietFlowEngine {
                     | InputMethod::TelexSimple2
                     | InputMethod::TelexVni
             ) && lower == 'w';
-            let is_hook_w = modify_key == ModifyKeyType::HookAll;
-            if is_telex_w || is_hook_w {
+            if is_telex_w {
                 let is_lone_w_method = matches!(
                     self.options.method,
                     InputMethod::Telex | InputMethod::SimpleTelex | InputMethod::TelexVni
-                ) || (self.options.method == InputMethod::UserCustom
-                    && self.options.custom_keymap.lone_w);
+                );
                 if is_lone_w_method
                     && self.word_form != WordForm::NonVn
                     && !self.buffer.iter().any(|s| to_lower_ascii(s.raw_char) == 'w')
-                {
-                    // Respect the same guard as apply_hook_all: without free_marking,
-                    // 'w' after a closed nucleus is not a lone-ư (let it fall
-                    // through to subsequent-letter handling).
-                    if self.vowel_count == 0
+                    && (self.vowel_count == 0
                         || self.options.free_marking
-                        || self.last_vowel_is_current()
-                    {
-                        return self.process_lone_w(c);
-                    }
+                        || self.last_vowel_is_current())
+                {
+                    return Some(self.process_lone_w(c));
                 }
             }
         }
 
         // Subsequent letters
         if is_letter_fast(c) {
-            return self.process_subsequent_letter(c);
+            return Some(self.process_subsequent_letter(c));
         }
 
-        // Word breaks
-        let char_type = get_char_type(c, self.options.method, &self.options.custom_keymap);
-        if matches!(char_type, CharType::WordBreak | CharType::Reset) || is_word_break_fast(c) {
-            return self.process_word_break(c);
-        }
-
-        self.process_word_break(c)
+        None
     }
 
     fn try_bracket_shortcut(&mut self, c: char) -> Option<(usize, KeyText)> {
@@ -628,8 +799,7 @@ impl VietFlowEngine {
                 | InputMethod::SimpleTelex
                 | InputMethod::TelexSimple2
                 | InputMethod::TelexVni
-        ) || (self.options.method == InputMethod::UserCustom
-            && self.options.custom_keymap.telex_double_keys);
+        );
         if !is_double_ok {
             return false;
         }
@@ -757,8 +927,7 @@ impl VietFlowEngine {
                 | InputMethod::TelexSimple2
                 | InputMethod::TelexVni
                 | InputMethod::Viqr
-        ) || (self.options.method == InputMethod::UserCustom
-            && self.options.custom_keymap.telex_double_keys);
+        );
 
         if is_double_ok && self.word_form != WordForm::NonVn {
             if lower == 'd' {
@@ -953,10 +1122,10 @@ impl VietFlowEngine {
             // so that raw_chars is pushed exactly once (no outer double-push).
         }
 
-        // VNI & VIQR & TelexVni & UserCustom number/symbol modifications
+        // VNI & VIQR & TelexVni number/symbol modifications
         if matches!(
             self.options.method,
-            InputMethod::Vni | InputMethod::Viqr | InputMethod::TelexVni | InputMethod::UserCustom
+            InputMethod::Vni | InputMethod::Viqr | InputMethod::TelexVni
         ) {
             if modify_key == ModifyKeyType::Horn {
                 if self.vowel_count > 0 && !self.options.free_marking && !self.last_vowel_is_current() {
@@ -997,7 +1166,7 @@ impl VietFlowEngine {
                         }
                     }
                 }
-                ModifyKeyType::Breve | ModifyKeyType::BreveA => {
+                ModifyKeyType::Breve => {
                     for i in (vowel_start..self.buffer.len()).rev() {
                         if !self.options.free_marking && i != last_idx {
                             return None;
@@ -1017,7 +1186,7 @@ impl VietFlowEngine {
                         }
                     }
                 }
-                ModifyKeyType::DMark | ModifyKeyType::DLower => {
+                ModifyKeyType::DMark => {
                     for i in (0..self.buffer.len()).rev() {
                         if !self.options.free_marking && i != last_idx {
                             return None;
@@ -1033,76 +1202,6 @@ impl VietFlowEngine {
                             }
                             slot.lexi = if slot.is_upper { VnLexiName::DD } else { VnLexiName::dd };
                             slot.modified = true;
-                            return Some(self.rebuild_current_word());
-                        }
-                    }
-                }
-                ModifyKeyType::RoofA => {
-                    for i in (vowel_start..self.buffer.len()).rev() {
-                        if !self.options.free_marking && i != last_idx {
-                            return None;
-                        }
-                        let slot = &mut self.buffer[i];
-                        if to_lower_ascii(slot.raw_char) == 'a' {
-                            slot.lexi = if slot.is_upper { VnLexiName::Ar } else { VnLexiName::ar };
-                            slot.modified = true;
-                            self.refresh_tone_position();
-                            return Some(self.rebuild_current_word());
-                        }
-                    }
-                }
-                ModifyKeyType::RoofE => {
-                    for i in (vowel_start..self.buffer.len()).rev() {
-                        if !self.options.free_marking && i != last_idx {
-                            return None;
-                        }
-                        let slot = &mut self.buffer[i];
-                        if to_lower_ascii(slot.raw_char) == 'e' {
-                            slot.lexi = if slot.is_upper { VnLexiName::Er } else { VnLexiName::er };
-                            slot.modified = true;
-                            self.refresh_tone_position();
-                            return Some(self.rebuild_current_word());
-                        }
-                    }
-                }
-                ModifyKeyType::RoofO => {
-                    for i in (vowel_start..self.buffer.len()).rev() {
-                        if !self.options.free_marking && i != last_idx {
-                            return None;
-                        }
-                        let slot = &mut self.buffer[i];
-                        if to_lower_ascii(slot.raw_char) == 'o' {
-                            slot.lexi = if slot.is_upper { VnLexiName::Or } else { VnLexiName::or };
-                            slot.modified = true;
-                            self.refresh_tone_position();
-                            return Some(self.rebuild_current_word());
-                        }
-                    }
-                }
-                ModifyKeyType::HornO => {
-                    for i in (vowel_start..self.buffer.len()).rev() {
-                        if !self.options.free_marking && i != last_idx {
-                            return None;
-                        }
-                        let slot = &mut self.buffer[i];
-                        if to_lower_ascii(slot.raw_char) == 'o' {
-                            slot.lexi = if slot.is_upper { VnLexiName::Oh } else { VnLexiName::oh };
-                            slot.modified = true;
-                            self.refresh_tone_position();
-                            return Some(self.rebuild_current_word());
-                        }
-                    }
-                }
-                ModifyKeyType::HornU => {
-                    for i in (vowel_start..self.buffer.len()).rev() {
-                        if !self.options.free_marking && i != last_idx {
-                            return None;
-                        }
-                        let slot = &mut self.buffer[i];
-                        if to_lower_ascii(slot.raw_char) == 'u' {
-                            slot.lexi = if slot.is_upper { VnLexiName::Uh } else { VnLexiName::uh };
-                            slot.modified = true;
-                            self.refresh_tone_position();
                             return Some(self.rebuild_current_word());
                         }
                     }
@@ -1242,9 +1341,7 @@ impl VietFlowEngine {
                         | InputMethod::SimpleTelex
                         | InputMethod::TelexSimple2
                         | InputMethod::TelexVni
-                ) || (self.options.method == InputMethod::UserCustom
-                    && !self.options.custom_keymap.hook_all.is_empty())
-                {
+                ) {
                     slot.lexi = if slot.is_upper { VnLexiName::Ah } else { VnLexiName::ah };
                 } else {
                     continue;
@@ -1279,27 +1376,38 @@ impl VietFlowEngine {
             }
         }
 
-        let raw_word: String = self.raw_chars.iter().collect();
-        let display_word = self.current_preedit_text();
+        let mut raw_word = KeyText::new();
+        let mut raw_lower = KeyText::new();
+        for &rc in &self.raw_chars {
+            raw_word.push_char(rc);
+            raw_lower.push_char(to_lower_ascii(rc));
+        }
+        let display_word = self.current_preedit_key_text();
+        let is_slang = crate::autoswitch::is_vietnamese_abbrev_or_slang(raw_lower.as_str());
 
         if self.options.auto_switch_by_typing && !self.raw_chars.is_empty() {
             // 1. Doubled key fix: e.g. "mixx" -> "mix"
             if self.pending_doubled_fix {
                 self.pending_doubled_fix = false;
                 if self.raw_chars.len() >= 3 {
-                    let raw_lower = raw_word.to_ascii_lowercase();
                     // Char-boundary safe: raw may contain multibyte (e.g. typed đ/ơ/ư).
                     let trimmed_chars = self.raw_chars.len() - 1;
-                    let trimmed_raw: String = self.raw_chars[..trimmed_chars].iter().collect();
-                    let trimmed_lower = trimmed_raw.to_ascii_lowercase();
-                    let full_en = crate::autoswitch::lookup_en_score(&raw_lower).is_some();
-                    let trimmed_en = crate::autoswitch::lookup_en_score(&trimmed_lower).is_some();
+                    let mut trimmed_raw = KeyText::new();
+                    let mut trimmed_lower = KeyText::new();
+                    for &rc in &self.raw_chars[..trimmed_chars] {
+                        trimmed_raw.push_char(rc);
+                        trimmed_lower.push_char(to_lower_ascii(rc));
+                    }
+                    let full_en = crate::autoswitch::lookup_en_score(raw_lower.as_str()).is_some();
+                    let trimmed_en =
+                        crate::autoswitch::lookup_en_score(trimmed_lower.as_str()).is_some();
                     if !full_en && trimmed_en {
                         let backspaces = self.display_len;
-                        let mut out = KeyText::from_str(&trimmed_raw);
+                        let mut out = KeyText::from_str(trimmed_raw.as_str());
                         out.push_char(c);
                         self.auto_switch_requested = Some(false);
-                        self.lookback.push_word(&trimmed_raw, &trimmed_raw, true);
+                        self.lookback
+                            .push_word(trimmed_raw.as_str(), trimmed_raw.as_str(), true);
                         self.reset_word();
                         return (backspaces, out);
                     }
@@ -1307,31 +1415,41 @@ impl VietFlowEngine {
             }
 
             // 2. Check AutoSwitch restore to English
-            let raw_lower = raw_word.to_ascii_lowercase();
-            let is_slang = crate::autoswitch::is_vietnamese_abbrev_or_slang(&raw_lower);
             let prev_disp = self.lookback.prev_display();
-            let should_switch = !is_slang && crate::autoswitch::should_restore_to_english(&raw_word, &display_word, prev_disp, self.is_valid_vietnamese_word());
-            let is_english_keyword = !is_slang && self.matches_raw_english_keyword();
+            let should_switch = !is_slang
+                && crate::autoswitch::should_restore_to_english(
+                    raw_word.as_str(),
+                    display_word.as_str(),
+                    prev_disp,
+                    self.is_valid_vietnamese_word(),
+                );
+            let is_english_keyword = !is_slang && self.matches_english_keyword(raw_lower.as_str());
             let is_english_word = !is_slang
                 && (is_english_keyword
                     || should_switch
-                    || crate::autoswitch::lookup_en_score(&raw_lower).is_some());
+                    || crate::autoswitch::lookup_en_score(raw_lower.as_str()).is_some());
 
             if is_english_word {
                 // 3. Look-back Multi-Word Check (e.g. "thí makes" -> "this makes")
-                if let Some((extra_backspaces, restored_prefix)) = self.lookback.check_lookback_restore_for_english(&raw_word) {
-                    let total_backspaces = self.display_len + extra_backspaces;
-                    let mut out = KeyText::from_str(&restored_prefix);
-                    out.push_str(&raw_word);
-                    out.push_char(c);
-                    self.auto_switch_requested = Some(false);
-                    self.lookback.push_word(&raw_word, &raw_word, true);
-                    self.reset_word();
-                    return (total_backspaces, out);
+                if self.options.can_rewrite_previous_word {
+                    if let Some((extra_backspaces, restored_prefix)) = self
+                        .lookback
+                        .check_lookback_restore_for_english(raw_word.as_str())
+                    {
+                        let total_backspaces = self.display_len + extra_backspaces;
+                        let mut out = restored_prefix;
+                        out.push_str(raw_word.as_str());
+                        out.push_char(c);
+                        self.auto_switch_requested = Some(false);
+                        self.lookback
+                            .push_word(raw_word.as_str(), raw_word.as_str(), true);
+                        self.reset_word();
+                        return (total_backspaces, out);
+                    }
                 }
 
                 if should_switch || is_english_keyword {
-                    let is_already_raw = display_word == raw_word;
+                    let is_already_raw = display_word.as_str() == raw_word.as_str();
                     if is_already_raw {
                         // Bilingual smoothness: the English word needed no visible
                         // correction (e.g. "open", "report", "hello"), so keep VN
@@ -1339,34 +1457,37 @@ impl VietFlowEngine {
                         // word. Only request a mode switch when we actually had to
                         // restore mangled text (display != raw).
                         self.auto_switch_requested = None;
-                        self.lookback.push_word(&raw_word, &raw_word, true);
+                        self.lookback
+                            .push_word(raw_word.as_str(), raw_word.as_str(), true);
                         self.reset_word();
                         return (0, KeyText::from_char(c));
                     }
                     let bk = self.display_len;
-                    let mut o = KeyText::from_str(&raw_word);
+                    let mut o = raw_word;
                     o.push_char(c);
                     self.auto_switch_requested = Some(false);
-                    self.lookback.push_word(&raw_word, &raw_word, true);
+                    self.lookback.push_word(
+                        &o.as_str()[..o.len() - c.len_utf8()],
+                        &o.as_str()[..o.len() - c.len_utf8()],
+                        true,
+                    );
                     self.reset_word();
                     return (bk, o);
                 }
             }
 
-            self.lookback.push_word(&raw_word, &display_word, false);
+            self.lookback
+                .push_word(raw_word.as_str(), display_word.as_str(), false);
         }
-
-        let raw_lower = raw_word.to_ascii_lowercase();
-        let is_slang = crate::autoswitch::is_vietnamese_abbrev_or_slang(&raw_lower);
 
         let should_restore = self.options.spell_check
             && self.options.auto_non_vn_restore
             && !self.buffer.is_empty()
-            && (
-                self.matches_raw_english_keyword()
-                || (is_slang && display_word != raw_word)
-                || (!self.temp_disabled && self.has_any_vietnamese_mark() && !self.is_valid_vietnamese_word())
-            );
+            && (self.matches_english_keyword(raw_lower.as_str())
+                || (is_slang && display_word.as_str() != raw_word.as_str())
+                || (!self.temp_disabled
+                    && self.has_any_vietnamese_mark()
+                    && !self.is_valid_vietnamese_word()));
 
         if should_restore {
             // Restore raw keystrokes
@@ -1897,34 +2018,60 @@ impl VietFlowEngine {
         raw_word: &str,
         break_char: char,
     ) -> Option<(usize, KeyText)> {
-        if !self.options.auto_switch_by_typing || raw_word.len() < 2 {
+        if !self.options.auto_switch_by_typing || raw_word.len() < 2 || raw_word.len() > 32 {
             return None;
         }
 
+        let raw_lower = crate::autoswitch::ascii_lowercase_inline(raw_word);
         // Custom or built-in English keywords must strictly stay in English mode
-        if self.matches_english_keyword(&raw_word.to_ascii_lowercase()) {
+        if self.matches_english_keyword(raw_lower.as_str()) {
             return None;
         }
 
-        let mut scratch = VietFlowEngine::new(self.options.clone(), self.charset);
+        // Compose in-place using preallocated syllable buffers (zero heap allocation).
+        self.reset_word();
+        let mut broke_mid_word = false;
         for ch in raw_word.chars() {
-            scratch.process_key_with_time(ch, 0);
+            if self.buffer.is_empty() {
+                if self.options.method == InputMethod::Telex && matches!(ch, '[' | ']' | '{' | '}')
+                {
+                    let _ = self.try_bracket_shortcut(ch);
+                } else if self.starts_lone_w(ch) {
+                    let _ = self.process_lone_w(ch);
+                } else if is_letter_fast(ch) {
+                    let _ = self.process_first_letter(ch);
+                } else {
+                    broke_mid_word = true;
+                    break;
+                }
+            } else if self.try_process_in_word_key(ch).is_none() {
+                broke_mid_word = true;
+                break;
+            }
         }
-        let composed = scratch.current_preedit_text();
-        if composed.is_empty() || composed == raw_word || !scratch.is_valid_vietnamese_word() {
+
+        if broke_mid_word || self.buffer.is_empty() {
+            self.reset_word();
+            return None;
+        }
+
+        let composed = self.current_preedit_key_text();
+        let valid_vn = self.is_valid_vietnamese_word();
+        self.reset_word();
+
+        if composed.is_empty() || composed.as_str() == raw_word || !valid_vn {
             return None;
         }
 
         let prev = self.lookback.prev_display();
-        if crate::autoswitch::should_switch_to_vietnamese(raw_word, &composed, prev) {
+        if crate::autoswitch::should_switch_to_vietnamese(raw_word, composed.as_str(), prev) {
             let backspaces = raw_word.chars().count();
-            let mut out = KeyText::from_str(&composed);
-            let has_break = break_char != '\0';
-            if has_break {
+            self.auto_switch_requested = Some(true);
+            self.lookback.push_word(raw_word, composed.as_str(), false);
+            let mut out = composed;
+            if break_char != '\0' {
                 out.push_char(break_char);
             }
-            self.auto_switch_requested = Some(true);
-            self.lookback.push_word(raw_word, &composed, false);
             return Some((backspaces, out));
         }
 

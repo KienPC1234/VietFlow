@@ -18,6 +18,60 @@ static std::string TakeOwnedUtf8(VfOwnedUtf8& result) {
     return text;
 }
 
+static void ExpandClipboardPlaceholder(std::wstring& text) {
+    constexpr wchar_t kPlaceholder = 0xE000;
+    if (text.find(kPlaceholder) == std::wstring::npos) {
+        return;
+    }
+
+    std::wstring clipText;
+    bool ok = false;
+    if (OpenClipboard(nullptr)) {
+        HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+        if (hData) {
+            const SIZE_T bytes = GlobalSize(hData);
+            constexpr SIZE_T kMaxUnits = 65536;
+            if (bytes >= sizeof(wchar_t) && (bytes % sizeof(wchar_t)) == 0) {
+                const SIZE_T scanLimit =
+                    (bytes / sizeof(wchar_t)) < (kMaxUnits + 1) ? (bytes / sizeof(wchar_t)) : (kMaxUnits + 1);
+                const wchar_t* ptr = static_cast<const wchar_t*>(GlobalLock(hData));
+                if (ptr) {
+                    SIZE_T len = 0;
+                    while (len < scanLimit && ptr[len] != L'\0') {
+                        ++len;
+                    }
+                    if (len < scanLimit && len <= kMaxUnits) {
+                        clipText.assign(ptr, len);
+                        ok = true;
+                    }
+                    GlobalUnlock(hData);
+                }
+            }
+        }
+        CloseClipboard();
+    }
+
+    if (!ok) {
+        // Remove raw private-use sentinel if clipboard is unavailable/oversized.
+        size_t pos = 0;
+        while ((pos = text.find(kPlaceholder, pos)) != std::wstring::npos) {
+            text.erase(pos, 1);
+        }
+        return;
+    }
+
+    std::wstring expanded;
+    expanded.reserve(text.size() + clipText.size());
+    for (wchar_t wc : text) {
+        if (wc == kPlaceholder) {
+            expanded.append(clipText);
+        } else {
+            expanded.push_back(wc);
+        }
+    }
+    text.swap(expanded);
+}
+
 CVietFlowTip::CVietFlowTip()
     : m_cRef(1)
     , m_clientId(TF_CLIENTID_NULL)
@@ -30,6 +84,9 @@ CVietFlowTip::CVietFlowTip()
     , m_dwThreadFocusSinkCookie(TF_INVALID_COOKIE)
     , m_dwActiveLanguageProfileNotifySinkCookie(TF_INVALID_COOKIE)
 {
+    if (m_pEngine) {
+        vf_engine_set_can_rewrite_previous_word(m_pEngine, false);
+    }
     InterlockedIncrement(&g_cDllRef);
     VF_LOG(L"CVietFlowTip::CVietFlowTip created (engine=%p)", m_pEngine);
 }
@@ -352,6 +409,7 @@ void CVietFlowTip::FinishCompositionWithBreak(ITfContext* pContext, wchar_t brea
     }
     std::string utf8Word = TakeOwnedUtf8(output);
     std::wstring text = Utf8ToWide(utf8Word);
+    ExpandClipboardPlaceholder(text);
 
     if (breakChar != 0) {
         text.push_back(breakChar);
@@ -539,25 +597,28 @@ STDMETHODIMP CVietFlowTip::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lPar
         wchar_t ch = character;
         if (ch == 0) return S_OK;
 
-        size_t outBackspaces = 0;
-        // This TIP only renders the latest preedit. Process exactly once and
-        // discard the immediate key output without allocating on each key.
-        // The complete preedit is retrieved through the owned UTF-8 API.
-        if (!vf_engine_process_key(
-                m_pEngine, static_cast<uint32_t>(ch), nullptr, 0, nullptr, &outBackspaces)) {
-            VF_LOG(L"OnKeyDown COMP: engine failed to process key");
-            return S_OK;
-        }
-
-        VfOwnedUtf8 preeditOutput = {};
-        if (!vf_engine_get_preedit_owned(m_pEngine, &preeditOutput)) {
-            VF_LOG(L"OnKeyDown COMP: engine failed to read preedit");
-            return S_OK;
-        }
-        std::string utf8Word = TakeOwnedUtf8(preeditOutput);
+        VfOwnedUtf8 imeOutput = {};
+        const uint8_t action = vf_engine_process_ime_key_owned(
+            m_pEngine, static_cast<uint32_t>(ch), GetTickCount64(), &imeOutput);
+        std::string utf8Word = TakeOwnedUtf8(imeOutput);
         std::wstring word = Utf8ToWide(utf8Word);
 
-        VF_LOG(L"OnKeyDown COMP: ch='%c', preedit='%s'", ch, word.c_str());
+        VF_LOG(L"OnKeyDown COMP: ch='%c', action=%u, text='%s'", ch, static_cast<unsigned>(action), word.c_str());
+
+        if (action == VF_IME_PASSTHROUGH) {
+            return S_OK;
+        }
+        if (action == VF_IME_COMMIT_CONSUME || action == VF_IME_COMMIT_FORWARD) {
+            ExpandClipboardPlaceholder(word);
+            if (!word.empty()) {
+                ReplaceAndEndComposition(pic, word);
+            } else {
+                EndComposition(pic);
+            }
+            m_configReader.UpdateActiveKeystroke(false);
+            *pfEaten = (action == VF_IME_COMMIT_CONSUME) ? TRUE : FALSE;
+            return S_OK;
+        }
 
         if (word.empty()) {
             ClearAndEndComposition(pic);

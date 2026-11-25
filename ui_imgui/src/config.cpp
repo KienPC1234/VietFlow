@@ -255,41 +255,17 @@ bool Config::Load(const std::string& custom_path, bool use_backup) {
                 macros[normalized] = value.get<std::string>();
             }
         }
-        if (j.contains("custom_keymap") && j["custom_keymap"].is_object()) {
-            const auto& ck = j["custom_keymap"];
-            custom_keymap.acute = ck.value("acute", custom_keymap.acute);
-            custom_keymap.grave = ck.value("grave", custom_keymap.grave);
-            custom_keymap.hook = ck.value("hook", custom_keymap.hook);
-            custom_keymap.tilde = ck.value("tilde", custom_keymap.tilde);
-            custom_keymap.dot = ck.value("dot", custom_keymap.dot);
-            custom_keymap.remove_tone = ck.value("remove_tone", custom_keymap.remove_tone);
-
-            custom_keymap.circumflex = ck.value("circumflex", custom_keymap.circumflex);
-            custom_keymap.horn = ck.value("horn", custom_keymap.horn);
-            custom_keymap.breve = ck.value("breve", custom_keymap.breve);
-            custom_keymap.d_mark = ck.value("d_mark", custom_keymap.d_mark);
-            custom_keymap.hook_all = ck.value("hook_all", custom_keymap.hook_all);
-
-            custom_keymap.roof_a = ck.value("roof_a", custom_keymap.roof_a);
-            custom_keymap.roof_e = ck.value("roof_e", custom_keymap.roof_e);
-            custom_keymap.roof_o = ck.value("roof_o", custom_keymap.roof_o);
-            custom_keymap.horn_o = ck.value("horn_o", custom_keymap.horn_o);
-            custom_keymap.horn_u = ck.value("horn_u", custom_keymap.horn_u);
-            custom_keymap.breve_a = ck.value("breve_a", custom_keymap.breve_a);
-            custom_keymap.d_lower = ck.value("d_lower", custom_keymap.d_lower);
-
-            custom_keymap.telex_double_keys = ck.value("telex_double_keys", custom_keymap.telex_double_keys);
-            custom_keymap.lone_w = ck.value("lone_w", custom_keymap.lone_w);
-        }
-
         // Clamp values read from hand-edited/corrupt JSON. ImGui combo boxes
         // index these values directly and would read past their arrays.
-        method = std::clamp(method, 0, 6);
+        // Removed UserCustom (6) migrates cleanly to Telex (0).
+        method = (method >= 0 && method <= 5) ? method : 0;
         charset = std::clamp(charset, 0, 3);
         typing_timeout_ms = std::clamp<uint64_t>(typing_timeout_ms, 0, 10000);
         for (auto& entry : app_profiles) {
             AppProfile& profile = entry.second;
-            if (profile.method >= 0) profile.method = std::clamp(profile.method, 0, 6);
+            if (profile.method >= 0) {
+                profile.method = (profile.method <= 5) ? profile.method : 0;
+            }
             if (profile.charset >= 0) profile.charset = std::clamp(profile.charset, 0, 3);
             if (profile.allow_macro >= 0) profile.allow_macro = std::clamp(profile.allow_macro, 0, 1);
         }
@@ -369,32 +345,6 @@ bool Config::Save(const std::string& custom_path) const {
         }
         j["app_profiles"] = profiles;
         j["macros"] = macros;
-
-        json ck;
-        ck["acute"] = custom_keymap.acute;
-        ck["grave"] = custom_keymap.grave;
-        ck["hook"] = custom_keymap.hook;
-        ck["tilde"] = custom_keymap.tilde;
-        ck["dot"] = custom_keymap.dot;
-        ck["remove_tone"] = custom_keymap.remove_tone;
-
-        ck["circumflex"] = custom_keymap.circumflex;
-        ck["horn"] = custom_keymap.horn;
-        ck["breve"] = custom_keymap.breve;
-        ck["d_mark"] = custom_keymap.d_mark;
-        ck["hook_all"] = custom_keymap.hook_all;
-
-        ck["roof_a"] = custom_keymap.roof_a;
-        ck["roof_e"] = custom_keymap.roof_e;
-        ck["roof_o"] = custom_keymap.roof_o;
-        ck["horn_o"] = custom_keymap.horn_o;
-        ck["horn_u"] = custom_keymap.horn_u;
-        ck["breve_a"] = custom_keymap.breve_a;
-        ck["d_lower"] = custom_keymap.d_lower;
-
-        ck["telex_double_keys"] = custom_keymap.telex_double_keys;
-        ck["lone_w"] = custom_keymap.lone_w;
-        j["custom_keymap"] = ck;
 
         ConfigWriteLock lock;
         if (!lock.acquired()) return false;

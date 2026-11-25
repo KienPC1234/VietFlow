@@ -238,12 +238,6 @@ impl TrayIcon {
             to_wide("Telex + VNI").as_ptr(),
         );
         AppendMenuW(
-            hmenu_method,
-            MF_STRING | check_flag(method == 6),
-            IDM_METHOD_CUSTOM,
-            to_wide("Tự định nghĩa").as_ptr(),
-        );
-        AppendMenuW(
             hmenu,
             MF_POPUP,
             hmenu_method as usize,

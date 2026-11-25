@@ -10,8 +10,8 @@ namespace vietflow {
 enum class Page {
     Overview,
     Typing,
-    Macros,
     Apps,
+    Macros,
     TrayIcon,
     About
 };
@@ -82,33 +82,9 @@ private:
     // Other global hotkeys (settings)
     char hotkey_settings_buf_[64] = {0};
 
-    // Custom keymap buffers & helpers
-    char custom_acute_[16] = {0};
-    char custom_grave_[16] = {0};
-    char custom_hook_[16] = {0};
-    char custom_tilde_[16] = {0};
-    char custom_dot_[16] = {0};
-    char custom_remove_tone_[16] = {0};
-    char custom_circumflex_[16] = {0};
-    char custom_horn_[16] = {0};
-    char custom_breve_[16] = {0};
-    char custom_d_mark_[16] = {0};
-    char custom_hook_all_[16] = {0};
-    char custom_roof_a_[16] = {0};
-    char custom_roof_e_[16] = {0};
-    char custom_roof_o_[16] = {0};
-    char custom_horn_o_[16] = {0};
-    char custom_horn_u_[16] = {0};
-    char custom_breve_a_[16] = {0};
-    char custom_d_lower_[16] = {0};
-    char custom_test_buf_[256] = {0};
-
-    void SyncCustomKeymapBuffersFromConfig();
-    void SyncCustomKeymapBuffersToConfig();
     void SyncTextBuffersFromConfig();
     void RefreshTsfState();
     bool TsfActive() const;
-    void LoadCustomKeymapPreset(int preset_id);
 
     // Hotkey recording state
     bool recording_hotkey_ = false;

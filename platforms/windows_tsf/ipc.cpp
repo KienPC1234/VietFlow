@@ -27,7 +27,7 @@ static TsfSharedConfig DisabledFallback() {
 static bool IsValidTsfConfig(const TsfSharedConfig& c) {
     auto validFlag = [](uint32_t value) { return value <= 1; };
     return c.version == 2
-        && c.method <= 6     // core InputMethod (Telex .. UserCustom)
+        && c.method <= 5     // core InputMethod (Telex .. TelexVni)
         && c.charset <= 4    // core CharsetId (Unicode .. VIQR)
         && c.reserved == 0
         && validFlag(c.enabled)
