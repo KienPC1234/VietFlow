@@ -43,11 +43,16 @@ core/                  Vietnamese engine (Rust std, C ABI in ffi/vietflow_core.h
 ffi/                   Public C ABI header
 platforms/windows/     Win32 hook daemon, tray host, config watcher, updater
 platforms/windows_tsf/ Text Services Framework (TSF) TIP COM server (vietflow_tsf.dll)
+platforms/linux_fcitx5/ Linux Fcitx5 input method addon (vietflow.so)
 ui_imgui/              Dear ImGui + DirectX 11 settings UI (C++20)
 installer/wix/         Native WiX Toolset v5 MSI project
 assets/                Application and tray icons
 scripts/               Build, packaging, and release scripts
 ```
+
+## Linux (Fcitx5)
+
+See [docs/LINUX_FCITX5.md](docs/LINUX_FCITX5.md) for Linux installation, Wayland/X11 setup, and configuration.
 
 ## Build
 

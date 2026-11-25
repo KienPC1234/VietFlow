@@ -483,6 +483,81 @@ pub unsafe extern "C" fn vf_engine_take_auto_switch_request(engine: *mut c_void)
     }
 }
 
+/// Records an English word in the AutoSwitch lookback buffer while in English mode.
+///
+/// # Safety
+/// `engine` must be a valid engine pointer or null; `word_utf8` must be readable for `len` bytes when non-null.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_push_english_word_lookback(
+    engine: *mut c_void,
+    word_utf8: *const u8,
+    len: usize,
+) {
+    let Some(engine) = (engine as *mut VietFlowEngine).as_mut() else {
+        return;
+    };
+    if word_utf8.is_null() || len == 0 {
+        engine.push_english_word_lookback("");
+        return;
+    }
+    let slice = std::slice::from_raw_parts(word_utf8, len);
+    if let Ok(word) = std::str::from_utf8(slice) {
+        engine.push_english_word_lookback(word);
+    }
+}
+
+/// Evaluates a raw word typed in English mode at word break.
+/// Returns true if the word is Vietnamese and sets `result` + `out_backspaces`.
+///
+/// # Safety
+/// `engine` must be valid; `raw_word_utf8` must be readable for `raw_word_len` bytes; `result` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn vf_engine_check_english_word_at_break_owned(
+    engine: *mut c_void,
+    raw_word_utf8: *const u8,
+    raw_word_len: usize,
+    break_char: u32,
+    result: *mut VfOwnedUtf8,
+    out_backspaces: *mut usize,
+) -> bool {
+    if !result.is_null() {
+        *result = VfOwnedUtf8 {
+            data: std::ptr::null_mut(),
+            len: 0,
+        };
+    }
+    if !out_backspaces.is_null() {
+        *out_backspaces = 0;
+    }
+    let Some(engine) = (engine as *mut VietFlowEngine).as_mut() else {
+        return false;
+    };
+    if raw_word_utf8.is_null() || raw_word_len == 0 || result.is_null() {
+        return false;
+    }
+    let slice = std::slice::from_raw_parts(raw_word_utf8, raw_word_len);
+    let Ok(raw_word) = std::str::from_utf8(slice) else {
+        return false;
+    };
+    let br = if break_char == 0 {
+        '\0'
+    } else if let Some(c) = char::from_u32(break_char) {
+        c
+    } else {
+        return false;
+    };
+    let Some((backspaces, text)) = engine.check_english_word_at_break(raw_word, br) else {
+        return false;
+    };
+    if !write_owned_utf8(text.as_str().to_owned(), result) {
+        return false;
+    }
+    if !out_backspaces.is_null() {
+        *out_backspaces = backspaces;
+    }
+    true
+}
+
 /// Unified single-pass IME key handler for preedit hosts (Linux Fcitx5, Windows TSF).
 /// Returns a `VfImeAction` code (`0..=3`) and writes any preedit/commit UTF-8 into `result`.
 ///

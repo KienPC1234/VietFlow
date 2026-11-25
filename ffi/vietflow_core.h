@@ -75,6 +75,11 @@ void vf_engine_destroy(VfEngine *engine);
 void vf_engine_reset(VfEngine *engine);
 bool vf_engine_is_empty(const VfEngine *engine);
 int8_t vf_engine_take_auto_switch_request(VfEngine *engine);
+void vf_engine_push_english_word_lookback(VfEngine *engine,
+                                          const uint8_t *word_utf8, size_t len);
+bool vf_engine_check_english_word_at_break_owned(
+    VfEngine *engine, const uint8_t *raw_word_utf8, size_t raw_word_len,
+    uint32_t break_char, VfOwnedUtf8 *result, size_t *out_backspaces);
 
 void vf_engine_set_method(VfEngine *engine, uint8_t method);
 void vf_engine_set_charset(VfEngine *engine, uint8_t charset);

@@ -1,0 +1,11 @@
+[Addon]
+Name=VietFlow
+Icon=fcitx-vietflow
+Type=SharedLibrary
+Library=vietflow
+Category=InputMethod
+Version=@PROJECT_VERSION@
+Configurable=True
+
+[Addon/Dependencies]
+0=core:5.0.0

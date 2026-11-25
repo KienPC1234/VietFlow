@@ -10,6 +10,8 @@
 /platforms/windows_tsf/build/**
 /platforms/windows_tsf/build-x86
 /platforms/windows_tsf/build-arm64
+/platforms/linux_fcitx5/build
+/platforms/linux_fcitx5/build/**
 imgui.ini
 *.user
 *.pdb

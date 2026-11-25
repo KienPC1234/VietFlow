@@ -1,0 +1,7 @@
+[InputMethod]
+Name=VietFlow
+Icon=fcitx-vietflow
+Label=VI
+LangCode=vi
+Addon=vietflow
+Configurable=True
