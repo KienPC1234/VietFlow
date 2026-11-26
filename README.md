@@ -1,7 +1,7 @@
 # VietFlow
 
-Lightweight native Vietnamese input method for Windows.
-Rust core engine and Win32 hook daemon, optional Text Services Framework (TSF) COM server, and an isolated Dear ImGui + DirectX 11 settings UI.
+Lightweight native Vietnamese input method for Windows and Linux (Fcitx5).
+Rust core engine (`vietflow-core`) with a Win32 hook daemon, optional Text Services Framework (TSF) COM server, Dear ImGui + DirectX 11 settings UI on Windows, and an Fcitx5 addon on Linux.
 
 <p align="center">
   <img src="assets/screenshot.png" alt="VietFlow Settings UI" width="760" />
@@ -46,6 +46,7 @@ platforms/windows_tsf/ Text Services Framework (TSF) TIP COM server (vietflow_ts
 platforms/linux_fcitx5/ Linux Fcitx5 input method addon (vietflow.so)
 ui_imgui/              Dear ImGui + DirectX 11 settings UI (C++20)
 installer/wix/         Native WiX Toolset v5 MSI project
+installer/winget/      WinGet package manifests
 assets/                Application and tray icons
 scripts/               Build, packaging, and release scripts
 ```
@@ -62,8 +63,9 @@ Requirements: Rust 1.75+, CMake 3.20+, Visual Studio Desktop C++ Build Tools (pl
 # Clone with submodules
 git clone --recurse-submodules https://github.com/KienPC1234/VietFlow.git
 
-# Test workspace
+# Test core engine (default member) or full Windows workspace
 cargo test
+cargo test --workspace
 
 # Build release (x64, static CRT -> dist\VietFlow-x64.exe)
 .\scripts\build.ps1
